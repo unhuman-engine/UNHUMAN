@@ -204,15 +204,26 @@ void TransitionLayout(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLa
 vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter, vk::SamplerMipmapMode mipmapMode,
                                 vk::SamplerAddressMode addressMode, f32 maxLod)
 {
+    return CreateSampler(magFilter, minFilter, mipmapMode, addressMode, addressMode, addressMode, maxLod);
+}
+
+// Per-axis addressing overload. glTF declares wrapS and wrapT independently, so
+// the single-addressMode form cannot express e.g. clamp-U / repeat-V, which is
+// common on atlas and foliage textures. All three axes are taken separately
+// because the existing signature applied one mode to all of them.
+vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter, vk::SamplerMipmapMode mipmapMode,
+                                vk::SamplerAddressMode addressModeU, vk::SamplerAddressMode addressModeV,
+                                vk::SamplerAddressMode addressModeW, f32 maxLod)
+{
     auto& ctx = GetVulkanContext();
 
     vk::SamplerCreateInfo samplerInfo{.flags = {},
                                       .magFilter = magFilter,
                                       .minFilter = minFilter,
                                       .mipmapMode = mipmapMode,
-                                      .addressModeU = addressMode,
-                                      .addressModeV = addressMode,
-                                      .addressModeW = addressMode,
+                                      .addressModeU = addressModeU,
+                                      .addressModeV = addressModeV,
+                                      .addressModeW = addressModeW,
                                       .mipLodBias = 0.0f,
                                       .anisotropyEnable = VK_FALSE,
                                       .maxAnisotropy = 1.0f,

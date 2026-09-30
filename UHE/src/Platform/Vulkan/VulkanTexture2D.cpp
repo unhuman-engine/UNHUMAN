@@ -8,7 +8,7 @@
 
 namespace UHE {
 
-    VulkanTexture2D::VulkanTexture2D(const std::string& path)
+    VulkanTexture2D::VulkanTexture2D(const std::string& path, const RHI::SamplerDesc& sampler)
     {
         int width, height, channels;
         stbi_set_flip_vertically_on_load(1);
@@ -20,6 +20,8 @@ namespace UHE {
             m_Height = height;
 
             m_VulkanTexture = CreateRef<RHI::VULKAN::VulkanTexture>();
+            // Must precede CreateTexture: the sampler is built inside it.
+            m_VulkanTexture->SetSamplerDesc(sampler);
             auto& rhiDevice = Renderer::GetDevice();
             auto* vulkanDevice = static_cast<RHI::VULKAN::VulkanDevice*>(&rhiDevice);
 
@@ -43,7 +45,7 @@ namespace UHE {
         }
     }
 
-    VulkanTexture2D::VulkanTexture2D(const void* inData, size_t size)
+    VulkanTexture2D::VulkanTexture2D(const void* inData, size_t size, const RHI::SamplerDesc& sampler)
     {
         int width, height, channels;
         stbi_set_flip_vertically_on_load(1);
@@ -55,6 +57,8 @@ namespace UHE {
             m_Height = height;
 
             m_VulkanTexture = CreateRef<RHI::VULKAN::VulkanTexture>();
+            // Must precede CreateTexture: the sampler is built inside it.
+            m_VulkanTexture->SetSamplerDesc(sampler);
             auto& rhiDevice = Renderer::GetDevice();
             auto* vulkanDevice = static_cast<RHI::VULKAN::VulkanDevice*>(&rhiDevice);
 
@@ -78,10 +82,12 @@ namespace UHE {
         }
     }
 
-    VulkanTexture2D::VulkanTexture2D(u32 width, u32 height)
+    VulkanTexture2D::VulkanTexture2D(u32 width, u32 height, const RHI::SamplerDesc& sampler)
         : m_Width(width), m_Height(height)
     {
         m_VulkanTexture = CreateRef<RHI::VULKAN::VulkanTexture>();
+        // Must precede CreateTexture: the sampler is built inside it.
+        m_VulkanTexture->SetSamplerDesc(sampler);
         auto& rhiDevice = Renderer::GetDevice();
         auto* vulkanDevice = static_cast<RHI::VULKAN::VulkanDevice*>(&rhiDevice);
 

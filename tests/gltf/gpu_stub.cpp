@@ -18,20 +18,33 @@
 namespace UHE
 {
 
-Ref<Texture2D> Texture2D::Create(const std::string& path)
+// The sampler the loader last requested. Recording it lets the harness assert
+// that glTF's declared magFilter/minFilter/wrapS/wrapT actually reached the
+// texture factory - a stub that discarded the argument would make that path
+// untestable, and an untestable path is the one that silently regresses.
+RHI::SamplerDesc g_LastSampler{};
+int g_TextureCreateCalls = 0;
+
+Ref<Texture2D> Texture2D::Create(const std::string& path, const RHI::SamplerDesc& sampler)
 {
+    g_LastSampler = sampler;
+    ++g_TextureCreateCalls;
     std::printf("STUB: Texture2D::Create(\"%s\") called - the glTF harness must not load textures\n", path.c_str());
     return nullptr;
 }
 
-Ref<Texture2D> Texture2D::Create(u32 width, u32 height)
+Ref<Texture2D> Texture2D::Create(u32 width, u32 height, const RHI::SamplerDesc& sampler)
 {
+    g_LastSampler = sampler;
+    ++g_TextureCreateCalls;
     std::printf("STUB: Texture2D::Create(%u, %u) called\n", width, height);
     return nullptr;
 }
 
-Ref<Texture2D> Texture2D::CreateFromMemory(const void* data, size_t size)
+Ref<Texture2D> Texture2D::CreateFromMemory(const void* data, size_t size, const RHI::SamplerDesc& sampler)
 {
+    g_LastSampler = sampler;
+    ++g_TextureCreateCalls;
     std::printf("STUB: Texture2D::CreateFromMemory(%zu bytes) called\n", size);
     return nullptr;
 }
@@ -83,3 +96,16 @@ void Model::ReleaseGeometryBuffers(std::vector<Geometry>& geometry)
 }
 
 } // namespace UHE::RD3d
+
+namespace UHE
+{
+
+RHI::SamplerDesc StubLastRequestedSampler() { return g_LastSampler; }
+int StubTextureCreateCallCount() { return g_TextureCreateCalls; }
+void StubReset()
+{
+    g_LastSampler = RHI::SamplerDesc{};
+    g_TextureCreateCalls = 0;
+}
+
+} // namespace UHE

@@ -26,6 +26,11 @@ public:
                      vk::ImageUsageFlags usage, VmaMemoryUsage memUsage, vk::ImageTiling tiling, vk::Image& image,
                      VmaAllocation& imageMemory);
     void CreateTexture(VulkanDevice& device, const void* pixelData, u32 width, u32 height, size_t dataSize);
+
+    // Sampler state for the next CreateTexture call. The backend default matches
+    // what it always used (linear/linear, repeat on all axes), so a texture
+    // loaded without calling this renders unchanged.
+    void SetSamplerDesc(const SamplerDesc& desc) { m_SamplerDesc = desc; }
     void ExecuteCopyCommand(VulkanDevice& device, VkBuffer srcBuffer, vk::Image dstImage, uint32_t width,
                             uint32_t height, uint32_t mipLevels);
     void GenerateMipmaps(VulkanDevice& device, vk::Image image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
@@ -45,6 +50,7 @@ private:
     u32 m_Height = 0;
     u32 m_MipLevels = 1;
     TextureDesc m_Desc;
+    SamplerDesc m_SamplerDesc;
     VkDescriptorSet m_ImGuiDescriptorSet = VK_NULL_HANDLE;
     u32 m_TextureIndex = 0;
 };

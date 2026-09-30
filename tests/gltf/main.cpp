@@ -33,6 +33,17 @@
 #include "UHE/Core/Log.h"
 #include "UHE/Renderer3D/LoadModel.h"
 
+// Defined in gpu_stub.cpp: records the sampler the loader last asked for, so a
+// test can assert glTF's declared sampler state actually reached the factory.
+// A stub that ignored the argument would make this path untestable, and an
+// untestable path is the one that silently regresses.
+namespace UHE
+{
+RHI::SamplerDesc StubLastRequestedSampler();
+int StubTextureCreateCallCount();
+void StubReset();
+} // namespace UHE
+
 namespace
 {
 
@@ -56,6 +67,7 @@ void section(std::string_view name)
 {
     std::printf("[ %.*s ]\n", static_cast<int>(name.size()), name.data());
 }
+
 
 namespace fs = std::filesystem;
 
@@ -328,6 +340,15 @@ struct Quad
     }
 };
 
+struct SamplerSpec
+{
+    // Negative = omit the field, so the spec default is what gets observed.
+    int magFilter = -1;
+    int minFilter = -1;
+    int wrapS = -1;
+    int wrapT = -1;
+};
+
 struct MaterialSpec
 {
     std::string alphaMode;
@@ -339,6 +360,7 @@ struct MaterialSpec
     float emissive[3] = {0.0f, 0.0f, 0.0f};
     float normalScale = -1.0f;      // negative = omit
     float occlusionStrength = -1.0f;
+    std::optional<SamplerSpec> sampler;
 };
 
 struct AssetSpec
@@ -676,11 +698,36 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     // One 1x1 texture, declared only when a material actually references one.
     // A material pointing at texture 0 with no images/samplers/textures declared
     // is invalid glTF and fastgltf rejects the whole file.
-    if (spec.material && (spec.material->normalScale >= 0.0f || spec.material->occlusionStrength >= 0.0f))
+    const bool needsTexture = spec.material && (spec.material->normalScale >= 0.0f ||
+                                                spec.material->occlusionStrength >= 0.0f ||
+                                                spec.material->sampler.has_value());
+    if (needsTexture)
     {
         j.key("images").beginArray().beginObject().field("uri", "tex.png").field("mimeType", "image/png").endObject().endArray();
-        j.key("samplers").beginArray().beginObject().field("magFilter", 9729).field("minFilter", 9987).endObject().endArray();
-        j.key("textures").beginArray().beginObject().field("source", 0).field("sampler", 0).endObject().endArray();
+
+        // Samplers and textures are emitted exactly once each. A second
+        // j.key("textures") would silently lose the sampler reference: JSON takes
+        // the first of two duplicate keys, so the array written afterwards is
+        // discarded and the loader sees a texture with no sampler at all.
+        if (spec.material->sampler.has_value())
+        {
+            const auto& sp = *spec.material->sampler;
+            j.key("samplers").beginArray().beginObject();
+            if (sp.magFilter >= 0)
+                j.field("magFilter", sp.magFilter);
+            if (sp.minFilter >= 0)
+                j.field("minFilter", sp.minFilter);
+            if (sp.wrapS >= 0)
+                j.field("wrapS", sp.wrapS);
+            if (sp.wrapT >= 0)
+                j.field("wrapT", sp.wrapT);
+            j.endObject().endArray();
+            j.key("textures").beginArray().beginObject().field("source", 0).field("sampler", 0).endObject().endArray();
+        }
+        else
+        {
+            j.key("textures").beginArray().beginObject().field("source", 0).endObject().endArray();
+        }
     }
 
     // materials. Material 0 carries any MaterialSpec the test set, so the rest
@@ -1317,6 +1364,108 @@ int main()
                     bothDrawable = bothDrawable && prim.VertexBuffer && prim.IndexBuffer;
             }
             check(bothDrawable, "both node instances are drawable");
+        }
+    }
+
+
+    // =====================================================================
+    // Sampler state. glTF declares magFilter/minFilter/wrapS/wrapT per texture;
+    // before this the backend hardcoded linear/repeat for everything, so a
+    // CLAMP_TO_EDGE atlas or a NEAREST pixel-art texture sampled wrongly with no
+    // way to tell from the outside.
+    // =====================================================================
+
+    section("glTF sampler state reaches the texture factory");
+    {
+        using F = UHE::RHI::SamplerDesc::Filter;
+        using W = UHE::RHI::SamplerDesc::Wrap;
+
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        // Deliberately asymmetric wrap and a NEAREST mag: a single addressMode
+        // applied to both axes cannot express this, which is the whole reason
+        // the per-axis overload exists.
+        SamplerSpec sp;
+        sp.magFilter = 9728;  // NEAREST
+        sp.minFilter = 9984;  // NEAREST_MIPMAP_NEAREST
+        sp.wrapS = 33071;     // CLAMP_TO_EDGE
+        sp.wrapT = 33648;     // MIRRORED_REPEAT
+        ms.sampler = sp;
+        ms.normalScale = 0.5f; // forces a texture reference
+        spec.material = ms;
+
+        ::UHE::StubReset();
+        const fs::path path = writeAsset(dir, "sampler.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model with a declared sampler loads"))
+        {
+            check(::UHE::StubTextureCreateCallCount() > 0, "a texture was requested");
+            const auto s = ::UHE::StubLastRequestedSampler();
+            check(s.magFilter == F::Nearest, "magFilter NEAREST passed through");
+            check(s.minFilter == F::Nearest, "minFilter NEAREST_MIPMAP_NEAREST maps to nearest");
+            check(s.wrapS == W::ClampToEdge, "wrapS CLAMP_TO_EDGE passed through");
+            // The asymmetric pair is the real assertion: one addressMode for both
+            // axes would make one of these wrong.
+            check(s.wrapT == W::MirroredRepeat, "wrapT MIRRORED_REPEAT differs from wrapS");
+        }
+    }
+
+    section("absent sampler falls back to spec defaults");
+    {
+        using F = UHE::RHI::SamplerDesc::Filter;
+        using W = UHE::RHI::SamplerDesc::Wrap;
+
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        // No sampler object at all: many exporters omit it. The defaults must be
+        // LINEAR / LINEAR_MIPMAP_LINEAR / REPEAT, which is also what the backend
+        // hardcoded before, so unchanged assets stay unchanged.
+        ms.normalScale = 1.0f;
+        spec.material = ms;
+
+        ::UHE::StubReset();
+        const fs::path path = writeAsset(dir, "sampler_none.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model with no sampler object loads"))
+        {
+            const auto s = ::UHE::StubLastRequestedSampler();
+            check(s.magFilter == F::Linear, "default magFilter is LINEAR");
+            check(s.minFilter == F::LinearMipmapLinear, "default minFilter is LINEAR_MIPMAP_LINEAR");
+            check(s.wrapS == W::Repeat, "default wrapS is REPEAT");
+            check(s.wrapT == W::Repeat, "default wrapT is REPEAT");
+        }
+    }
+
+    section("partial sampler keeps spec defaults for omitted fields");
+    {
+        using W = UHE::RHI::SamplerDesc::Wrap;
+
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        SamplerSpec sp;
+        sp.wrapS = 33071; // only wrapS declared
+        ms.sampler = sp;
+        ms.occlusionStrength = 1.0f; // forces a texture reference
+        spec.material = ms;
+
+        ::UHE::StubReset();
+        const fs::path path = writeAsset(dir, "sampler_partial.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model with a partial sampler loads"))
+        {
+            const auto s = ::UHE::StubLastRequestedSampler();
+            check(s.wrapS == W::ClampToEdge, "declared wrapS applied");
+            // wrapT omitted must not inherit wrapS - per-axis is the whole point.
+            check(s.wrapT == W::Repeat, "omitted wrapT falls back to REPEAT, not wrapS");
         }
     }
 

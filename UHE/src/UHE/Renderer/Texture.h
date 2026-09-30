@@ -24,9 +24,13 @@ class UHE_API Texture2D : public Texture {
 public:
     virtual ~Texture2D() = default;
 
-    static Ref<Texture2D> Create(const std::string& path);
-    static Ref<Texture2D> Create(u32 width, u32 height);
-    static Ref<Texture2D> CreateFromMemory(const void* data, size_t size);
+    // `sampler` is optional and defaults to the backend's historical state
+    // (linear magnification, trilinear minification, repeat). glTF declares
+    // magFilter/minFilter/wrapS/wrapT per texture and the loader passes them
+    // through here; a texture loaded without one renders exactly as before.
+    static Ref<Texture2D> Create(const std::string& path, const RHI::SamplerDesc& sampler = {});
+    static Ref<Texture2D> Create(u32 width, u32 height, const RHI::SamplerDesc& sampler = {});
+    static Ref<Texture2D> CreateFromMemory(const void* data, size_t size, const RHI::SamplerDesc& sampler = {});
 };
 
 } // namespace UHE

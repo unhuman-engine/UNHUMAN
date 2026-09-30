@@ -176,6 +176,87 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
     return true;
 }
 
+namespace
+{
+
+// Builds the sampler state glTF declares for a texture.
+//
+// Defaults match the spec (LINEAR mag, LINEAR_MIPMAP_LINEAR min, REPEAT wrap),
+// which is also what the backend used before this existed, so a texture with no
+// sampler object renders unchanged. magFilter/minFilter are Optional in fastgltf
+// and genuinely absent in many files, so the fallback is the spec default rather
+// than a guess.
+RHI::SamplerDesc SamplerDescForTexture(const fastgltf::Asset& asset, size_t textureIndex)
+{
+    RHI::SamplerDesc desc;
+
+    if (textureIndex >= asset.textures.size())
+        return desc;
+
+    const auto samplerIndex = asset.textures[textureIndex].samplerIndex;
+    if (!samplerIndex.has_value() || *samplerIndex >= asset.samplers.size())
+        return desc;
+
+    const fastgltf::Sampler& gltfSampler = asset.samplers[*samplerIndex];
+
+    // A glTF minFilter that selects a mip level only matters when minifying, so
+    // every non-Nearest variant maps to Vulkan's eLinear min filter; the mip
+    // selection itself is carried by SamplerMipmapMode::eLinear below.
+    const auto toFilter = [](fastgltf::Filter f) {
+        switch (f)
+        {
+            case fastgltf::Filter::Nearest:
+            case fastgltf::Filter::NearestMipMapNearest:
+            case fastgltf::Filter::NearestMipMapLinear:
+                return RHI::SamplerDesc::Filter::Nearest;
+            case fastgltf::Filter::Linear:
+            case fastgltf::Filter::LinearMipMapNearest:
+            case fastgltf::Filter::LinearMipMapLinear:
+            default:
+                return RHI::SamplerDesc::Filter::Linear;
+        }
+    };
+
+    if (gltfSampler.magFilter.has_value())
+        desc.magFilter = toFilter(gltfSampler.magFilter.value());
+    if (gltfSampler.minFilter.has_value())
+        desc.minFilter = toFilter(gltfSampler.minFilter.value());
+
+    // wrapS and wrapT are independent in glTF. Applying one mode to both axes is
+    // wrong for any atlas that clamps U but repeats V, which is the common case.
+    switch (gltfSampler.wrapS)
+    {
+        case fastgltf::Wrap::ClampToEdge:
+            desc.wrapS = RHI::SamplerDesc::Wrap::ClampToEdge;
+            break;
+        case fastgltf::Wrap::MirroredRepeat:
+            desc.wrapS = RHI::SamplerDesc::Wrap::MirroredRepeat;
+            break;
+        case fastgltf::Wrap::Repeat:
+        default:
+            desc.wrapS = RHI::SamplerDesc::Wrap::Repeat;
+            break;
+    }
+
+    switch (gltfSampler.wrapT)
+    {
+        case fastgltf::Wrap::ClampToEdge:
+            desc.wrapT = RHI::SamplerDesc::Wrap::ClampToEdge;
+            break;
+        case fastgltf::Wrap::MirroredRepeat:
+            desc.wrapT = RHI::SamplerDesc::Wrap::MirroredRepeat;
+            break;
+        case fastgltf::Wrap::Repeat:
+        default:
+            desc.wrapT = RHI::SamplerDesc::Wrap::Repeat;
+            break;
+    }
+
+    return desc;
+}
+
+} // namespace
+
 void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::path& filepath)
 {
     m_LoadedMaterials.resize(asset.materials.size());
@@ -202,26 +283,33 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             if (!imageIndex.has_value()) return nullptr;
 
             auto& image = asset.images[imageIndex.value()];
+
+            // glTF declares sampler state per texture (magFilter/minFilter/wrapS/
+            // wrapT). Without this the backend's hardcoded linear/repeat is used
+            // for everything, so a CLAMP_TO_EDGE atlas or a NEAREST pixel-art
+            // texture samples wrongly.
+            RHI::SamplerDesc sampler = SamplerDescForTexture(asset, textureIndex);
+
             Ref<Texture2D> result = nullptr;
             std::visit(
                 fastgltf::visitor{[&](const fastgltf::sources::URI& filePath)
                                   {
                                       std::filesystem::path imgPath = filepath.parent_path() / filePath.uri.path();
-                                      result = Texture2D::Create(imgPath.string());
+                                      result = Texture2D::Create(imgPath.string(), sampler);
                                   },
                                   [&](const fastgltf::sources::Array& array)
                                   {
-                                      result = Texture2D::CreateFromMemory(array.bytes.data(), array.bytes.size());
+                                      result = Texture2D::CreateFromMemory(array.bytes.data(), array.bytes.size(), sampler);
                                       UHE_CORE_INFO("Loaded texture for material {0} from Array, size: {1}", matIdx, array.bytes.size());
                                   },
                                   [&](const fastgltf::sources::ByteView& byteView)
                                   {
-                                      result = Texture2D::CreateFromMemory(byteView.bytes.data(), byteView.bytes.size());
+                                      result = Texture2D::CreateFromMemory(byteView.bytes.data(), byteView.bytes.size(), sampler);
                                       UHE_CORE_INFO("Loaded texture for material {0} from ByteView, size: {1}", matIdx, byteView.bytes.size());
                                   },
                                   [&](const fastgltf::sources::Vector& vector)
                                   {
-                                      result = Texture2D::CreateFromMemory(vector.bytes.data(), vector.bytes.size());
+                                      result = Texture2D::CreateFromMemory(vector.bytes.data(), vector.bytes.size(), sampler);
                                       UHE_CORE_INFO("Loaded texture for material {0} from Vector, size: {1}", matIdx, vector.bytes.size());
                                   },
                                   [&](const fastgltf::sources::Fallback& fallback)

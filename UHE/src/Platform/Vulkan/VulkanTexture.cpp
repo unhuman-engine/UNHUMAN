@@ -133,6 +133,39 @@ void VulkanTexture::CreateImage(VulkanLogicalDevice& logDevice, uint32_t width, 
     imageMemory = created.allocation;
 }
 
+// glTF filter enums map onto Vulkan's mag/min pair: a mip-selecting glTF filter
+// only ever affects minification, so the magnification filter stays linear
+// unless the file explicitly asked for nearest.
+static vk::Filter ToVkFilter(SamplerDesc::Filter filter)
+{
+    switch (filter)
+    {
+        case SamplerDesc::Filter::Nearest:
+        case SamplerDesc::Filter::NearestMipmapNearest:
+        case SamplerDesc::Filter::NearestMipmapLinear:
+            return vk::Filter::eNearest;
+        case SamplerDesc::Filter::Linear:
+        case SamplerDesc::Filter::LinearMipmapNearest:
+        case SamplerDesc::Filter::LinearMipmapLinear:
+        default:
+            return vk::Filter::eLinear;
+    }
+}
+
+static vk::SamplerAddressMode ToVkAddressMode(SamplerDesc::Wrap wrap)
+{
+    switch (wrap)
+    {
+        case SamplerDesc::Wrap::ClampToEdge:
+            return vk::SamplerAddressMode::eClampToEdge;
+        case SamplerDesc::Wrap::MirroredRepeat:
+            return vk::SamplerAddressMode::eMirroredRepeat;
+        case SamplerDesc::Wrap::Repeat:
+        default:
+            return vk::SamplerAddressMode::eRepeat;
+    }
+}
+
 void VulkanTexture::CreateTexture(VulkanDevice& device, const void* pixelData, u32 width, u32 height, size_t dataSize)
 {
     auto& ctx = GetVulkanContext();
@@ -159,9 +192,12 @@ void VulkanTexture::CreateTexture(VulkanDevice& device, const void* pixelData, u
     textureImageView = CreateImageView(textureImage, vk::Format::eR8G8B8A8Srgb,
                                         vk::ImageAspectFlagBits::eColor, m_MipLevels);
 
-    textureSampler = CreateSampler(vk::Filter::eLinear, vk::Filter::eLinear,
-                                    vk::SamplerMipmapMode::eLinear,
-                                    vk::SamplerAddressMode::eRepeat,
+    // Sampler state comes from the loader when it supplied one (glTF declares
+    // magFilter/minFilter/wrapS/wrapT per texture). Defaults reproduce exactly
+    // what this call site hardcoded before, so untouched assets are unchanged.
+    textureSampler = CreateSampler(ToVkFilter(m_SamplerDesc.magFilter), ToVkFilter(m_SamplerDesc.minFilter),
+                                    vk::SamplerMipmapMode::eLinear, ToVkAddressMode(m_SamplerDesc.wrapS),
+                                    ToVkAddressMode(m_SamplerDesc.wrapT), ToVkAddressMode(m_SamplerDesc.wrapT),
                                     static_cast<float>(m_MipLevels));
 
     m_TextureIndex = device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle,

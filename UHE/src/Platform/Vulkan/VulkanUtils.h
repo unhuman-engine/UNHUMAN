@@ -61,6 +61,11 @@ vk::raii::Sampler CreateSampler(vk::Filter magFilter = vk::Filter::eLinear,
                                  vk::SamplerAddressMode addressMode = vk::SamplerAddressMode::eRepeat,
                                  f32 maxLod = 1.0f);
 
+// Per-axis variant, for glTF textures that declare wrapS and wrapT differently.
+vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter, vk::SamplerMipmapMode mipmapMode,
+                                 vk::SamplerAddressMode addressModeU, vk::SamplerAddressMode addressModeV,
+                                 vk::SamplerAddressMode addressModeW, f32 maxLod);
+
 // ─── Format Mapping ──────────────────────────────────────────────
 vk::ImageAspectFlags FormatToAspect(vk::Format format);
 bool FormatHasStencil(vk::Format format);
