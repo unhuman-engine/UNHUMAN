@@ -1,5 +1,17 @@
+// Model loading entry point and glTF scene-graph walk.
+//
+// Split from the rest of the loader along one seam: this file owns everything
+// that needs the whole asset (materials, the scene walk, resource lifetime),
+// while geometry extraction, GPU upload and animation each live in their own
+// translation unit. Four TUs keeps parallel compilation useful without
+// scattering one function per file.
+//
+// Model::ProcessNode is the loader's core: it accumulates node transforms and
+// instantiates shared geometry per node.
+
 #include "uhepch.h"
 #include "LoadModel.h"
+#include <algorithm>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
 #include "UHE/RHI/RHICommadBuffer.h"
@@ -12,6 +24,24 @@
 namespace UHE::RD3d
 {
 
+namespace
+{
+
+// Extensions this loader actually honours. Anything else a file declares is
+// reported by name instead of being silently ignored.
+//
+// KHR_texture_transform is listed but its effect is still hardcoded (see the UV
+// V-flip in ExtractGeometry), so it counts as supported only in the sense that
+// it is not a warning-worthy gap; it is called out there, not here.
+bool IsExtensionSupported(std::string_view name)
+{
+    return name == "KHR_materials_pbrSpecularGlossiness" || // SpecularGlossiness path
+           name == "KHR_texture_transform" ||              // UV transform (see note)
+           name == "KHR_materials_unlit";
+}
+
+} // namespace
+
 Model::~Model()
 {
     Destroy();
@@ -19,32 +49,45 @@ Model::~Model()
 
 void Model::Destroy()
 {
-    auto& device = Renderer::GetDevice();
-    
+    // Geometry owns every GPU buffer. Mesh entries only borrow, so freeing
+    // through m_Geometry releases each buffer exactly once even when several
+    // nodes share one glTF mesh.
+    ReleaseGeometryBuffers(m_Geometry);
+    m_Geometry.clear();
+    m_GeometryCache.clear();
+
+    m_LoadedMeshes.clear();
+    m_LoadedMaterials.clear();
+    m_UnsupportedExtensionNames.clear();
+    m_HasUnsupportedExtensions = false;
+
     m_Animations.clear();
     m_Skeleton.Bones.clear();
     m_Skeleton.JointNodes.clear();
     m_Skeleton.RootBoneID = -1;
-
-    for (auto& mesh : m_LoadedMeshes)
-    {
-        for (auto& prim : mesh.primitive)
-        {
-            if (prim.VertexBuffer)
-            {
-                device.DestroyBuffer(prim.VertexBuffer);
-                prim.VertexBuffer = nullptr;
-            }
-            if (prim.IndexBuffer)
-            {
-                device.DestroyBuffer(prim.IndexBuffer);
-                prim.IndexBuffer = nullptr;
-            }
-        }
-    }
 }
 
-bool Model::loadModel(const std::filesystem::path& filepath)
+glm::mat4 Model::NodeLocalTransform(const fastgltf::Node& node)
+{
+    glm::mat4 local{1.0f};
+
+    std::visit(fastgltf::visitor{
+                   [&](const fastgltf::math::fmat4x4& matrix) {
+                       std::memcpy(&local, matrix.data(), sizeof(glm::mat4));
+                   },
+                   [&](const fastgltf::TRS& trs) {
+                       const glm::vec3 T(trs.translation[0], trs.translation[1], trs.translation[2]);
+                       // glTF stores quaternions as x, y, z, w; glm::quat takes w, x, y, z.
+                       const glm::quat R(trs.rotation[3], trs.rotation[0], trs.rotation[1], trs.rotation[2]);
+                       const glm::vec3 S(trs.scale[0], trs.scale[1], trs.scale[2]);
+                       local = glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(R) * glm::scale(glm::mat4(1.0f), S);
+                   }},
+               node.transform);
+
+    return local;
+}
+
+bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOptions& options)
 {
     if (!std::filesystem::exists(filepath))
     {
@@ -53,12 +96,7 @@ bool Model::loadModel(const std::filesystem::path& filepath)
     }
 
     Destroy();
-    m_LoadedMeshes.clear();
-    m_LoadedMaterials.clear();
-    m_Animations.clear();
-    m_Skeleton.Bones.clear();
-    m_Skeleton.JointNodes.clear();
-    m_Skeleton.RootBoneID = -1;
+    m_Options = options;
 
     static constexpr auto supportedExtensions = ~fastgltf::Extensions::None;
     fastgltf::Parser parser(supportedExtensions);
@@ -83,10 +121,69 @@ bool Model::loadModel(const std::filesystem::path& filepath)
 
     fastgltf::Asset asset = std::move(assetResult.get());
 
+    // Record extensions the file declares that this loader does not implement.
+    // The parser is constructed with every extension enabled, so an unsupported
+    // one is parsed and then ignored - which means the asset renders with subtly
+    // wrong shading and no error anywhere. Naming it at load time is the only
+    // chance to tell that apart from a shading bug.
+    for (const auto& name : asset.extensionsUsed)
+    {
+        // fastgltf stores these as std::pmr::string; copy into a plain
+        // std::string so the loader does not inherit its allocator choice.
+        if (!IsExtensionSupported(name))
+            m_UnsupportedExtensionNames.emplace_back(name.data(), name.size());
+    }
+    // extensionsRequired is a hard requirement: the file is invalid without it.
+    for (const auto& name : asset.extensionsRequired)
+    {
+        if (!IsExtensionSupported(name) &&
+            std::none_of(m_UnsupportedExtensionNames.begin(), m_UnsupportedExtensionNames.end(),
+                         [&](const std::string& existing) { return existing == name.data(); }))
+            m_UnsupportedExtensionNames.emplace_back(name.data(), name.size());
+    }
+    m_HasUnsupportedExtensions = !m_UnsupportedExtensionNames.empty();
+
+    LoadMaterials(asset, filepath);
+
+    ParseSkins(asset);
+    ParseAnimations(asset);
+
+    size_t activeSceneIndex = asset.defaultScene.value_or(0);
+    if (!asset.scenes.empty() && activeSceneIndex < asset.scenes.size())
+    {
+        auto& scene = asset.scenes[activeSceneIndex];
+        for (auto& rootNodeIndex : scene.nodeIndices)
+        {
+            ProcessNode(asset, rootNodeIndex, glm::mat4{1.0f});
+        }
+    }
+
+    // Upload happens after the whole scene is walked. Doing it inline per node is
+    // what used to produce one duplicate vertex buffer per node; extracting and
+    // uploading once per glTF mesh is what fixes it.
+    for (auto& geom : m_Geometry)
+    {
+        ComputeBounds(geom);
+        UploadGeometry(geom);
+    }
+
+    if (m_HasUnsupportedExtensions)
+    {
+        for (const auto& name : m_UnsupportedExtensionNames)
+            UHE_CORE_WARN("glTF declares unimplemented extension '{0}' - shading may be wrong", name);
+    }
+
+    return true;
+}
+
+void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::path& filepath)
+{
     m_LoadedMaterials.resize(asset.materials.size());
+
     for (size_t i = 0; i < asset.materials.size(); ++i)
     {
         auto& gltfMaterial = asset.materials[i];
+
         const fastgltf::TextureInfo* albedoTextureInfo = nullptr;
         if (gltfMaterial.pbrData.baseColorTexture.has_value())
         {
@@ -100,9 +197,10 @@ bool Model::loadModel(const std::filesystem::path& filepath)
         auto loadTexture = [&](const fastgltf::TextureInfo* texInfo, size_t matIdx) -> Ref<Texture2D> {
             if (!texInfo) return nullptr;
             auto textureIndex = texInfo->textureIndex;
+            if (textureIndex >= asset.textures.size()) return nullptr;
             auto imageIndex = asset.textures[textureIndex].imageIndex;
             if (!imageIndex.has_value()) return nullptr;
-            
+
             auto& image = asset.images[imageIndex.value()];
             Ref<Texture2D> result = nullptr;
             std::visit(
@@ -132,6 +230,12 @@ bool Model::loadModel(const std::filesystem::path& filepath)
                                   },
                                   [&](const fastgltf::sources::BufferView& view)
                                   {
+                                      if (view.bufferViewIndex >= asset.bufferViews.size() ||
+                                          asset.bufferViews[view.bufferViewIndex].bufferIndex >= asset.buffers.size())
+                                      {
+                                          UHE_CORE_ERROR("BufferView for material {0} is out of range", matIdx);
+                                          return;
+                                      }
                                       auto& bufferView = asset.bufferViews[view.bufferViewIndex];
                                       auto& buffer = asset.buffers[bufferView.bufferIndex];
                                       std::visit(
@@ -173,265 +277,111 @@ bool Model::loadModel(const std::filesystem::path& filepath)
 
         m_LoadedMaterials[i].MetallicFactor = gltfMaterial.pbrData.metallicFactor;
         m_LoadedMaterials[i].RoughnessFactor = gltfMaterial.pbrData.roughnessFactor;
-        
+
         if (gltfMaterial.pbrData.metallicRoughnessTexture.has_value())
         {
             m_LoadedMaterials[i].MetallicRoughnessTexture = loadTexture(&gltfMaterial.pbrData.metallicRoughnessTexture.value(), i);
         }
     }
-
-    ParseSkins(asset);
-    ParseAnimations(asset);
-
-    size_t activeSceneIndex = asset.defaultScene.value_or(0);
-    if (!asset.scenes.empty() && activeSceneIndex < asset.scenes.size())
-    {
-        auto& scene = asset.scenes[activeSceneIndex];
-        for (auto& rootNodeIndex : scene.nodeIndices)
-        {
-            ProcessNode(asset, rootNodeIndex);
-        }
-    }
-    return true;
 }
 
-void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex)
+void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const glm::mat4& parentTransform)
 {
-    auto& node = asset.nodes[nodeIndex];
+    const auto& node = asset.nodes[nodeIndex];
+
+    // The transform contributed by every ancestor. Without accumulating this,
+    // every mesh in the file collapses onto the origin - the defect that made
+    // multi-node assets (foliage especially) render wrong.
+    const glm::mat4 worldTransform = parentTransform * NodeLocalTransform(node);
+
     if (node.meshIndex.has_value())
     {
-        ExtractMesh(asset, asset.meshes[node.meshIndex.value()]);
+        const size_t gltfMeshIndex = *node.meshIndex;
+
+        // Extract a given glTF mesh at most once, however many nodes use it.
+        auto [it, inserted] = m_GeometryCache.emplace(gltfMeshIndex, m_Geometry.size());
+        if (inserted)
+        {
+            ExtractGeometry(asset, gltfMeshIndex, m_Options);
+            it->second = m_Geometry.size() - 1;
+        }
+        const size_t geometryIndex = it->second;
+        const Geometry& geom = m_Geometry[geometryIndex];
+
+        Mesh mesh;
+        mesh.geometryIndex = geometryIndex;
+        mesh.nodeIndex = nodeIndex;
+        mesh.LocalTransform = worldTransform;
+
+        // Node name is what the hierarchy panel should show. The glTF mesh name is
+        // only a fallback, because every instance of one mesh shares it.
+        const std::string nodeName(node.name);
+        mesh.name = !nodeName.empty() ? nodeName : geom.name;
+
+        mesh.hasBounds = geom.hasBounds;
+        if (geom.hasBounds)
+        {
+            // Transform all 8 AABB corners: a rotated node's world bounds are not
+            // a transform of the local bounds, so min/max must be recomputed.
+            glm::vec3 worldMin(std::numeric_limits<f32>::max());
+            glm::vec3 worldMax(-std::numeric_limits<f32>::max());
+            for (int corner = 0; corner < 8; ++corner)
+            {
+                const glm::vec3 local((corner & 1) ? geom.boundsMax.x : geom.boundsMin.x,
+                                      (corner & 2) ? geom.boundsMax.y : geom.boundsMin.y,
+                                      (corner & 4) ? geom.boundsMax.z : geom.boundsMin.z);
+                // glm is column-major; vec4 * mat4 applies the transform.
+                const glm::vec3 world = glm::vec3(glm::vec4(local, 1.0f) * worldTransform);
+                worldMin = glm::min(worldMin, world);
+                worldMax = glm::max(worldMax, world);
+            }
+            mesh.boundsMin = worldMin;
+            mesh.boundsMax = worldMax;
+        }
+
+        for (const auto& srcPrim : geom.primitive)
+        {
+            Primitive prim;
+            prim.materialIndex = srcPrim.materialIndex;
+            prim.geometryIndex = geometryIndex;
+            // Borrow the handles; the geometry owns them and frees them once.
+            prim.usesSharedGeometry = true;
+            prim.VertexBuffer = srcPrim.VertexBuffer;
+            prim.IndexBuffer = srcPrim.IndexBuffer;
+            prim.IndexCount = srcPrim.IndexCount;
+            mesh.primitive.push_back(prim);
+        }
+
+        m_LoadedMeshes.push_back(std::move(mesh));
     }
+
     for (auto& childIndex : node.children)
     {
-        ProcessNode(asset, childIndex);
+        ProcessNode(asset, childIndex, worldTransform);
     }
 }
 
-void Model::ExtractMesh(const fastgltf::Asset& asset, const fastgltf::Mesh& gltfMesh)
+void Model::ComputeBounds(Geometry& geometry)
 {
-    Mesh outMesh;
-    outMesh.name = gltfMesh.name.empty() ? "Unnamed_Mesh" : std::string(gltfMesh.name);
+    glm::vec3 min(std::numeric_limits<f32>::max());
+    glm::vec3 max(-std::numeric_limits<f32>::max());
+    bool any = false;
 
-    for (auto& primitive : gltfMesh.primitives)
+    for (const auto& prim : geometry.primitive)
     {
-        Primitive outPrim;
-        outPrim.materialIndex = primitive.materialIndex.value_or(0);
-        const auto* posAttribute = primitive.findAttribute("POSITION");
-        if (posAttribute == primitive.attributes.end())
-            continue;
-
-        auto& posAccessor = asset.accessors[posAttribute->accessorIndex];
-        outPrim.vertices.resize(posAccessor.count);
-
-        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, posAccessor,
-                                                                  [&](fastgltf::math::fvec3 pos, size_t idx)
-                                                                  {
-                                                                      outPrim.vertices[idx].position =
-                                                                          glm::vec3(pos.x(), pos.y(), pos.z());
-                                                                      outPrim.vertices[idx].normal =
-                                                                          glm::vec3(0.0f, 1.0f, 0.0f); // Default
-                                                                      outPrim.vertices[idx].uv = glm::vec2(0.0f);
-                                                                  });
-
-        const auto* normalAttribute = primitive.findAttribute("NORMAL");
-        if (normalAttribute != primitive.attributes.end())
+        for (const auto& vertex : prim.vertices)
         {
-            auto& normalAccessor = asset.accessors[normalAttribute->accessorIndex];
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
-                asset, normalAccessor, [&](fastgltf::math::fvec3 norm, size_t idx)
-                { outPrim.vertices[idx].normal = glm::vec3(norm.x(), norm.y(), norm.z()); });
-        }
-
-        const auto* uvAttribute = primitive.findAttribute("TEXCOORD_0");
-        if (uvAttribute != primitive.attributes.end())
-        {
-            auto& uvAccessor = asset.accessors[uvAttribute->accessorIndex];
-
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec2>(
-                asset, uvAccessor,
-                [&](fastgltf::math::fvec2 uv, size_t idx) { outPrim.vertices[idx].uv = glm::vec2(uv.x(), 1.0f - uv.y()); });
-        }
-
-        const auto* jointsAttribute = primitive.findAttribute("JOINTS_0");
-        if (jointsAttribute != primitive.attributes.end())
-        {
-            auto& jointsAccessor = asset.accessors[jointsAttribute->accessorIndex];
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::uvec4>(
-                asset, jointsAccessor,
-                [&](fastgltf::math::uvec4 joints, size_t idx) { outPrim.vertices[idx].jointIndices = glm::ivec4(joints.x(), joints.y(), joints.z(), joints.w()); });
-        }
-
-        const auto* weightsAttribute = primitive.findAttribute("WEIGHTS_0");
-        if (weightsAttribute != primitive.attributes.end())
-        {
-            auto& weightsAccessor = asset.accessors[weightsAttribute->accessorIndex];
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
-                asset, weightsAccessor,
-                [&](fastgltf::math::fvec4 weights, size_t idx) { outPrim.vertices[idx].jointWeights = glm::vec4(weights.x(), weights.y(), weights.z(), weights.w()); });
-        }
-
-        if (primitive.indicesAccessor.has_value())
-        {
-            auto& indicesAccessor = asset.accessors[primitive.indicesAccessor.value()];
-            outPrim.indices.reserve(indicesAccessor.count);
-
-            fastgltf::iterateAccessor<u32>(asset, indicesAccessor,
-                                           [&](u32 indexValue) { outPrim.indices.push_back(indexValue); });
-        }
-
-        auto& device = Renderer::GetDevice();
-        auto& cmd = device.GetCurrentCommandBuffer();
-
-        // 1. Create and Upload Vertex Buffer
-        if (!outPrim.vertices.empty())
-        {
-            RHI::BufferDesc vbDesc{};
-            vbDesc.size = outPrim.vertices.size() * sizeof(Vertex);
-            vbDesc.usage = RHI::BufferUsage::Vertex;
-            vbDesc.hostVisible = true;
-            outPrim.VertexBuffer = device.CreateBuffer(vbDesc);
-            cmd.UpdateBuffer(outPrim.VertexBuffer, outPrim.vertices.data(), vbDesc.size);
-        }
-
-        // 2. Create and Upload Index Buffer
-        if (!outPrim.indices.empty())
-        {
-            outPrim.IndexCount = static_cast<uint32_t>(outPrim.indices.size());
-            RHI::BufferDesc ibDesc{};
-            ibDesc.size = outPrim.indices.size() * sizeof(u32);
-            ibDesc.usage = RHI::BufferUsage::Index;
-            ibDesc.hostVisible = true;
-            outPrim.IndexBuffer = device.CreateBuffer(ibDesc);
-            cmd.UpdateBuffer(outPrim.IndexBuffer, outPrim.indices.data(), ibDesc.size);
-        }
-
-        outMesh.primitive.push_back(std::move(outPrim));
-    }
-    m_LoadedMeshes.push_back(std::move(outMesh));
-}
-
-void Model::ParseSkins(const fastgltf::Asset& asset)
-{
-    if (asset.skins.empty())
-        return;
-
-    // For now, only parse the first skin
-    const auto& skin = asset.skins[0];
-    
-    m_Skeleton.Bones.resize(asset.nodes.size()); // Map glTF nodes to bones directly for simplicity
-    m_Skeleton.RootBoneID = skin.skeleton.value_or(skin.joints.empty() ? -1 : skin.joints[0]);
-
-    // 1. Build hierarchy mapping from asset.nodes
-    for (size_t i = 0; i < asset.nodes.size(); ++i)
-    {
-        const auto& node = asset.nodes[i];
-        m_Skeleton.Bones[i].ID = i;
-        m_Skeleton.Bones[i].Name = node.name.empty() ? "Bone_" + std::to_string(i) : std::string(node.name);
-        
-        // Extract local transform
-        glm::mat4 localTransform{1.0f};
-        // Actually fastgltf provides a helper or we can parse it
-        std::visit(fastgltf::visitor{
-            [&](const fastgltf::math::fmat4x4& matrix) {
-                memcpy(&localTransform, matrix.data(), sizeof(glm::mat4));
-            },
-            [&](const fastgltf::TRS& trs) {
-                glm::vec3 T(trs.translation[0], trs.translation[1], trs.translation[2]);
-                glm::quat R(trs.rotation[3], trs.rotation[0], trs.rotation[1], trs.rotation[2]); // w, x, y, z
-                glm::vec3 S(trs.scale[0], trs.scale[1], trs.scale[2]);
-                localTransform = glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(R) * glm::scale(glm::mat4(1.0f), S);
-            }
-        }, node.transform);
-
-        m_Skeleton.Bones[i].LocalTransform = localTransform;
-
-        // Set parent
-        for (auto childIdx : node.children)
-        {
-            m_Skeleton.Bones[childIdx].ParentID = i;
+            min = glm::min(min, vertex.position);
+            max = glm::max(max, vertex.position);
+            any = true;
         }
     }
 
-    m_Skeleton.JointNodes.assign(skin.joints.begin(), skin.joints.end());
-
-    // 2. Extract Inverse Bind Matrices
-    if (skin.inverseBindMatrices.has_value())
+    if (any)
     {
-        auto& ibmAccessor = asset.accessors[skin.inverseBindMatrices.value()];
-        size_t jointIdx = 0;
-        fastgltf::iterateAccessor<fastgltf::math::fmat4x4>(asset, ibmAccessor, [&](const fastgltf::math::fmat4x4& matrix) {
-            if (jointIdx < skin.joints.size()) {
-                size_t nodeIdx = skin.joints[jointIdx];
-                memcpy(&m_Skeleton.Bones[nodeIdx].InverseBindMatrix, matrix.data(), sizeof(glm::mat4));
-            }
-            jointIdx++;
-        });
-    }
-}
-
-void Model::ParseAnimations(const fastgltf::Asset& asset)
-{
-    if (asset.animations.empty())
-        return;
-
-    for (const auto& gltfAnim : asset.animations)
-    {
-        AnimationClip clip;
-        clip.Name = gltfAnim.name.empty() ? "Anim_" + std::to_string(m_Animations.size()) : std::string(gltfAnim.name);
-        
-        for (const auto& channel : gltfAnim.channels)
-        {
-            if (!channel.nodeIndex.has_value()) continue;
-            int targetNode = channel.nodeIndex.value();
-            
-            const auto& sampler = gltfAnim.samplers[channel.samplerIndex];
-            
-            // Extract times
-            std::vector<float> times;
-            auto& timeAccessor = asset.accessors[sampler.inputAccessor];
-            fastgltf::iterateAccessor<float>(asset, timeAccessor, [&](float t) {
-                times.push_back(t);
-                clip.Duration = std::max(clip.Duration, t);
-            });
-            
-            // Extract values
-            auto& valueAccessor = asset.accessors[sampler.outputAccessor];
-            
-            if (channel.path == fastgltf::AnimationPath::Translation)
-            {
-                VectorTrack track;
-                track.TargetBoneID = targetNode;
-                size_t idx = 0;
-                fastgltf::iterateAccessor<fastgltf::math::fvec3>(asset, valueAccessor, [&](fastgltf::math::fvec3 v) {
-                    track.Keyframes.push_back({times[idx++], glm::vec3(v.x(), v.y(), v.z())});
-                });
-                clip.PositionTracks.push_back(track);
-            }
-            else if (channel.path == fastgltf::AnimationPath::Rotation)
-            {
-                QuaternionTrack track;
-                track.TargetBoneID = targetNode;
-                size_t idx = 0;
-                fastgltf::iterateAccessor<fastgltf::math::fvec4>(asset, valueAccessor, [&](fastgltf::math::fvec4 v) {
-                    // glTF rotation is x,y,z,w. GLM quat constructor takes w,x,y,z.
-                    track.Keyframes.push_back({times[idx++], glm::normalize(glm::quat(v.w(), v.x(), v.y(), v.z()))});
-                });
-                clip.RotationTracks.push_back(track);
-            }
-            else if (channel.path == fastgltf::AnimationPath::Scale)
-            {
-                VectorTrack track;
-                track.TargetBoneID = targetNode;
-                size_t idx = 0;
-                fastgltf::iterateAccessor<fastgltf::math::fvec3>(asset, valueAccessor, [&](fastgltf::math::fvec3 v) {
-                    track.Keyframes.push_back({times[idx++], glm::vec3(v.x(), v.y(), v.z())});
-                });
-                clip.ScaleTracks.push_back(track);
-            }
-        }
-        
-        m_Animations.push_back(clip);
+        geometry.boundsMin = min;
+        geometry.boundsMax = max;
+        geometry.hasBounds = true;
     }
 }
 

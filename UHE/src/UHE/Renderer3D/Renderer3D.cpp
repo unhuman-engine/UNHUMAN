@@ -261,6 +261,13 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
 
     for (const auto& mesh : model.GetMesh())
     {
+        // The glTF node hierarchy is applied here, not baked into vertices: the
+        // entity transform places the model in the world, and mesh.LocalTransform
+        // places this node within it. Keeping it out of the vertices means
+        // skinning still works (bone matrices multiply on top) and the loader
+        // never has to rewrite a buffer for a transform change.
+        pc.model = transform * mesh.LocalTransform;
+
         for (const auto& prim : mesh.primitive)
         {
             if (!prim.VertexBuffer || !prim.IndexBuffer)
