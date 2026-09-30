@@ -15,6 +15,10 @@ struct Renderer3DData
     RHI::ShaderHandle VertexShader;
     RHI::ShaderHandle FragmentShader;
     RHI::PipelineHandle ModelPipeline;
+    // Same shaders and layout, cull mode None. Cull mode is baked into the
+    // pipeline, so a doubleSided material cannot be drawn with ModelPipeline -
+    // it needs this variant bound instead.
+    RHI::PipelineHandle ModelPipelineDoubleSided;
 
     RHI::ShaderHandle GridVertexShader;
     RHI::ShaderHandle GridFragmentShader;
@@ -65,13 +69,19 @@ void Renderer3D::Init()
     RHI::GraphicsPipelineDesc pipeDesc{};
     pipeDesc.vertexShader = s_Data3D.VertexShader;
     pipeDesc.fragmentShader = s_Data3D.FragmentShader;
+    // Location 5 (a_Tangent) must match VertexInput in Basic3D.slang.
     pipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"},
                              {RHI::ShaderDataType::Float3, "a_Normal"},
                              {RHI::ShaderDataType::Float2, "a_TexCoord"},
                              {RHI::ShaderDataType::Int4, "a_Joints"},
-                             {RHI::ShaderDataType::Float4, "a_Weights"}};
+                             {RHI::ShaderDataType::Float4, "a_Weights"},
+                             {RHI::ShaderDataType::Float4, "a_Tangent"}};
 
-    pipeDesc.pushConstantSize = 192;
+    // 256 bytes, which is EXACTLY maxPushConstantsSize on this device (vulkaninfo,
+    // GFX9). There is no headroom left: a fourth texture map or any new material
+    // field now requires moving material parameters into a per-material descriptor
+    // rather than another push-constant slot.
+    pipeDesc.pushConstantSize = 256;
     pipeDesc.blendMode = RHI::BlendMode::Alpha;
     pipeDesc.depthTest = true;
     pipeDesc.depthWrite = true;
@@ -81,6 +91,12 @@ void Renderer3D::Init()
     pipeDesc.colorFormats[1] = RHI::TextureFormat::R32_SINT;
 
     s_Data3D.ModelPipeline = device.CreateGraphicsPipeline(pipeDesc);
+
+    // Double-sided variant: identical except culling, selected per material.
+    RHI::GraphicsPipelineDesc doubleSidedDesc = pipeDesc;
+    doubleSidedDesc.cullMode = RHI::CullMode::None;
+    doubleSidedDesc.debugName = "ModelPipeline.DoubleSided";
+    s_Data3D.ModelPipelineDoubleSided = device.CreateGraphicsPipeline(doubleSidedDesc);
 
     // Initialize Grid Pipeline
     std::string gridShaderPath = (FileSystem::Get().GetRootPath() / "assets/shaders/Grid.slang").string();
@@ -141,6 +157,7 @@ void Renderer3D::Shutdown()
 {
     auto& device = Renderer::GetDevice();
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipeline);
+    device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineDoubleSided);
     device.DestroyShader(s_Data3D.VertexShader);
     device.DestroyShader(s_Data3D.FragmentShader);
 
@@ -208,8 +225,9 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
 {
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
-    cmd.BindPipeline(s_Data3D.ModelPipeline);
-
+    // MUST stay byte-identical to PushConstants in Basic3D.slang. Slang and C++
+    // have different default alignments for a trailing float3, so the explicit
+    // padding is what keeps emissiveFactor at the same offset in both.
     struct PushConstants
     {
         glm::mat4 viewProj;
@@ -225,9 +243,29 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
         float roughnessFactor;
         int boneBufferIndex;
         int boneOffset;
-        int padding1;
-        int padding2;
+
+        int normalTextureSlot;
+        int occlusionTextureSlot;
+        int emissiveTextureSlot;
+        float normalScale;
+        float occlusionStrength;
+        float alphaCutoff;
+        int alphaMode;
+        // 12 bytes of explicit padding, NOT an assumption that the compiler will
+        // insert it. Slang lays this block out in std430: alphaMode ends at 212,
+        // and baseColorFactor must sit on a 16-byte boundary, so it starts at
+        // 224. C++ would pack it straight after alphaMode at 212 and disagree by
+        // 12 bytes - which reads as plausible garbage in every material field
+        // rather than as a validation error. The matching static_assert below
+        // pins both offsets against the compiled SPIR-V layout.
+        float padding[3];
+        glm::vec4 baseColorFactor;
+        glm::vec4 emissiveFactor;
     } pc;
+
+    static_assert(sizeof(PushConstants) == 256, "PushConstants must stay byte-identical to the Slang struct");
+    static_assert(offsetof(PushConstants, baseColorFactor) == 224, "baseColorFactor offset must match std430");
+    static_assert(offsetof(PushConstants, emissiveFactor) == 240, "emissiveFactor offset must match std430");
     pc.viewProj = s_Data3D.ViewProjection;
     pc.model = transform;
     pc.cameraPos = glm::vec4(s_Data3D.CameraPosition, 1.0f);
@@ -241,6 +279,15 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
     pc.roughnessFactor = 1.0f;
     pc.boneBufferIndex = -1;
     pc.boneOffset = -1;
+    pc.normalTextureSlot = -1;
+    pc.occlusionTextureSlot = -1;
+    pc.emissiveTextureSlot = -1;
+    pc.normalScale = 1.0f;
+    pc.occlusionStrength = 1.0f;
+    pc.alphaCutoff = 0.5f;
+    pc.alphaMode = 0;
+    pc.baseColorFactor = glm::vec4(1.0f);
+    pc.emissiveFactor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
     if (animator && animator->HasAnimation())
     {
@@ -273,30 +320,66 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
             if (!prim.VertexBuffer || !prim.IndexBuffer)
                 continue;
 
-            int textureSlot = s_Data3D.WhiteTexture->GetTextureIndex(); // Default to white texture
+            // glTF default material when the index is absent or out of range:
+            // white base, fully rough, non-metallic - the same values the loader
+            // uses as struct defaults.
+            int textureSlot = s_Data3D.WhiteTexture->GetTextureIndex();
             int mrTextureSlot = -1;
-            float metallicFactor = 0.0f;
-            float roughnessFactor = 0.4f;
+            int normalSlot = -1;
+            int occlusionSlot = -1;
+            int emissiveSlot = -1;
+            float metallicFactor = 1.0f;
+            float roughnessFactor = 1.0f;
+            float normalScale = 1.0f;
+            float occlusionStrength = 1.0f;
+            float alphaCutoff = 0.5f;
+            int alphaMode = 0;
+            glm::vec4 baseColorFactor(1.0f);
+            glm::vec4 emissiveFactor(0.0f, 0.0f, 0.0f, 0.0f);
+            bool doubleSided = false;
 
             if (prim.materialIndex < model.GetMaterials().size())
             {
-                auto& material = model.GetMaterials()[prim.materialIndex];
+                const auto& material = model.GetMaterials()[prim.materialIndex];
                 if (material.AlbedoTexture)
-                {
                     textureSlot = material.AlbedoTexture->GetTextureIndex();
-                }
                 if (material.MetallicRoughnessTexture)
-                {
                     mrTextureSlot = material.MetallicRoughnessTexture->GetTextureIndex();
-                }
+                if (material.NormalTexture)
+                    normalSlot = material.NormalTexture->GetTextureIndex();
+                if (material.OcclusionTexture)
+                    occlusionSlot = material.OcclusionTexture->GetTextureIndex();
+                if (material.EmissiveTexture)
+                    emissiveSlot = material.EmissiveTexture->GetTextureIndex();
+
                 metallicFactor = material.MetallicFactor;
                 roughnessFactor = material.RoughnessFactor;
+                normalScale = material.NormalScale;
+                occlusionStrength = material.OcclusionStrength;
+                alphaCutoff = material.AlphaCutoff;
+                alphaMode = static_cast<int>(material.Alpha);
+                baseColorFactor = material.BaseColorFactor;
+                emissiveFactor = glm::vec4(material.EmissiveFactor, 0.0f);
+                doubleSided = material.DoubleSided;
             }
+
+            // Cull mode lives in the pipeline, so a doubleSided material needs the
+            // variant bound rather than a state change.
+            cmd.BindPipeline(doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline);
 
             pc.textureSlot = textureSlot;
             pc.mrTextureSlot = mrTextureSlot;
             pc.metallicFactor = metallicFactor;
             pc.roughnessFactor = roughnessFactor;
+            pc.normalTextureSlot = normalSlot;
+            pc.occlusionTextureSlot = occlusionSlot;
+            pc.emissiveTextureSlot = emissiveSlot;
+            pc.normalScale = normalScale;
+            pc.occlusionStrength = occlusionStrength;
+            pc.alphaCutoff = alphaCutoff;
+            pc.alphaMode = alphaMode;
+            pc.baseColorFactor = baseColorFactor;
+            pc.emissiveFactor = emissiveFactor;
             cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
 
             cmd.BindVertexBuffer(prim.VertexBuffer);

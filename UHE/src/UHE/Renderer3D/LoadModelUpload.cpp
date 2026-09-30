@@ -12,7 +12,7 @@
 namespace UHE::RD3d
 {
 
-void Model::UploadGeometry(Geometry& geometry)
+void Model::UploadGeometry(Geometry& geometry, size_t geometryIndex)
 {
     if (geometry.primitive.empty())
         return;
@@ -42,6 +42,26 @@ void Model::UploadGeometry(Geometry& geometry)
             ibDesc.hostVisible = true;
             prim.IndexBuffer = device.CreateBuffer(ibDesc);
             cmd.UpdateBuffer(prim.IndexBuffer, prim.indices.data(), ibDesc.size);
+        }
+    }
+
+    // Hand the GPU handles to every Mesh that references this geometry.
+    //
+    // SubmitModel walks Model::GetMesh(), not GetGeometry(): the node instances
+    // carry LocalTransform and are what actually gets drawn. Without this
+    // propagation every Mesh::primitive keeps a null VertexBuffer, the draw
+    // guard skips every primitive, and the model renders nothing - silently,
+    // with no validation error to hint at why.
+    for (auto& mesh : m_LoadedMeshes)
+    {
+        if (mesh.geometryIndex != geometryIndex)
+            continue;
+
+        for (size_t i = 0; i < mesh.primitive.size() && i < geometry.primitive.size(); ++i)
+        {
+            mesh.primitive[i].VertexBuffer = geometry.primitive[i].VertexBuffer;
+            mesh.primitive[i].IndexBuffer = geometry.primitive[i].IndexBuffer;
+            mesh.primitive[i].IndexCount = geometry.primitive[i].IndexCount;
         }
     }
 }

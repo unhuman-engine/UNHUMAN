@@ -161,10 +161,10 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
     // Upload happens after the whole scene is walked. Doing it inline per node is
     // what used to produce one duplicate vertex buffer per node; extracting and
     // uploading once per glTF mesh is what fixes it.
-    for (auto& geom : m_Geometry)
+    for (size_t i = 0; i < m_Geometry.size(); ++i)
     {
-        ComputeBounds(geom);
-        UploadGeometry(geom);
+        ComputeBounds(m_Geometry[i]);
+        UploadGeometry(m_Geometry[i], i);
     }
 
     if (m_HasUnsupportedExtensions)
@@ -278,10 +278,74 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         m_LoadedMaterials[i].MetallicFactor = gltfMaterial.pbrData.metallicFactor;
         m_LoadedMaterials[i].RoughnessFactor = gltfMaterial.pbrData.roughnessFactor;
 
+        // fastgltf already applies the spec defaults for these: baseColorFactor
+        // defaults to (1,1,1,1) and emissiveFactor to (0,0,0). Reading them
+        // directly is correct - guarding with has_value() would be a type error,
+        // and writing our own defaults would only risk disagreeing with fastgltf.
+        {
+            const auto& f = gltfMaterial.pbrData.baseColorFactor;
+            m_LoadedMaterials[i].BaseColorFactor = glm::vec4(f[0], f[1], f[2], f[3]);
+        }
+
         if (gltfMaterial.pbrData.metallicRoughnessTexture.has_value())
         {
             m_LoadedMaterials[i].MetallicRoughnessTexture = loadTexture(&gltfMaterial.pbrData.metallicRoughnessTexture.value(), i);
         }
+
+        // Normal / occlusion / emissive. fastgltf exposes each as a TextureInfo
+        // carrying both the texture index and its own scale/strength scalar, so
+        // the map and the scalar come from the same struct.
+        if (gltfMaterial.normalTexture.has_value())
+        {
+            const auto& n = gltfMaterial.normalTexture.value();
+            m_LoadedMaterials[i].NormalTexture = loadTexture(&n, i);
+            m_LoadedMaterials[i].NormalScale = n.scale;
+        }
+
+        if (gltfMaterial.occlusionTexture.has_value())
+        {
+            const auto& o = gltfMaterial.occlusionTexture.value();
+            m_LoadedMaterials[i].OcclusionTexture = loadTexture(&o, i);
+            m_LoadedMaterials[i].OcclusionStrength = o.strength;
+        }
+
+        if (gltfMaterial.emissiveTexture.has_value())
+        {
+            m_LoadedMaterials[i].EmissiveTexture = loadTexture(&gltfMaterial.emissiveTexture.value(), i);
+        }
+
+        // emissiveFactor defaults to BLACK per spec, which fastgltf applies for
+        // us. Defaulting this to white would make every unlit surface glow.
+        {
+            const auto& e = gltfMaterial.emissiveFactor;
+            m_LoadedMaterials[i].EmissiveFactor = glm::vec3(e[0], e[1], e[2]);
+        }
+
+        // alphaMode: OPAQUE (spec default) / MASK / BLEND.
+        switch (gltfMaterial.alphaMode)
+        {
+            case fastgltf::AlphaMode::Mask:
+                m_LoadedMaterials[i].Alpha = AlphaMode::Mask;
+                break;
+            case fastgltf::AlphaMode::Blend:
+                m_LoadedMaterials[i].Alpha = AlphaMode::Blend;
+                m_HasTransparentMaterials = true;
+                break;
+            case fastgltf::AlphaMode::Opaque:
+            default:
+                m_LoadedMaterials[i].Alpha = AlphaMode::Opaque;
+                break;
+        }
+
+        // alphaCutoff only applies to MASK, and defaults to 0.5.
+        m_LoadedMaterials[i].AlphaCutoff = gltfMaterial.alphaCutoff;
+        m_LoadedMaterials[i].DoubleSided = gltfMaterial.doubleSided;
+    }
+
+    if (m_HasTransparentMaterials)
+    {
+        UHE_CORE_WARN("glTF uses alphaMode BLEND - transparent materials draw in submission order until a "
+                      "sorted transparent pass exists (roadmap M3 step 4)");
     }
 }
 

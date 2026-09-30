@@ -141,6 +141,17 @@ enum class BlendMode : u8
     Additive
 };
 
+// Face culling for the rasterizer. Vulkan bakes this into
+// VkPipelineRasterizationStateCreateInfo rather than exposing it as dynamic
+// state, so a material with doubleSided=true needs a separate pipeline variant
+// selected at draw time - it cannot be switched per draw.
+enum class CullMode : u8
+{
+    None,        // render both faces
+    Back,        // cull back faces (the usual default)
+    Front,       // cull front faces
+};
+
 // ─── Descriptors ────────────────────────────────────────────────
 
 struct BufferDesc
@@ -353,6 +364,10 @@ struct GraphicsPipelineDesc
     u32 colorAttachmentCount = 1;
     TextureFormat depthFormat = TextureFormat::D24_UNORM_S8;
     BlendMode blendMode = BlendMode::None;
+    // Default None, not Back: culling was previously hardcoded to none for every
+    // pipeline, so defaulting to Back would silently change how existing content
+    // renders. Each pipeline opts in deliberately.
+    CullMode cullMode = CullMode::None;
     bool depthTest = true;
     bool depthWrite = true;
     u32 pushConstantSize = 0;

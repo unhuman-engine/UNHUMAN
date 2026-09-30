@@ -56,10 +56,10 @@ It is a long-running project — started years ago, rewritten more than once, ac
 | Vulkan backend | Works on GFX9; descriptor backend modernised; sync2 path plus a 1.1 fallback in progress (PR #27) |
 | JobSystem + TaskGraph | Implemented and documented |
 | Rendering | Deferred-ish single-pass renderer, PBR-ish shading, MSDF text |
-| glTF | Partial: baseColor + metallicRoughness only — foliage/multi-node models render wrong (#29) |
+| glTF | Node hierarchy, shared-mesh instancing, non-indexed geometry and meshoptimizer pass all land (#29 tier 0 + most of tier 1). Still open: `COLOR_0` vertex colour, `KHR_texture_transform`, sampler wrap/filter on load, mipmaps on the model path, `alphaMode: BLEND` ordering |
 | Audio | miniaudio integration landed; assets/voices/buses not designed in yet |
 | Assets | Path-based, no registry, `AssestsManager` naming debt |
-| Render graph | Designed in detail, empty stub in the tree |
+| Render graph | Compiles, resolves and executes every frame in `VulkanDevice::EndFrameGraph()`; carries the ImGui pass only. Scene rendering still records via immediate submit — plan at `docs/plans/PLAN-render-graph-scene-pass.md` |
 | CI | Builds + headless Lavapipe smoke + sanitizer workflows; no in-tree unit tests |
 | Editor | ImGui editor, docking, gizmos, drag-drop; entity hierarchy is single-parent only (#17) |
 

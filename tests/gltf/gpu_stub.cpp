@@ -41,11 +41,39 @@ Ref<Texture2D> Texture2D::CreateFromMemory(const void* data, size_t size)
 namespace UHE::RD3d
 {
 
-// The real implementations live in LoadModelUpload.cpp and create Vulkan
-// buffers. The harness never uploads, so these are inert.
-void Model::UploadGeometry(Geometry& geometry)
+// The real implementation creates Vulkan buffers; the harness has no device, so
+// this emulates upload by marking the owning Geometry's primitives as uploaded.
+//
+// Emulating rather than stubbing out is the point: the loader's scene walk copies
+// GPU handles into the per-node Mesh entries BEFORE any upload runs, so those
+// copies are all null. The real code closes that gap after upload; a stub that
+// did nothing here would let that ordering bug pass 60 checks while the editor
+// silently draws nothing.
+void Model::UploadGeometry(Geometry& geometry, size_t geometryIndex)
 {
-    std::printf("STUB: Model::UploadGeometry() called - harness expects no GPU upload\n");
+    for (auto& prim : geometry.primitive)
+    {
+        if (prim.vertices.empty())
+            continue;
+        // Non-null handles stand in for Vulkan BufferHandle values.
+        prim.VertexBuffer = reinterpret_cast<RHI::BufferHandle>(0x1);
+        prim.IndexCount = static_cast<u32>(prim.indices.size());
+        if (!prim.indices.empty())
+            prim.IndexBuffer = reinterpret_cast<RHI::BufferHandle>(0x2);
+    }
+
+    // Same propagation the real upload performs.
+    for (auto& mesh : m_LoadedMeshes)
+    {
+        if (mesh.geometryIndex != geometryIndex)
+            continue;
+        for (size_t i = 0; i < mesh.primitive.size() && i < geometry.primitive.size(); ++i)
+        {
+            mesh.primitive[i].VertexBuffer = geometry.primitive[i].VertexBuffer;
+            mesh.primitive[i].IndexBuffer = geometry.primitive[i].IndexBuffer;
+            mesh.primitive[i].IndexCount = geometry.primitive[i].IndexCount;
+        }
+    }
 }
 
 void Model::ReleaseGeometryBuffers(std::vector<Geometry>& geometry)

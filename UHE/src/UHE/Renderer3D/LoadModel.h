@@ -18,16 +18,52 @@ struct Vertex
     glm::vec3 position;
     glm::vec3 normal;
     glm::vec2 uv;
+    // xyz = tangent, w = handedness (+1/-1). Required for normal mapping.
+    glm::vec4 tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
     glm::ivec4 jointIndices = glm::ivec4(0);
     glm::vec4 jointWeights = glm::vec4(0.0f);
+};
+
+// How a material's alpha is interpreted. glTF alphaMode.
+enum class AlphaMode : u32
+{
+    Opaque = 0,  // alpha ignored
+    Mask = 1,    // fragment discarded below alphaCutoff
+    Blend = 2,   // alpha blended (needs sorted transparent pass - not implemented)
 };
 
 struct Material
 {
     Ref<Texture2D> AlbedoTexture = nullptr;
     Ref<Texture2D> MetallicRoughnessTexture = nullptr;
+    Ref<Texture2D> NormalTexture = nullptr;
+    Ref<Texture2D> OcclusionTexture = nullptr;
+    Ref<Texture2D> EmissiveTexture = nullptr;
+
+    // baseColorFactor. glTF defaults to opaque white (1,1,1,1).
+    glm::vec4 BaseColorFactor = glm::vec4(1.0f);
+
     float MetallicFactor = 1.0f;
     float RoughnessFactor = 1.0f;
+
+    // normalTexture.scale defaults to 1.0, NOT 0.0 - a zero default silently
+    // disables every normal map in the scene.
+    float NormalScale = 1.0f;
+
+    // occlusionTexture.strength defaults to 1.0.
+    float OcclusionStrength = 1.0f;
+
+    // emissiveFactor defaults to BLACK (0,0,0), not white. Defaulting to 1.0
+    // here makes every unlit emissive surface glow.
+    glm::vec3 EmissiveFactor = glm::vec3(0.0f);
+
+    AlphaMode Alpha = AlphaMode::Opaque;
+    // alphaCutoff defaults to 0.5 per spec.
+    float AlphaCutoff = 0.5f;
+
+    // Controls pipeline cull mode. Cull mode is baked into the pipeline, so this
+    // selects between two pre-built pipeline variants rather than a dynamic state.
+    bool DoubleSided = false;
 };
 
 // One drawable range over a geometry buffer.
@@ -113,11 +149,13 @@ struct ModelLoadOptions
     // different joints destroys the skinning.
     bool mergeVertices = true;
 
-    // Generate a tangent frame for primitives carrying no TANGENT attribute.
-    // Must run BEFORE vertex merging so UV-seam vertices are not merged across
-    // the seam. Off by default: the vertex layout has no tangent attribute yet,
-    // so the result is computed and discarded until the material work lands.
-    bool generateTangents = false;
+    // Generate a tangent frame for primitives that carry no TANGENT attribute.
+    //
+    // Must run BEFORE vertex merging: merging hashes every byte of a vertex, so
+    // seam vertices that differ only in UV would collapse into one, and the
+    // tangent frame at that vertex would then be meaningless. The loader
+    // enforces this ordering internally regardless of the values here.
+    bool generateTangents = true;
 };
 
 struct UHE_API Model
@@ -134,8 +172,14 @@ struct UHE_API Model
     const std::vector<Material>& GetMaterials() const { return m_LoadedMaterials; }
     const std::vector<Geometry>& GetGeometry() const { return m_Geometry; }
 
+    // True when any material in the file uses alphaMode BLEND. Transparent
+    // materials need a depth-sorted pass, which does not exist yet (roadmap M3
+    // step 4), so the renderer can warn instead of silently drawing them in
+    // submission order.
+    bool HasTransparentMaterials() const { return m_HasTransparentMaterials; }
+
     // True when the file declared an extension the loader does not implement, so
-    // the asset renders with silently wrong shading instead of failing loudly.
+    // the asset renders with subtly wrong shading instead of failing loudly.
     bool HasUnsupportedExtensions() const { return m_HasUnsupportedExtensions; }
     const std::vector<std::string>& GetUnsupportedExtensionNames() const { return m_UnsupportedExtensionNames; }
 
@@ -151,7 +195,7 @@ private:
     void ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, const ModelLoadOptions& options);
 
     // Implemented in LoadModelUpload.cpp - the only place that creates GPU buffers.
-    void UploadGeometry(Geometry& geometry);
+    void UploadGeometry(Geometry& geometry, size_t geometryIndex);
     void ReleaseGeometryBuffers(std::vector<Geometry>& geometry);
 
     // Implemented in LoadModelAnimation.cpp.
@@ -175,6 +219,7 @@ private:
 
     std::vector<std::string> m_UnsupportedExtensionNames;
     bool m_HasUnsupportedExtensions = false;
+    bool m_HasTransparentMaterials = false;
 
     Skeleton m_Skeleton;
     std::vector<AnimationClip> m_Animations;

@@ -5,6 +5,9 @@ struct VertexInput {
     [[vk::location(2)]] float2 a_TexCoord : TEXCOORD;
     [[vk::location(3)]] int4 a_Joints : JOINTS;
     [[vk::location(4)]] float4 a_Weights : WEIGHTS;
+    // xyz = tangent, w = handedness sign. Added for normal mapping; the loader
+    // generates this per-corner and splits seam vertices so w is meaningful.
+    [[vk::location(5)]] float4 a_Tangent : TANGENT;
 };
 
 struct VertexOutput {
@@ -12,6 +15,8 @@ struct VertexOutput {
     [[vk::location(0)]] float3 v_Normal;
     [[vk::location(1)]] float2 v_TexCoord;
     [[vk::location(2)]] float3 v_WorldPos;
+    [[vk::location(3)]] float3 v_Tangent;
+    [[vk::location(4)]] float3 v_Bitangent;
 };
 
 struct PushConstants {
@@ -28,8 +33,21 @@ struct PushConstants {
     float roughnessFactor;
     int boneBufferIndex;
     int boneOffset;
-    int padding1;
-    int padding2;
+
+    // Material. Total size is 232 bytes against a device limit of 256
+    // (maxPushConstantsSize on GFX9), so this is close to the ceiling: a fourth
+    // texture map needs a per-material descriptor, not another slot here.
+    int normalTextureSlot;       // -1 when absent
+    int occlusionTextureSlot;    // -1 when absent
+    int emissiveTextureSlot;     // -1 when absent
+    float normalScale;
+    float occlusionStrength;
+    float alphaCutoff;
+    int alphaMode;               // 0 opaque, 1 mask, 2 blend
+    float4 baseColorFactor;
+    // float4, not float3, to match the C++ PushConstants layout exactly: Slang
+    // and glm disagree on 3-component vector packing. .rgb is used in the shader.
+    float4 emissiveFactor;
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc;
@@ -75,7 +93,14 @@ VertexOutput vertexMain(VertexInput input) {
     output.v_WorldPos = worldPos.xyz;
     output.v_Normal = normalize(mul((float3x3)pc.model, localNormal));
     output.v_TexCoord = input.a_TexCoord;
-    
+
+    // Tangent frame in world space. The bitangent's handedness comes from the
+    // loader-generated w component, which flips on UV-mirrored seams; without it
+    // normal maps light the wrong way on half the surface.
+    float3 worldTangent = mul((float3x3)pc.model, input.a_Tangent.xyz);
+    output.v_Tangent = normalize(worldTangent);
+    output.v_Bitangent = normalize(cross(output.v_Normal, output.v_Tangent) * input.a_Tangent.w);
+
     output.location = mul(pc.viewProjection, worldPos);
     return output;
 }
@@ -85,12 +110,35 @@ FragmentOutput fragmentMain(VertexOutput input) {
     FragmentOutput output;
     
     float4 texColor = u_Textures[pc.textureSlot].Sample(input.v_TexCoord);
-    
-    float3 finalColor = texColor.rgb;
-    
+
+    // baseColorFactor multiplies the base colour texture; both default to 1.
+    float4 baseColor = texColor * pc.baseColorFactor;
+
+    // Alpha MASK: discard below the cutoff. BLEND has no sorted pass yet, so it
+    // falls through to normal blending and the loader has already warned.
+    if (pc.alphaMode == 1) {
+        if (baseColor.a < pc.alphaCutoff) {
+            discard;
+        }
+    }
+
+    float3 finalColor = baseColor.rgb;
+
     if (pc.enableLighting == 1) {
         float3 litColor = float3(0.0);
         float3 normal = normalize(input.v_Normal);
+
+        // Normal mapping in tangent space. glTF stores normals in [-1,1] and
+        // samples them from a texture, hence the *2-1 on read.
+        if (pc.normalTextureSlot >= 0) {
+            float3 tangentNormal = u_Textures[pc.normalTextureSlot].Sample(input.v_TexCoord).rgb * 2.0 - 1.0;
+            tangentNormal.xy *= pc.normalScale;
+            normal = normalize(
+                tangentNormal.x * input.v_Tangent +
+                tangentNormal.y * input.v_Bitangent +
+                tangentNormal.z * normal
+            );
+        }
         float3 V = normalize(pc.cameraPos.xyz - input.v_WorldPos);
         
         // Use material properties and texture
@@ -110,7 +158,7 @@ FragmentOutput fragmentMain(VertexOutput input) {
         metallic = clamp(metallic, 0.0, 0.99);
         
         float3 F0 = float3(0.04);
-        F0 = lerp(F0, texColor.rgb, metallic);
+        F0 = lerp(F0, baseColor.rgb, metallic);
         
         float PI = 3.14159265359;
         float3 Lo = float3(0.0);
@@ -177,12 +225,32 @@ FragmentOutput fragmentMain(VertexOutput input) {
             kD *= 1.0 - metallic;
             
             // Add lighting
-            Lo += (kD * texColor.rgb / PI + specular) * radiance * NdotL;
+            Lo += (kD * baseColor.rgb / PI + specular) * radiance * NdotL;
         }
         
+        // Occlusion is a multiplier on the ambient/diffuse term only; glTF
+        // defines it as cavity shading, not as a shadow.
+        if (pc.occlusionTextureSlot >= 0) {
+            float ao = u_Textures[pc.occlusionTextureSlot].Sample(input.v_TexCoord).r;
+            // lerp, not mix: Slang follows HLSL, where mix is not defined.
+            // Occlusion defaults to a strength of 1.0, which lerps to the full
+            // sampled value rather than washing the ambient term out.
+            ao = lerp(1.0, ao, pc.occlusionStrength);
+            Lo *= ao;
+        }
+
         // Boost ambient a bit so dark sides are visible
-        float3 ambient = float3(0.08) * texColor.rgb; 
+        float3 ambient = float3(0.08) * baseColor.rgb;
         litColor = ambient + Lo;
+
+        // Emissive is additive and unlit, so it is added after tonemapping of the
+        // lit term. emissiveFactor defaults to black, so this is a no-op unless
+        // the file asks for it.
+        float3 emissive = pc.emissiveFactor.rgb;
+        if (pc.emissiveTextureSlot >= 0) {
+            emissive *= u_Textures[pc.emissiveTextureSlot].Sample(input.v_TexCoord).rgb;
+        }
+        litColor += emissive;
         
         // Simple HDR tonemapping (Exposure-based instead of Reinhard for better contrast)
         float exposure = 1.0;
@@ -191,7 +259,7 @@ FragmentOutput fragmentMain(VertexOutput input) {
         finalColor = litColor;
     }
     
-    output.Color = float4(finalColor, texColor.a);
+    output.Color = float4(finalColor, baseColor.a);
     output.EntityID = pc.entityID;
     
     return output;

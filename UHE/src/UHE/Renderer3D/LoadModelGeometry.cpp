@@ -24,6 +24,68 @@ bool IsSkinned(const fastgltf::Primitive& primitive)
            primitive.findAttribute("WEIGHTS_0") != primitive.attributes.end();
 }
 
+// Fold per-corner tangents back into per-vertex data.
+//
+// meshopt_generateTangents emits one tangent per INDEX (per corner), not per
+// vertex, because a vertex shared by corners on either side of a UV seam has no
+// single correct tangent - the two sides need opposite handedness. Writing those
+// straight into per-vertex storage picks one arbitrarily and lighting breaks at
+// the seam.
+//
+// The fix is to split the mesh so each vertex is referenced by corners that
+// agree: deindex into a corner list, write the corner tangents in, then let the
+// caller's vertex-merge pass collapse the duplicates again. Vertices that were
+// already consistent stay shared; only genuine seam vertices are duplicated.
+void GenerateTangents(Primitive& prim)
+{
+    const std::size_t vertexCount = prim.vertices.size();
+    const std::size_t indexCount = prim.indices.size();
+    if (vertexCount == 0 || indexCount == 0)
+        return;
+
+    // meshoptimizer wants deinterleaved float streams.
+    std::vector<float> positions(vertexCount * 3);
+    std::vector<float> normals(vertexCount * 3);
+    std::vector<float> uvs(vertexCount * 2);
+    for (std::size_t i = 0; i < vertexCount; ++i)
+    {
+        std::memcpy(&positions[i * 3], &prim.vertices[i].position[0], 3 * sizeof(float));
+        std::memcpy(&normals[i * 3], &prim.vertices[i].normal[0], 3 * sizeof(float));
+        std::memcpy(&uvs[i * 2], &prim.vertices[i].uv[0], 2 * sizeof(float));
+    }
+
+    std::vector<float> cornerTangents(indexCount * 4);
+    meshopt_generateTangents(cornerTangents.data(), prim.indices.data(), indexCount, positions.data(), vertexCount,
+                             3 * sizeof(float), normals.data(), 3 * sizeof(float), uvs.data(), 2 * sizeof(float), 0);
+
+    // Deindex: one vertex per corner, each carrying its own tangent. The merge
+    // pass that follows collapses vertices whose tangents agree, so the common
+    // case costs nothing and only real seams are duplicated.
+    std::vector<Vertex> corners;
+    corners.reserve(indexCount);
+    std::vector<u32> newIndices;
+    newIndices.reserve(indexCount);
+    for (std::size_t i = 0; i < indexCount; ++i)
+    {
+        const u32 source = prim.indices[i];
+        if (source >= vertexCount)
+            continue; // malformed index; skipped, and no slot written
+
+        Vertex corner = prim.vertices[source];
+        corner.tangent = glm::vec4(cornerTangents[i * 4 + 0], cornerTangents[i * 4 + 1], cornerTangents[i * 4 + 2],
+                                   cornerTangents[i * 4 + 3]);
+        newIndices.push_back(static_cast<u32>(corners.size()));
+        corners.push_back(corner);
+    }
+
+    // Deindexing can only shrink the index count, never leave a partial triple
+    // if the input was already a whole number of triangles.
+    newIndices.resize(newIndices.size() - (newIndices.size() % 3));
+
+    prim.vertices = std::move(corners);
+    prim.indices = std::move(newIndices);
+}
+
 } // namespace
 
 void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, const ModelLoadOptions& options)
@@ -138,10 +200,48 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
         outPrim.indices.resize(outPrim.indices.size() - (outPrim.indices.size() % 3));
 
         const bool skinned = IsSkinned(primitive);
+        bool hasTangents = primitive.findAttribute("TANGENT") != primitive.attributes.end();
+
+        // Read TANGENT when the file provides it. glTF stores vec4: xyz plus a
+        // handedness sign in w, where the sign accounts for mirrored UVs.
+        if (hasTangents)
+        {
+            auto& tangentAccessor = asset.accessors[primitive.findAttribute("TANGENT")->accessorIndex];
+            const size_t vertexCount = outPrim.vertices.size();
+            if (tangentAccessor.count == vertexCount)
+            {
+                fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
+                    asset, tangentAccessor, [&](fastgltf::math::fvec4 t, size_t idx)
+                    { outPrim.vertices[idx].tangent = glm::vec4(t.x(), t.y(), t.z(), t.w()); });
+            }
+            else
+            {
+                UHE_CORE_WARN("TANGENT count {0} does not match POSITION count {1}; generating instead",
+                              tangentAccessor.count, vertexCount);
+                hasTangents = false;
+            }
+        }
 
         if (options.optimizeMesh && !outPrim.vertices.empty() && !outPrim.indices.empty())
         {
-            // 1. Cache optimization: pure permutation, never changes geometry.
+            // 1. Tangent generation, BEFORE merging. meshopt_generateVertexRemap
+            //    hashes every byte of a vertex, so seam vertices that differ only
+            //    in UV would collapse into one - and the tangent frame at a
+            //    collapsed seam vertex is meaningless. Running this first means
+            //    the seam survives, and the merge then keeps the correct frames.
+            //
+            //    meshopt_generateTangents emits PER-CORNER tangents (one per index,
+            //    not per vertex), so it can only be folded back into per-vertex
+            //    data when every corner of a vertex agrees. Where corners disagree
+            //    the vertex must be split, which is what the deindex/reindex dance
+            //    below does via the fetch remap.
+            if (options.generateTangents && !hasTangents)
+            {
+                GenerateTangents(outPrim);
+                hasTangents = true;
+            }
+
+            // 2. Cache optimization: pure permutation, never changes geometry.
             std::vector<u32> cached(outPrim.indices.size());
             meshopt_optimizeVertexCache(cached.data(), outPrim.indices.data(), outPrim.indices.size(),
                                         outPrim.vertices.size());
