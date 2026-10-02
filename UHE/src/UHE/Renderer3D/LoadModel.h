@@ -7,6 +7,7 @@
 #include <vector>
 #include "UHE/Renderer/Texture.h"
 #include "UHE/Renderer3D/Animation.h"
+#include "UHE/Renderer3D/MaterialExtensions.h"
 
 #include "UHE/RHI/RHITypes.h"
 
@@ -71,6 +72,12 @@ struct Material
     // Controls pipeline cull mode. Cull mode is baked into the pipeline, so this
     // selects between two pre-built pipeline variants rather than a dynamic state.
     bool DoubleSided = false;
+
+    // Optional PBR extensions (issue #29 Tier 2 and Tier 3). Kept in one aggregate
+    // rather than spread across Material so "which extensions did this material
+    // actually use" is one question, and so a material declaring none of them
+    // renders byte-identically to one from before this struct existed.
+    MaterialExtensions Extensions;
 };
 
 // One drawable range over a geometry buffer.

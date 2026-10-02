@@ -30,14 +30,24 @@ namespace
 // Extensions this loader actually honours. Anything else a file declares is
 // reported by name instead of being silently ignored.
 //
-// KHR_texture_transform is listed but its effect is still hardcoded (see the UV
-// V-flip in ExtractGeometry), so it counts as supported only in the sense that
-// it is not a warning-worthy gap; it is called out there, not here.
+// An extension belongs here only if its VALUES reach the renderer. Parsing a
+// field without shading from it is the exact failure this list exists to prevent:
+// a file declaring clearcoat renders identical to one without it, but reports no
+// warning, so the author has no way to tell.
 bool IsExtensionSupported(std::string_view name)
 {
     return name == "KHR_materials_pbrSpecularGlossiness" || // SpecularGlossiness path
            name == "KHR_texture_transform" ||              // UV transform (see note)
-           name == "KHR_materials_unlit";
+           name == "KHR_materials_unlit" ||                 // bypasses shading
+           name == "KHR_materials_emissive_strength" ||     // emissive multiplier
+           name == "KHR_materials_ior" ||                   // dielectric F0
+           name == "KHR_materials_clearcoat" ||             // second specular lobe
+           name == "KHR_materials_specular" ||              // custom F0 + colour
+           name == "KHR_materials_sheen" ||                 // fabric retroreflection
+           name == "KHR_materials_transmission" ||          // see-through
+           name == "KHR_materials_volume" ||                // medium attenuation
+           name == "KHR_materials_iridescence" ||           // thin-film
+           name == "KHR_materials_anisotropy";              // brushed metal
 }
 
 } // namespace
@@ -441,6 +451,141 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         // alphaCutoff only applies to MASK, and defaults to 0.5.
         m_LoadedMaterials[i].AlphaCutoff = gltfMaterial.alphaCutoff;
         m_LoadedMaterials[i].DoubleSided = gltfMaterial.doubleSided;
+
+        // ── Tier 2/3 PBR extensions ─────────────────────────────────────
+        //
+        // Each is read only when fastgltf actually populated its block. That is
+        // the check that matters: fastgltf fills these structs with SPEC DEFAULTS
+        // rather than leaving them empty, so reading unconditionally would make
+        // every material look like it declared every extension, and a
+        // sheenRoughness of 0 or an attenuationDistance of 0 would quietly change
+        // how an ordinary PBR surface renders.
+        auto& ext = m_LoadedMaterials[i].Extensions;
+
+        // KHR_materials_emissive_strength. A scalar, always populated by the
+        // parser, and its default of 1.0 is a no-op multiplier.
+        ext.EmissiveStrength = gltfMaterial.emissiveStrength;
+
+        // KHR_materials_ior. Default 1.5, which is the dielectric value.
+        ext.IOR = gltfMaterial.ior;
+
+        // KHR_materials_unlit. Tier 3, but it is a bare flag with no data of its
+        // own, so it rides along here rather than needing a separate pass.
+        ext.Unlit = gltfMaterial.unlit;
+
+        if (gltfMaterial.clearcoat)
+        {
+            const auto& cc = *gltfMaterial.clearcoat;
+            ext.HasClearcoat = true;
+            ext.ClearcoatFactor = cc.clearcoatFactor;
+            ext.ClearcoatRoughnessFactor = cc.clearcoatRoughnessFactor;
+            if (cc.clearcoatNormalTexture)
+                ext.ClearcoatNormalScale = cc.clearcoatNormalTexture->scale;
+            // The clearcoat maps are loaded so their textures exist and get a
+            // descriptor slot, but the shader reads them from the per-material
+            // buffer rather than a push-constant int - the push-constant block
+            // has no room left.
+            if (cc.clearcoatTexture)
+                ext.ClearcoatTexture = loadTexture(&*cc.clearcoatTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            if (cc.clearcoatRoughnessTexture)
+                ext.ClearcoatRoughnessTexture =
+                    loadTexture(&*cc.clearcoatRoughnessTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            if (cc.clearcoatNormalTexture)
+                ext.ClearcoatNormalTexture =
+                    loadTexture(&*cc.clearcoatNormalTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+        }
+
+        if (gltfMaterial.specular)
+        {
+            const auto& sp = *gltfMaterial.specular;
+            ext.HasSpecular = true;
+            ext.SpecularFactor = sp.specularFactor;
+            ext.SpecularColorFactor = glm::vec3(sp.specularColorFactor[0], sp.specularColorFactor[1],
+                                                 sp.specularColorFactor[2]);
+            if (sp.specularTexture)
+                ext.SpecularTexture = loadTexture(&*sp.specularTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            if (sp.specularColorTexture)
+                ext.SpecularColorTexture = loadTexture(&*sp.specularColorTexture, i);
+        }
+
+        if (gltfMaterial.sheen)
+        {
+            const auto& sh = *gltfMaterial.sheen;
+            ext.HasSheen = true;
+            ext.SheenColorFactor = glm::vec3(sh.sheenColorFactor[0], sh.sheenColorFactor[1], sh.sheenColorFactor[2]);
+            ext.SheenRoughnessFactor = sh.sheenRoughnessFactor;
+            if (sh.sheenColorTexture)
+                ext.SheenColorTexture = loadTexture(&*sh.sheenColorTexture, i);
+            if (sh.sheenRoughnessTexture)
+                ext.SheenRoughnessTexture = loadTexture(&*sh.sheenRoughnessTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+        }
+
+        // Transmission and volume are separate extensions but only meaningful
+        // together: thickness and attenuation describe the medium a transmitted
+        // ray travels through.
+        if (gltfMaterial.transmission || gltfMaterial.volume)
+        {
+            ext.HasTransmission = true;
+            if (gltfMaterial.transmission)
+            {
+                const auto& tr = *gltfMaterial.transmission;
+                ext.TransmissionFactor = tr.transmissionFactor;
+                if (tr.transmissionTexture)
+                    ext.TransmissionTexture =
+                        loadTexture(&*tr.transmissionTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            }
+            if (gltfMaterial.volume)
+            {
+                const auto& vo = *gltfMaterial.volume;
+                ext.ThicknessFactor = vo.thicknessFactor;
+                ext.AttenuationDistance = vo.attenuationDistance;
+                ext.AttenuationColor =
+                    glm::vec3(vo.attenuationColor[0], vo.attenuationColor[1], vo.attenuationColor[2]);
+                if (vo.thicknessTexture)
+                    ext.ThicknessTexture = loadTexture(&*vo.thicknessTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            }
+        }
+
+        if (gltfMaterial.iridescence)
+        {
+            const auto& ir = *gltfMaterial.iridescence;
+            ext.HasIridescence = true;
+            ext.IridescenceFactor = ir.iridescenceFactor;
+            ext.IridescenceIOR = ir.iridescenceIor;
+            ext.IridescenceThicknessMinimum = ir.iridescenceThicknessMinimum;
+            ext.IridescenceThicknessMaximum = ir.iridescenceThicknessMaximum;
+            if (ir.iridescenceTexture)
+                ext.IridescenceTexture = loadTexture(&*ir.iridescenceTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            if (ir.iridescenceThicknessTexture)
+                ext.IridescenceThicknessTexture =
+                    loadTexture(&*ir.iridescenceThicknessTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+        }
+
+        if (gltfMaterial.anisotropy)
+        {
+            const auto& an = *gltfMaterial.anisotropy;
+            ext.HasAnisotropy = true;
+            ext.AnisotropyStrength = an.anisotropyStrength;
+            ext.AnisotropyRotation = an.anisotropyRotation;
+            if (an.anisotropyTexture)
+                ext.AnisotropyTexture = loadTexture(&*an.anisotropyTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+        }
+
+        // How to draw a transmission surface. Chosen once here rather than
+        // per-draw in the renderer, so the decision is in one place and the
+        // renderer only has to switch on it.
+        if (ext.HasTransmission && ext.TransmissionFactor > 0.0f)
+        {
+            // A transmissive surface is see-through by definition, so it needs
+            // the blended path even when the file did not set alphaMode BLEND -
+            // which is the common case for glass exported from DCC tools.
+            ext.TransmissionBlend = BlendApproach::Blend;
+            m_HasTransparentMaterials = true;
+        }
+        else if (ext.HasTransmission)
+        {
+            ext.TransmissionBlend = BlendApproach::OpaqueWithTransmission;
+        }
     }
 
     if (m_HasTransparentMaterials)

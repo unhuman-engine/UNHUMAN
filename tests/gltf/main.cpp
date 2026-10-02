@@ -350,6 +350,33 @@ struct SamplerSpec
     int wrapT = -1;
 };
 
+// A generic extension block. Every Tier 2 extension is a flat bag of scalars,
+// except for a few members that are spec-mandated ARRAYS - sheenColorFactor is
+// [r,g,b], attenuationColor is [r,g,b], specularColorFactor is [r,g,b]. Emitting
+// one of those as a bare number produces a file that parses but leaves the
+// extension block unset, so the distinction has to be expressible here or the
+// fixtures quietly stop testing anything.
+struct ExtSpec
+{
+    // Insertion-ordered so the emitted JSON has a deterministic shape.
+    std::vector<std::pair<std::string, double>> scalars;
+    std::vector<std::pair<std::string, std::vector<double>>> arrays;
+};
+
+// Convenience so a fixture reads as the field it sets.
+inline ExtSpec Ext(std::vector<std::pair<std::string, double>> scalars)
+{
+    ExtSpec s;
+    s.scalars = std::move(scalars);
+    return s;
+}
+
+inline ExtSpec& WithArray(ExtSpec& s, std::string_view name, std::vector<double> values)
+{
+    s.arrays.emplace_back(std::string(name), std::move(values));
+    return s;
+}
+
 struct MaterialSpec
 {
     std::string alphaMode;
@@ -368,6 +395,22 @@ struct MaterialSpec
     bool metallicRoughnessTexture = false;
     bool emissiveTexture = false;
     std::optional<SamplerSpec> sampler;
+
+    // Tier 2/3 extension blocks. Each is OPTIONAL and omitted when unset, so a
+    // material declaring no extension produces a file with no extensions object
+    // at all - which is what the defaults tests depend on.
+    std::optional<ExtSpec> clearcoat;
+    std::optional<ExtSpec> specular;
+    std::optional<ExtSpec> sheen;
+    std::optional<ExtSpec> transmission;
+    std::optional<ExtSpec> volume;
+    std::optional<ExtSpec> iridescence;
+    std::optional<ExtSpec> anisotropy;
+    bool unlit = false;
+    bool hasEmissiveStrength = false;
+    float emissiveStrength = 1.0f;
+    bool hasIOR = false;
+    float ior = 1.5f;
 };
 
 struct AssetSpec
@@ -494,7 +537,7 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                 bin.append(reinterpret_cast<const char*>(&joint), sizeof(joint));
             }
             while (bin.size() % 4 != 0)
-                bin.push_back(' ');
+                bin.push_back('\0');
 
             for (std::size_t v = 0; v < Quad::kVertexCount; ++v)
             {
@@ -850,6 +893,67 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                     j.key("normalTexture").beginObject().field("index", 0).field("scale", m.normalScale).endObject();
                 if (m.occlusionStrength >= 0.0f)
                     j.key("occlusionTexture").beginObject().field("index", 0).field("strength", m.occlusionStrength).endObject();
+
+                // Extension blocks. Emitted only for material 0, and only when
+                // the test asked for one, so a material with no extensions emits
+                // no "extensions" key at all - which is what makes the
+                // spec-default tests meaningful.
+                struct ExtEntry
+                {
+                    const char* name;
+                    const std::optional<ExtSpec>* spec;
+                };
+                const ExtEntry kExts[] = {
+                    {"KHR_materials_clearcoat", &m.clearcoat},
+                    {"KHR_materials_specular", &m.specular},
+                    {"KHR_materials_sheen", &m.sheen},
+                    {"KHR_materials_transmission", &m.transmission},
+                    {"KHR_materials_volume", &m.volume},
+                    {"KHR_materials_iridescence", &m.iridescence},
+                    {"KHR_materials_anisotropy", &m.anisotropy},
+                };
+
+                bool anyExt = m.unlit || m.hasEmissiveStrength || m.hasIOR;
+                for (const auto& e : kExts)
+                    anyExt = anyExt || e.spec->has_value();
+                if (m.unlit || m.hasEmissiveStrength || m.hasIOR || anyExt)
+                {
+                    j.key("extensions").beginObject();
+                    if (m.unlit)
+                        j.key("KHR_materials_unlit").beginObject().endObject();
+                    if (m.hasEmissiveStrength)
+                        j.key("KHR_materials_emissive_strength").beginObject().field("emissiveStrength", m.emissiveStrength).endObject();
+                    if (m.hasIOR)
+                        j.key("KHR_materials_ior").beginObject().field("ior", m.ior).endObject();
+                    for (const auto& e : kExts)
+                    {
+                        if (!e.spec->has_value())
+                            continue;
+                        j.key(e.name).beginObject();
+                        for (const auto& kv : (*e.spec)->scalars)
+                            j.field(kv.first, kv.second);
+                        for (const auto& kv : (*e.spec)->arrays)
+                            j.key(kv.first).value(kv.second);
+                        j.endObject();
+                    }
+                    j.endObject();
+                }
+
+                // Declaring an extension in extensionsUsed is what the loader's
+                // own report reads, so emit the ones in use here too.
+                if (anyExt)
+                {
+                    std::vector<std::string> used;
+                    if (m.unlit) used.push_back("KHR_materials_unlit");
+                    if (m.hasEmissiveStrength) used.push_back("KHR_materials_emissive_strength");
+                    if (m.hasIOR) used.push_back("KHR_materials_ior");
+                    for (const auto& e : kExts)
+                        if (e.spec->has_value()) used.push_back(e.name);
+                    j.key("extensionsUsed").beginArray();
+                    for (const auto& u : used)
+                        j.value(u);
+                    j.endArray();
+                }
             }
             j.endObject();
         }
@@ -1125,24 +1229,74 @@ int main()
     }
 
     // ---------------------------------------------------------------------
+    // The unsupported-extension report is only useful in BOTH directions. A
+    // loader that flags everything is as wrong as one that flags nothing: the
+    // first trains the reader to ignore the warning, the second hides a real gap.
     section("unimplemented extensions are reported");
     {
+        // A genuinely unknown extension, which is what the report is for. This
+        // previously used KHR_materials_emissive_strength, which stopped being a
+        // valid example once Tier 2 implemented it - a test that stops testing
+        // its own premise without anyone noticing.
         AssetSpec spec;
         spec.meshCount = 1;
-        spec.extensionsUsed = {"KHR_materials_emissive_strength"};
-        spec.extensionsRequired = {"KHR_materials_emissive_strength"};
+        // extensionsUsed only, NOT extensionsRequired. A required extension the
+        // parser does not know is a hard parse failure by design, so it can never
+        // reach the loader's own report - which is exactly why the two lists are
+        // separate and why the loader checks both.
+        spec.extensionsUsed = {"EXT_totally_unknown_extension"};
         const fs::path path = writeAsset(dir, "ext.gltf", spec);
 
         UHE::RD3d::Model model;
         if (model.loadModel(path))
         {
-            check(model.HasUnsupportedExtensions(), "unsupported extension flagged");
-            if (!model.GetUnsupportedExtensionNames().empty())
-                std::printf("  reported: %s\n", model.GetUnsupportedExtensionNames()[0].c_str());
+            check(model.HasUnsupportedExtensions(), "unknown extension flagged");
+            bool named = false;
+            for (const auto& n : model.GetUnsupportedExtensionNames())
+                named = named || n == "EXT_totally_unknown_extension";
+            check(named, "the unknown extension is reported BY NAME, not just as a flag");
         }
         else
         {
             check(false, "model with an unknown extension still loads");
+        }
+    }
+
+    section("implemented extensions are NOT reported as unsupported");
+    {
+        // Every Tier 2/3 extension the loader claims to honour. Claiming support
+        // while rendering nothing from a field is the silent-wrong-shading failure
+        // the supported list exists to prevent, so the list is asserted directly
+        // rather than left to the reader's judgement.
+        const char* kImplemented[] = {
+            "KHR_materials_unlit",
+            "KHR_materials_emissive_strength",
+            "KHR_materials_ior",
+            "KHR_materials_clearcoat",
+            "KHR_materials_specular",
+            "KHR_materials_sheen",
+            "KHR_materials_transmission",
+            "KHR_materials_volume",
+            "KHR_materials_iridescence",
+            "KHR_materials_anisotropy",
+        };
+
+        for (const char* ext : kImplemented)
+        {
+            AssetSpec spec;
+            spec.meshCount = 1;
+            spec.materialCount = 1;
+            spec.extensionsUsed = {ext};
+            spec.extensionsRequired = {ext};
+
+            const fs::path path = writeAsset(dir, "ext_supported.gltf", spec);
+
+            UHE::RD3d::Model model;
+            if (check(model.loadModel(path), std::string("model declaring ") + ext + " loads"))
+            {
+                check(!model.HasUnsupportedExtensions(),
+                      std::string(ext) + " is implemented, so not reported as unsupported");
+            }
         }
     }
 
@@ -1800,6 +1954,183 @@ int main()
                 }
                 check(allKnown, "every vertex keeps a colour the fixture wrote, after merge + fetch reorder");
             }
+        }
+    }
+
+    // =====================================================================
+    // Tier 2 PBR extensions. The failure mode for all of them is identical and
+    // silent: a file declares clearcoat, the loader parses the block, and if
+    // nothing reads the values the surface renders as plain plastic with no
+    // warning anywhere. So each test asserts the VALUE arrived, not merely that
+    // the file loaded.
+    // =====================================================================
+
+    section("KHR_materials_clearcoat values are read");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        ms.clearcoat = Ext({{"clearcoatFactor", 0.75}, {"clearcoatRoughnessFactor", 0.25}});
+        spec.material = ms;
+
+        const fs::path path = writeAsset(dir, "clearcoat.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "clearcoat model loads"))
+        {
+            const auto& e = model.GetMaterials()[0].Extensions;
+            check(e.HasClearcoat, "HasClearcoat set");
+            check(std::fabs(e.ClearcoatFactor - 0.75f) < 1e-5f, "clearcoatFactor 0.75 parsed");
+            check(std::fabs(e.ClearcoatRoughnessFactor - 0.25f) < 1e-5f, "clearcoatRoughnessFactor 0.25 parsed");
+        }
+    }
+
+    section("KHR_materials_specular and sheen values are read");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        ms.specular = Ext({{"specularFactor", 0.6}});
+        ms.sheen = Ext({{"sheenRoughnessFactor", 0.4}});
+        WithArray(ms.sheen.value(), "sheenColorFactor", {0.1, 0.2, 0.3});
+        spec.material = ms;
+
+        const fs::path path = writeAsset(dir, "specsheen.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "specular+sheen model loads"))
+        {
+            const auto& e = model.GetMaterials()[0].Extensions;
+            check(e.HasSpecular, "HasSpecular set");
+            check(std::fabs(e.SpecularFactor - 0.6f) < 1e-5f, "specularFactor 0.6 parsed");
+            check(e.HasSheen, "HasSheen set");
+            check(std::fabs(e.SheenRoughnessFactor - 0.4f) < 1e-5f, "sheenRoughnessFactor 0.4 parsed");
+            // sheenColorFactor is a vec3, so it also proves the colour path.
+            check(std::fabs(e.SheenColorFactor.x - 0.1f) < 1e-5f, "sheenColorFactor.r parsed");
+            check(std::fabs(e.SheenColorFactor.z - 0.3f) < 1e-5f,
+                  "sheenColorFactor is a 3-array, not a scalar (z parsed)");
+        }
+    }
+
+    section("KHR_materials_transmission marks the material transparent");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        ms.transmission = Ext({{"transmissionFactor", 0.9}});
+        ms.volume = Ext({{"thicknessFactor", 0.5}});
+        spec.material = ms;
+
+        const fs::path path = writeAsset(dir, "transmission.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "transmission model loads"))
+        {
+            const auto& e = model.GetMaterials()[0].Extensions;
+            check(e.HasTransmission, "HasTransmission set");
+            check(std::fabs(e.TransmissionFactor - 0.9f) < 1e-5f, "transmissionFactor 0.9 parsed");
+            check(std::fabs(e.ThicknessFactor - 0.5f) < 1e-5f, "thicknessFactor 0.5 parsed");
+            // Glass is see-through whether or not the exporter set alphaMode
+            // BLEND, so the loader must route it to the blended path itself.
+            check(e.TransmissionBlend == UHE::RD3d::BlendApproach::Blend,
+                  "a transmissive material is routed to the blended path");
+            check(model.HasTransparentMaterials(),
+                  "transmission sets HasTransparentMaterials without alphaMode BLEND");
+        }
+    }
+
+    section("iridescence and anisotropy values are read");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        ms.iridescence = Ext({{"iridescenceFactor", 0.8}, {"iridescenceIor", 1.5},
+                              {"iridescenceThicknessMinimum", 200.0},
+                              {"iridescenceThicknessMaximum", 600.0}});
+        ms.anisotropy = Ext({{"anisotropyStrength", 0.7}, {"anisotropyRotation", 0.25}});
+        spec.material = ms;
+
+        const fs::path path = writeAsset(dir, "irid_aniso.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "iridescence+anisotropy model loads"))
+        {
+            const auto& e = model.GetMaterials()[0].Extensions;
+            check(e.HasIridescence, "HasIridescence set");
+            check(std::fabs(e.IridescenceFactor - 0.8f) < 1e-5f, "iridescenceFactor parsed");
+            check(std::fabs(e.IridescenceIOR - 1.5f) < 1e-5f, "iridescenceIor parsed");
+            check(std::fabs(e.IridescenceThicknessMinimum - 200.0f) < 1e-4f, "iridescenceThicknessMinimum parsed");
+            check(std::fabs(e.IridescenceThicknessMaximum - 600.0f) < 1e-4f, "iridescenceThicknessMaximum parsed");
+            check(e.HasAnisotropy, "HasAnisotropy set");
+            check(std::fabs(e.AnisotropyStrength - 0.7f) < 1e-5f, "anisotropyStrength parsed");
+            check(std::fabs(e.AnisotropyRotation - 0.25f) < 1e-5f, "anisotropyRotation parsed");
+        }
+    }
+
+    section("emissive_strength, ior and unlit are read");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        ms.hasEmissiveStrength = true;
+        ms.emissiveStrength = 3.5f;
+        ms.hasIOR = true;
+        ms.ior = 1.7f;
+        ms.unlit = true;
+        spec.material = ms;
+
+        const fs::path path = writeAsset(dir, "es_ior_unlit.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "emissive_strength+ior+unlit model loads"))
+        {
+            const auto& e = model.GetMaterials()[0].Extensions;
+            check(std::fabs(e.EmissiveStrength - 3.5f) < 1e-5f, "emissiveStrength 3.5 parsed");
+            check(std::fabs(e.IOR - 1.7f) < 1e-5f, "ior 1.7 parsed");
+            check(e.Unlit, "KHR_materials_unlit flag parsed");
+        }
+    }
+
+    // The defaults matter more than the parsing. fastgltf fills every extension
+    // struct with SPEC DEFAULTS, so reading one unconditionally would make an
+    // ordinary PBR material claim it has a sheen, a volume and an index of
+    // refraction - and a sheenRoughness of 0 or an attenuationDistance of 0
+    // renders visibly wrong.
+    section("a material declaring no extension keeps spec defaults");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        // Nothing set: no extension blocks at all.
+        spec.material = ms;
+
+        const fs::path path = writeAsset(dir, "noext.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "material with no extensions loads"))
+        {
+            const auto& e = model.GetMaterials()[0].Extensions;
+            check(!e.HasClearcoat, "no clearcoat claimed");
+            check(!e.HasSpecular, "no specular claimed");
+            check(!e.HasSheen, "no sheen claimed");
+            check(!e.HasTransmission, "no transmission claimed");
+            check(!e.HasIridescence, "no iridescence claimed");
+            check(!e.HasAnisotropy, "no anisotropy claimed");
+            check(!e.Unlit, "not unlit");
+
+            // These are the values a wrong default would corrupt.
+            check(std::fabs(e.EmissiveStrength - 1.0f) < 1e-5f,
+                  "EmissiveStrength defaults to 1.0, not 0 (0 would erase every emissive)");
+            check(std::fabs(e.IOR - 1.5f) < 1e-5f, "IOR defaults to the dielectric 1.5");
+            // INFINITY, not 0: attenuationDistance 0 means fully opaque.
+            check(std::isinf(e.AttenuationDistance) && e.AttenuationDistance > 0.0f,
+                  "AttenuationDistance defaults to +infinity, not 0");
         }
     }
 
