@@ -154,6 +154,42 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
                 [&](fastgltf::math::fvec2 uv, size_t idx) { outPrim.vertices[idx].uv = glm::vec2(uv.x(), 1.0f - uv.y()); });
         }
 
+        // COLOR_0. The spec allows VEC3 or VEC4, and an unnormalized unsigned
+        // accessor as well, so the branch is on the accessor's declared type
+        // rather than assuming one shape. Reading VEC3 as VEC4 would take four
+        // components' worth of stride from the next vertex and produce garbage
+        // colours - the component count, not the byte stride, is what differs.
+        const auto* colorAttribute = primitive.findAttribute("COLOR_0");
+        if (colorAttribute != primitive.attributes.end())
+        {
+            auto& colorAccessor = asset.accessors[colorAttribute->accessorIndex];
+
+            // A count mismatch would leave some vertices at the default white and
+            // produce a gradient at the seam. Skip the attribute instead, so the
+            // primitive renders uniformly rather than half-tinted.
+            if (colorAccessor.count != outPrim.vertices.size())
+            {
+                UHE_CORE_WARN("COLOR_0 count {0} does not match POSITION count {1}; ignoring vertex colours",
+                              colorAccessor.count, outPrim.vertices.size());
+            }
+            else if (colorAccessor.type == fastgltf::AccessorType::Vec3)
+            {
+                fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
+                    asset, colorAccessor,
+                    [&](fastgltf::math::fvec3 c, size_t idx)
+                    { outPrim.vertices[idx].color = glm::vec4(c.x(), c.y(), c.z(), 1.0f); });
+                outPrim.hasVertexColor = true;
+            }
+            else
+            {
+                fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
+                    asset, colorAccessor,
+                    [&](fastgltf::math::fvec4 c, size_t idx)
+                    { outPrim.vertices[idx].color = glm::vec4(c.x(), c.y(), c.z(), c.w()); });
+                outPrim.hasVertexColor = true;
+            }
+        }
+
         const auto* jointsAttribute = primitive.findAttribute("JOINTS_0");
         if (jointsAttribute != primitive.attributes.end())
         {

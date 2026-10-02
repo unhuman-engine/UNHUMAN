@@ -8,6 +8,9 @@ struct VertexInput {
     // xyz = tangent, w = handedness sign. Added for normal mapping; the loader
     // generates this per-corner and splits seam vertices so w is meaningful.
     [[vk::location(5)]] float4 a_Tangent : TANGENT;
+    // COLOR_0. Location 6. glTF allows vec3 or vec4; the loader normalises both
+    // to vec4 on the CPU so the vertex layout needs only one format.
+    [[vk::location(6)]] float4 a_Color : COLOR;
 };
 
 struct VertexOutput {
@@ -17,6 +20,7 @@ struct VertexOutput {
     [[vk::location(2)]] float3 v_WorldPos;
     [[vk::location(3)]] float3 v_Tangent;
     [[vk::location(4)]] float3 v_Bitangent;
+    [[vk::location(5)]] float4 v_Color;
 };
 
 struct PushConstants {
@@ -44,6 +48,11 @@ struct PushConstants {
     float occlusionStrength;
     float alphaCutoff;
     int alphaMode;               // 0 opaque, 1 mask, 2 blend
+    // One of the 12 std430 padding bytes the layout needs between alphaMode
+    // (ends at 212) and baseColorFactor (must start at 224). Spend it on the
+    // COLOR_0 flag instead of growing the struct past maxPushConstantsSize.
+    int useVertexColor;          // 1 when the primitive carried COLOR_0
+    float2 padding;
     float4 baseColorFactor;
     // float4, not float3, to match the C++ PushConstants layout exactly: Slang
     // and glm disagree on 3-component vector packing. .rgb is used in the shader.
@@ -101,6 +110,10 @@ VertexOutput vertexMain(VertexInput input) {
     output.v_Tangent = normalize(worldTangent);
     output.v_Bitangent = normalize(cross(output.v_Normal, output.v_Tangent) * input.a_Tangent.w);
 
+    // COLOR_0 passes through unchanged. It is linear data in glTF and is NOT
+    // gamma-decoded - decoding it would darken every vertex-painted asset.
+    output.v_Color = input.a_Color;
+
     output.location = mul(pc.viewProjection, worldPos);
     return output;
 }
@@ -113,6 +126,13 @@ FragmentOutput fragmentMain(VertexOutput input) {
 
     // baseColorFactor multiplies the base colour texture; both default to 1.
     float4 baseColor = texColor * pc.baseColorFactor;
+
+    // COLOR_0 multiplies on top, and only when the primitive actually had one.
+    // Skipping the multiply when absent keeps the alpha MASK test below working on
+    // the texture's own alpha rather than on an unrelated vertex value.
+    if (pc.useVertexColor == 1) {
+        baseColor *= input.v_Color;
+    }
 
     // Alpha MASK: discard below the cutoff. BLEND has no sorted pass yet, so it
     // falls through to normal blending and the loader has already warned.

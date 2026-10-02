@@ -10,6 +10,7 @@
 // Test-only: never compile into the engine.
 
 #include <cstdio>
+#include <vector>
 
 #include "UHE/RHI/RHITypes.h"
 #include "UHE/Renderer/Texture.h"
@@ -18,33 +19,43 @@
 namespace UHE
 {
 
-// The sampler the loader last requested. Recording it lets the harness assert
-// that glTF's declared magFilter/minFilter/wrapS/wrapT actually reached the
-// texture factory - a stub that discarded the argument would make that path
+// The samplers the loader requested, in order. Recording them lets the harness
+// assert that glTF's declared magFilter/minFilter/wrapS/wrapT actually reached
+// the texture factory - a stub that discarded the argument would make that path
 // untestable, and an untestable path is the one that silently regresses.
-RHI::SamplerDesc g_LastSampler{};
+//
+// Kept as a LIST rather than a single "last" value: colour space is a per-SLOT
+// property (baseColor is sRGB, normal/metalRough/occlusion are linear), so
+// asserting it needs every request, not only whichever happened to be last.
+std::vector<RHI::SamplerDesc> g_RequestedSamplers{};
 int g_TextureCreateCalls = 0;
+
+namespace
+{
+void RecordSampler(const RHI::SamplerDesc& sampler)
+{
+    g_RequestedSamplers.push_back(sampler);
+    ++g_TextureCreateCalls;
+}
+} // namespace
 
 Ref<Texture2D> Texture2D::Create(const std::string& path, const RHI::SamplerDesc& sampler)
 {
-    g_LastSampler = sampler;
-    ++g_TextureCreateCalls;
+    RecordSampler(sampler);
     std::printf("STUB: Texture2D::Create(\"%s\") called - the glTF harness must not load textures\n", path.c_str());
     return nullptr;
 }
 
 Ref<Texture2D> Texture2D::Create(u32 width, u32 height, const RHI::SamplerDesc& sampler)
 {
-    g_LastSampler = sampler;
-    ++g_TextureCreateCalls;
+    RecordSampler(sampler);
     std::printf("STUB: Texture2D::Create(%u, %u) called\n", width, height);
     return nullptr;
 }
 
 Ref<Texture2D> Texture2D::CreateFromMemory(const void* data, size_t size, const RHI::SamplerDesc& sampler)
 {
-    g_LastSampler = sampler;
-    ++g_TextureCreateCalls;
+    RecordSampler(sampler);
     std::printf("STUB: Texture2D::CreateFromMemory(%zu bytes) called\n", size);
     return nullptr;
 }
@@ -100,11 +111,12 @@ void Model::ReleaseGeometryBuffers(std::vector<Geometry>& geometry)
 namespace UHE
 {
 
-RHI::SamplerDesc StubLastRequestedSampler() { return g_LastSampler; }
+RHI::SamplerDesc StubLastRequestedSampler() { return g_RequestedSamplers.empty() ? RHI::SamplerDesc{} : g_RequestedSamplers.back(); }
+const std::vector<RHI::SamplerDesc>& StubRequestedSamplers() { return g_RequestedSamplers; }
 int StubTextureCreateCallCount() { return g_TextureCreateCalls; }
 void StubReset()
 {
-    g_LastSampler = RHI::SamplerDesc{};
+    g_RequestedSamplers.clear();
     g_TextureCreateCalls = 0;
 }
 

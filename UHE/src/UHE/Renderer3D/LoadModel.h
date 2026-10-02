@@ -22,6 +22,13 @@ struct Vertex
     glm::vec4 tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
     glm::ivec4 jointIndices = glm::ivec4(0);
     glm::vec4 jointWeights = glm::vec4(0.0f);
+
+    // COLOR_0, as vec4. Defaults to WHITE with alpha 1, which is the glTF
+    // semantic for "no COLOR_0": the shader multiplies this into base colour, so
+    // a black or zero default would tint every mesh in the engine black.
+    // glTF permits vec3 or vec4 here; vec4 covers both, since a vec3 accessor
+    // reads alpha as 1 - one type on the GPU side rather than two.
+    glm::vec4 color = glm::vec4(1.0f);
 };
 
 // How a material's alpha is interpreted. glTF alphaMode.
@@ -78,6 +85,14 @@ struct Primitive
     std::vector<Vertex> vertices;
     std::vector<u32> indices;
     size_t materialIndex = 0;
+
+    // True when this primitive carried a COLOR_0 attribute. Carried here, on the
+    // Primitive, rather than as a field on Vertex: it is one fact about the whole
+    // primitive, and a per-vertex flag would grow the stride that the vertex-merge
+    // pass hashes over. The shader multiplies vertex colour only when this is set,
+    // which matters for glTF's own rule that COLOR_0 is linear data and so must
+    // NOT be gamma-decoded - the flag is what keeps that decision on the CPU side.
+    bool hasVertexColor = false;
 
     // Range into Model::GetGeometry(). Only meaningful on the owning Primitive.
     size_t geometryIndex = 0;

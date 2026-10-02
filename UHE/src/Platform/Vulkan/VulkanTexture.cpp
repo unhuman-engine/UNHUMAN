@@ -166,6 +166,16 @@ static vk::SamplerAddressMode ToVkAddressMode(SamplerDesc::Wrap wrap)
     }
 }
 
+// sRGB is encoded in the IMAGE FORMAT, not the sampler: the hardware linearises
+// on read only when the format carries the _Srgb suffix. A normal or
+// metallicRoughness map created as _Srgb has its linear values gamma-decoded on
+// every sample, which corrupts them.
+static vk::Format ToVkTextureFormat(SamplerDesc::ColorSpace colorSpace)
+{
+    return colorSpace == SamplerDesc::ColorSpace::Linear ? vk::Format::eR8G8B8A8Unorm
+                                                        : vk::Format::eR8G8B8A8Srgb;
+}
+
 void VulkanTexture::CreateTexture(VulkanDevice& device, const void* pixelData, u32 width, u32 height, size_t dataSize)
 {
     auto& ctx = GetVulkanContext();
@@ -179,7 +189,9 @@ void VulkanTexture::CreateTexture(VulkanDevice& device, const void* pixelData, u
 
     vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc;
 
-    CreatedImage created = ::UHE::RHI::VULKAN::CreateImage(width, height, vk::Format::eR8G8B8A8Srgb, usage, m_MipLevels);
+    const vk::Format format = ToVkTextureFormat(m_SamplerDesc.colorSpace);
+
+    CreatedImage created = ::UHE::RHI::VULKAN::CreateImage(width, height, format, usage, m_MipLevels);
     textureImage = created.image;
     textureImageMemory = created.allocation;
 
@@ -189,8 +201,7 @@ void VulkanTexture::CreateTexture(VulkanDevice& device, const void* pixelData, u
     ExecuteCopyCommand(device, staging.buffer, textureImage, width, height, m_MipLevels);
     DestroyStagingBuffer(staging);
 
-    textureImageView = CreateImageView(textureImage, vk::Format::eR8G8B8A8Srgb,
-                                        vk::ImageAspectFlagBits::eColor, m_MipLevels);
+    textureImageView = CreateImageView(textureImage, format, vk::ImageAspectFlagBits::eColor, m_MipLevels);
 
     // Sampler state comes from the loader when it supplied one (glTF declares
     // magFilter/minFilter/wrapS/wrapT per texture). Defaults reproduce exactly
@@ -242,11 +253,11 @@ void VulkanTexture::ExecuteCopyCommand(VulkanDevice& device, VkBuffer srcBuffer,
 
     if (mipLevels > 1)
     {
-        GenerateMipmaps(device, dstImage, vk::Format::eR8G8B8A8Srgb, width, height, mipLevels);
+        GenerateMipmaps(device, dstImage, width, height, mipLevels);
     }
 }
 
-void VulkanTexture::GenerateMipmaps(VulkanDevice& device, vk::Image image, vk::Format imageFormat,
+void VulkanTexture::GenerateMipmaps(VulkanDevice& device, vk::Image image,
                                      int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
 {
     device.ImmediateSubmit([&](vk::raii::CommandBuffer& cmd)

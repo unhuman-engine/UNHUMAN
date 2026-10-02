@@ -33,7 +33,7 @@ public:
     void SetSamplerDesc(const SamplerDesc& desc) { m_SamplerDesc = desc; }
     void ExecuteCopyCommand(VulkanDevice& device, VkBuffer srcBuffer, vk::Image dstImage, uint32_t width,
                             uint32_t height, uint32_t mipLevels);
-    void GenerateMipmaps(VulkanDevice& device, vk::Image image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
+    void GenerateMipmaps(VulkanDevice& device, vk::Image image, int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
     void UpdateTexture(std::span<const u8> data);
     vk::Image& GetImage() { return textureImage; }
     vk::raii::ImageView& GetImageView() { return textureImageView; }

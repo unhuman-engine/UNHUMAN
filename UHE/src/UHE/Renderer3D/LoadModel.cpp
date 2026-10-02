@@ -186,9 +186,11 @@ namespace
 // sampler object renders unchanged. magFilter/minFilter are Optional in fastgltf
 // and genuinely absent in many files, so the fallback is the spec default rather
 // than a guess.
-RHI::SamplerDesc SamplerDescForTexture(const fastgltf::Asset& asset, size_t textureIndex)
+RHI::SamplerDesc SamplerDescForTexture(const fastgltf::Asset& asset, size_t textureIndex,
+                                       RHI::SamplerDesc::ColorSpace colorSpace = RHI::SamplerDesc::ColorSpace::SRGB)
 {
     RHI::SamplerDesc desc;
+    desc.colorSpace = colorSpace;
 
     if (textureIndex >= asset.textures.size())
         return desc;
@@ -275,7 +277,13 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             albedoTextureInfo = &gltfMaterial.specularGlossiness->diffuseTexture.value();
         }
 
-        auto loadTexture = [&](const fastgltf::TextureInfo* texInfo, size_t matIdx) -> Ref<Texture2D> {
+        // Colour space is a property of the SLOT, not the file: glTF mandates
+        // sRGB for baseColor and emissive, and LINEAR data for normal,
+        // metallicRoughness and occlusion. Using one format for all of them
+        // gamma-decodes the linear maps on every sample, which is why a normal
+        // map can light a surface the wrong way round.
+        auto loadTexture = [&](const fastgltf::TextureInfo* texInfo, size_t matIdx,
+                               RHI::SamplerDesc::ColorSpace colorSpace = RHI::SamplerDesc::ColorSpace::SRGB) -> Ref<Texture2D> {
             if (!texInfo) return nullptr;
             auto textureIndex = texInfo->textureIndex;
             if (textureIndex >= asset.textures.size()) return nullptr;
@@ -288,7 +296,7 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             // wrapT). Without this the backend's hardcoded linear/repeat is used
             // for everything, so a CLAMP_TO_EDGE atlas or a NEAREST pixel-art
             // texture samples wrongly.
-            RHI::SamplerDesc sampler = SamplerDescForTexture(asset, textureIndex);
+            RHI::SamplerDesc sampler = SamplerDescForTexture(asset, textureIndex, colorSpace);
 
             Ref<Texture2D> result = nullptr;
             std::visit(
@@ -331,19 +339,19 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
                                               [&](const fastgltf::sources::Array& array)
                                               {
                                                   const void* data = array.bytes.data() + bufferView.byteOffset;
-                                                  result = Texture2D::CreateFromMemory(data, bufferView.byteLength);
+                                                  result = Texture2D::CreateFromMemory(data, bufferView.byteLength, sampler);
                                                   UHE_CORE_INFO("Loaded texture for material {0} from BufferView (Array), size: {1}", matIdx, bufferView.byteLength);
                                               },
                                               [&](const fastgltf::sources::ByteView& byteView)
                                               {
                                                   const void* data = byteView.bytes.data() + bufferView.byteOffset;
-                                                  result = Texture2D::CreateFromMemory(data, bufferView.byteLength);
+                                                  result = Texture2D::CreateFromMemory(data, bufferView.byteLength, sampler);
                                                   UHE_CORE_INFO("Loaded texture for material {0} from BufferView (ByteView), size: {1}", matIdx, bufferView.byteLength);
                                               },
                                               [&](const fastgltf::sources::Vector& vector)
                                               {
                                                   const void* data = vector.bytes.data() + bufferView.byteOffset;
-                                                  result = Texture2D::CreateFromMemory(data, bufferView.byteLength);
+                                                  result = Texture2D::CreateFromMemory(data, bufferView.byteLength, sampler);
                                                   UHE_CORE_INFO("Loaded texture for material {0} from BufferView (Vector), size: {1}", matIdx, bufferView.byteLength);
                                               },
                                               [&](const auto&) {
@@ -377,7 +385,10 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
 
         if (gltfMaterial.pbrData.metallicRoughnessTexture.has_value())
         {
-            m_LoadedMaterials[i].MetallicRoughnessTexture = loadTexture(&gltfMaterial.pbrData.metallicRoughnessTexture.value(), i);
+            // LINEAR data: metallic (B) and roughness (G) are scalar quantities,
+            // not colour. Gamma-decoding them shifts both.
+            m_LoadedMaterials[i].MetallicRoughnessTexture = loadTexture(
+                &gltfMaterial.pbrData.metallicRoughnessTexture.value(), i, RHI::SamplerDesc::ColorSpace::Linear);
         }
 
         // Normal / occlusion / emissive. fastgltf exposes each as a TextureInfo
@@ -386,19 +397,21 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         if (gltfMaterial.normalTexture.has_value())
         {
             const auto& n = gltfMaterial.normalTexture.value();
-            m_LoadedMaterials[i].NormalTexture = loadTexture(&n, i);
+            m_LoadedMaterials[i].NormalTexture = loadTexture(&n, i, RHI::SamplerDesc::ColorSpace::Linear);
             m_LoadedMaterials[i].NormalScale = n.scale;
         }
 
         if (gltfMaterial.occlusionTexture.has_value())
         {
             const auto& o = gltfMaterial.occlusionTexture.value();
-            m_LoadedMaterials[i].OcclusionTexture = loadTexture(&o, i);
+            // Occlusion is a scalar cavity term in the R channel - LINEAR.
+            m_LoadedMaterials[i].OcclusionTexture = loadTexture(&o, i, RHI::SamplerDesc::ColorSpace::Linear);
             m_LoadedMaterials[i].OcclusionStrength = o.strength;
         }
 
         if (gltfMaterial.emissiveTexture.has_value())
         {
+            // Emissive is colour, so sRGB - the default the lambda already applies.
             m_LoadedMaterials[i].EmissiveTexture = loadTexture(&gltfMaterial.emissiveTexture.value(), i);
         }
 

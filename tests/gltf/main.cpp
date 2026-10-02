@@ -33,13 +33,14 @@
 #include "UHE/Core/Log.h"
 #include "UHE/Renderer3D/LoadModel.h"
 
-// Defined in gpu_stub.cpp: records the sampler the loader last asked for, so a
-// test can assert glTF's declared sampler state actually reached the factory.
-// A stub that ignored the argument would make this path untestable, and an
-// untestable path is the one that silently regresses.
+// Defined in gpu_stub.cpp: records every sampler the loader asked for, so a test
+// can assert glTF's declared sampler state and colour space actually reached the
+// factory. A stub that ignored the argument would make this path untestable, and
+// an untestable path is the one that silently regresses.
 namespace UHE
 {
 RHI::SamplerDesc StubLastRequestedSampler();
+const std::vector<RHI::SamplerDesc>& StubRequestedSamplers();
 int StubTextureCreateCallCount();
 void StubReset();
 } // namespace UHE
@@ -360,6 +361,12 @@ struct MaterialSpec
     float emissive[3] = {0.0f, 0.0f, 0.0f};
     float normalScale = -1.0f;      // negative = omit
     float occlusionStrength = -1.0f;
+    // Which texture SLOTS to declare. Each one forces a separate texture load,
+    // which is what makes per-slot colour space observable: baseColor and
+    // emissive are sRGB, the other three are linear data.
+    bool baseColorTexture = false;
+    bool metallicRoughnessTexture = false;
+    bool emissiveTexture = false;
     std::optional<SamplerSpec> sampler;
 };
 
@@ -393,6 +400,10 @@ struct AssetSpec
     // only care about indexing stay minimal.
     bool withNormals = false;
     bool withUvs = false;
+    // Adds a COLOR_0 attribute to the primitive. 3 = VEC3, 4 = VEC4, 0 = none.
+    // glTF permits both widths, and reading the wrong one consumes the wrong
+    // amount of stride, so the fixture has to be able to emit each.
+    std::size_t colorComponents = 0;
     // When nested, make the child node carry no mesh. That is the point of the
     // test: only nodes with a mesh produce a Mesh entry.
     bool childHasMesh = true;
@@ -445,6 +456,33 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     // Joints alternate between two bones across the quad and the weights are
     // normalized, which is what a real exporter emits. A fixture where every
     // vertex used bone 0 would still pass if the loader ignored joints entirely.
+    // Per-vertex colours, deliberately NOT all equal: a fixture where every vertex
+    // shares one colour would still pass if the loader read the accessor at the
+    // wrong offset, since every wrong read would return the same value.
+    // The component count MUST match what the accessor declares. Writing 3 floats
+    // while declaring VEC4 makes the loader read the NEXT vertex's components as
+    // this one's alpha - the fixture looks fine and the loader looks buggy.
+    std::vector<float> quadColors;
+    for (std::size_t v = 0; v < Quad::kVertexCount; ++v)
+    {
+        const float t = static_cast<float>(v) / static_cast<float>(Quad::kVertexCount);
+        quadColors.push_back(t);                        // R ramps 0 -> 1
+        quadColors.push_back(1.0f - t);                  // G ramps 1 -> 0
+        if (spec.colorComponents >= 4)
+        {
+            quadColors.push_back(0.5f);                  // B constant, a canary
+            // Alpha VARIES per vertex. A constant 1 is indistinguishable from
+            // hardcoding alpha to 1, which is the exact defect the VEC4 branch
+            // exists to prevent.
+            quadColors.push_back(0.25f + 0.5f * t);       // A ramps 0.25 -> 0.75
+        }
+    }
+    const std::size_t kColorBytes = Quad::kVertexCount * spec.colorComponents * sizeof(float);
+
+    const std::size_t colorBase = bin.size();
+    for (std::size_t i = 0; i < spec.meshCount; ++i)
+        bin.append(reinterpret_cast<const char*>(quadColors.data()), kColorBytes);
+
     const std::size_t skinBase = bin.size();
     if (spec.skinned)
     {
@@ -558,6 +596,18 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                 .endObject();
         }
     }
+    if (spec.colorComponents > 0)
+    {
+        for (std::size_t i = 0; i < spec.meshCount; ++i)
+        {
+            j.beginObject()
+                .field("buffer", 0)
+                .field("byteOffset", colorBase + i * kColorBytes)
+                .field("byteLength", kColorBytes)
+                .field("target", 34962)
+                .endObject();
+        }
+    }
     if (spec.skinned)
     {
         // JOINTS_0 then WEIGHTS_0 per mesh, matching the bufferView indices the
@@ -590,8 +640,15 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     const std::size_t firstIndexAccessor = spec.meshCount;
     const std::size_t firstNormalAccessor = firstIndexAccessor + (spec.useIndices ? spec.meshCount : 0);
     const std::size_t firstUvAccessor = firstNormalAccessor + (spec.withNormals ? spec.meshCount : 0);
-    const std::size_t firstJointsAccessor = firstUvAccessor + (spec.withUvs ? spec.meshCount : 0);
+    const std::size_t firstColorAccessor = firstUvAccessor + (spec.withUvs ? spec.meshCount : 0);
+    const std::size_t firstJointsAccessor = firstColorAccessor + (spec.colorComponents > 0 ? spec.meshCount : 0);
     const std::size_t firstWeightsAccessor = firstJointsAccessor + (spec.skinned ? spec.meshCount : 0);
+
+    // Count of bufferViews consumed before the skin block. Recomputed rather than
+    // guessed, because a hardcoded constant here silently points JOINTS_0 at the
+    // wrong accessor the moment another attribute is added before it.
+    const std::size_t viewsBeforeSkin = spec.meshCount * (1 + (spec.useIndices ? 1 : 0) + (spec.withNormals ? 1 : 0) +
+                                                         (spec.withUvs ? 1 : 0) + (spec.colorComponents > 0 ? 1 : 0));
 
     j.key("accessors").beginArray();
     for (std::size_t i = 0; i < spec.meshCount; ++i)
@@ -639,11 +696,23 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                 .endObject();
         }
     }
+    if (spec.colorComponents > 0)
+    {
+        for (std::size_t i = 0; i < spec.meshCount; ++i)
+        {
+            j.beginObject()
+                .field("bufferView", spec.meshCount * (1 + (spec.useIndices ? 1 : 0) + (spec.withNormals ? 1 : 0) +
+                                                      (spec.withUvs ? 1 : 0)) + i)
+                .field("componentType", 5126)
+                .field("count", Quad::kVertexCount)
+                .field("type", spec.colorComponents == 3 ? "VEC3" : "VEC4")
+                .endObject();
+        }
+    }
     if (spec.skinned)
     {
         // JOINTS_0 as VEC4 of unsigned int, matching glTF's joint indexing.
-        const std::size_t jointViewBase =
-            spec.meshCount * (1 + (spec.useIndices ? 1 : 0) + (spec.withNormals ? 1 : 0) + (spec.withUvs ? 1 : 0));
+        const std::size_t jointViewBase = viewsBeforeSkin;
         for (std::size_t i = 0; i < spec.meshCount; ++i)
         {
             j.beginObject()
@@ -678,6 +747,8 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
             j.field("NORMAL", firstNormalAccessor + i);
         if (spec.withUvs)
             j.field("TEXCOORD_0", firstUvAccessor + i);
+        if (spec.colorComponents > 0)
+            j.field("COLOR_0", firstColorAccessor + i);
         if (spec.skinned)
         {
             j.field("JOINTS_0", firstJointsAccessor + i);
@@ -700,6 +771,9 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     // is invalid glTF and fastgltf rejects the whole file.
     const bool needsTexture = spec.material && (spec.material->normalScale >= 0.0f ||
                                                 spec.material->occlusionStrength >= 0.0f ||
+                                                spec.material->baseColorTexture ||
+                                                spec.material->metallicRoughnessTexture ||
+                                                spec.material->emissiveTexture ||
                                                 spec.material->sampler.has_value());
     if (needsTexture)
     {
@@ -746,7 +820,16 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
             if (i == 0 && spec.material && spec.material->hasBaseColorFactor)
                 j.field("baseColorFactor", std::vector<double>{spec.material->baseColor[0], spec.material->baseColor[1],
                                                               spec.material->baseColor[2], spec.material->baseColor[3]});
-            j.field("metallicFactor", 0.0).field("roughnessFactor", 0.5).endObject();
+            j.field("metallicFactor", 0.0).field("roughnessFactor", 0.5);
+            // baseColorTexture and metallicRoughnessTexture are children of
+            // pbrMetallicRoughness, not of the material. Emitting them at
+            // material level produces valid JSON that fastgltf silently ignores,
+            // so the slots never load and the test asserts on nothing.
+            if (i == 0 && spec.material && spec.material->baseColorTexture)
+                j.key("baseColorTexture").beginObject().field("index", 0).endObject();
+            if (i == 0 && spec.material && spec.material->metallicRoughnessTexture)
+                j.key("metallicRoughnessTexture").beginObject().field("index", 0).endObject();
+            j.endObject();
 
             if (i == 0 && spec.material)
             {
@@ -761,6 +844,8 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                     j.field("doubleSided", true);
                 if (m.hasEmissiveFactor)
                     j.field("emissiveFactor", std::vector<double>{m.emissive[0], m.emissive[1], m.emissive[2]});
+                if (m.emissiveTexture)
+                    j.key("emissiveTexture").beginObject().field("index", 0).endObject();
                 if (m.normalScale >= 0.0f)
                     j.key("normalTexture").beginObject().field("index", 0).field("scale", m.normalScale).endObject();
                 if (m.occlusionStrength >= 0.0f)
@@ -1466,6 +1551,255 @@ int main()
             check(s.wrapS == W::ClampToEdge, "declared wrapS applied");
             // wrapT omitted must not inherit wrapS - per-axis is the whole point.
             check(s.wrapT == W::Repeat, "omitted wrapT falls back to REPEAT, not wrapS");
+        }
+    }
+
+    // =====================================================================
+    // Colour space is an IMAGE property (Vulkan encodes sRGB in the format, not
+    // the sampler). glTF mandates sRGB for baseColor and emissive, and LINEAR
+    // data for normal, metallicRoughness and occlusion. Loading every one of
+    // them as sRGB gamma-decodes the linear maps on every sample - which is why
+    // a normal map can light a surface the wrong way round.
+    // =====================================================================
+
+    section("texture colour space follows the glTF slot");
+    {
+        using CS = UHE::RHI::SamplerDesc::ColorSpace;
+
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        // Every slot declared at once, so the assertion sees both kinds in one
+        // load rather than trusting a single default.
+        ms.baseColorTexture = true;
+        ms.emissiveTexture = true;
+        ms.metallicRoughnessTexture = true;
+        ms.normalScale = 1.0f;
+        ms.occlusionStrength = 1.0f;
+        spec.material = ms;
+
+        ::UHE::StubReset();
+        const fs::path path = writeAsset(dir, "colorspace.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model with every texture slot loads"))
+        {
+            const auto& requested = ::UHE::StubRequestedSamplers();
+            // Five slots: baseColor, metallicRoughness, normal, occlusion, emissive.
+            check(requested.size() == 5,
+                  "all five texture slots requested a texture (" + std::to_string(requested.size()) + ")");
+
+            int srgb = 0;
+            int linear = 0;
+            for (const auto& s : requested)
+            {
+                if (s.colorSpace == CS::SRGB) ++srgb;
+                else if (s.colorSpace == CS::Linear) ++linear;
+            }
+            // Exactly two colour slots (baseColor, emissive) and three data slots
+            // (metallicRoughness, normal, occlusion). Counting rather than
+            // asserting a load ORDER: the loader is free to visit the slots in
+            // whatever sequence is correct, and pinning that here would fail on
+            // a harmless reorder.
+            check(srgb == 2, "exactly the 2 colour slots (baseColor, emissive) are sRGB (" + std::to_string(srgb) + ")");
+            check(linear == 3, "exactly the 3 data slots (metalRough, normal, occlusion) are linear (" + std::to_string(linear) + ")");
+        }
+    }
+
+    section("baseColor defaults to sRGB when it is the only slot");
+    {
+        using CS = UHE::RHI::SamplerDesc::ColorSpace;
+
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        ms.baseColorTexture = true;
+        spec.material = ms;
+
+        ::UHE::StubReset();
+        const fs::path path = writeAsset(dir, "colorspace_base.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model with only a baseColor texture loads"))
+        {
+            const auto s = ::UHE::StubLastRequestedSampler();
+            // The default must be the COLOUR space, because baseColor is the slot
+            // every glTF asset has. Defaulting to linear would make every
+            // un-updated asset render too dark.
+            check(s.colorSpace == CS::SRGB, "baseColor is sRGB");
+        }
+    }
+
+    section("normal texture is linear, not sRGB");
+    {
+        using CS = UHE::RHI::SamplerDesc::ColorSpace;
+
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        ms.normalScale = 1.0f; // declares normalTexture only
+        spec.material = ms;
+
+        ::UHE::StubReset();
+        const fs::path path = writeAsset(dir, "colorspace_normal.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model with a normal texture loads"))
+        {
+            const auto s = ::UHE::StubLastRequestedSampler();
+            // Normal maps store a direction in [-1,1]. Gamma-decoding them bends
+            // the direction, so lighting comes out wrong - not just darker.
+            check(s.colorSpace == CS::Linear, "normalTexture is loaded as linear data");
+        }
+    }
+
+    // =====================================================================
+    // COLOR_0 vertex colours. The failure mode without it is a model that loads,
+    // passes every other check, and renders with its painted colours missing.
+    // =====================================================================
+
+    section("COLOR_0 VEC4 reaches the vertex data");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        spec.colorComponents = 4;
+
+        const fs::path path = writeAsset(dir, "color4.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model with a VEC4 COLOR_0 loads"))
+        {
+            const auto& geom = model.GetGeometry();
+            bool got = !geom.empty() && !geom[0].primitive.empty();
+            check(got, "primitive survived");
+            if (got)
+            {
+                const auto& prim = geom[0].primitive[0];
+                check(prim.hasVertexColor, "hasVertexColor set for COLOR_0");
+                // Vertex 0 is (0, 1, 0.5, 1) and vertex 3 is (0.5, 0.5, 0.5, 1).
+                // Checking exact values is what proves the accessor was read at
+                // the right offset; a single-colour fixture would not.
+                if (prim.vertices.size() > 3)
+                {
+                    const auto& v0 = prim.vertices[0].color;
+                    check(std::fabs(v0.x - 0.0f) < 1e-5f && std::fabs(v0.y - 1.0f) < 1e-5f &&
+                              std::fabs(v0.z - 0.5f) < 1e-5f && std::fabs(v0.w - 0.25f) < 1e-5f,
+                          "VEC4 colour read exactly (r=0, g=1, b=0.5, a=0.25)");
+                    const auto& v3 = prim.vertices[3].color;
+                    check(std::fabs(v3.x - 0.5f) < 1e-5f && std::fabs(v3.y - 0.5f) < 1e-5f,
+                          "VEC4 colour read at the right vertex (v3 r=0.5)");
+                }
+            }
+        }
+    }
+
+    section("COLOR_0 VEC3 gets alpha 1");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        spec.colorComponents = 3;
+
+        const fs::path path = writeAsset(dir, "color3.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model with a VEC3 COLOR_0 loads"))
+        {
+            const auto& geom = model.GetGeometry();
+            bool got = !geom.empty() && !geom[0].primitive.empty();
+            check(got, "primitive survived a VEC3 COLOR_0");
+            if (got)
+            {
+                const auto& prim = geom[0].primitive[0];
+                check(prim.hasVertexColor, "hasVertexColor set for a VEC3 COLOR_0");
+                if (!prim.vertices.empty())
+                {
+                    // Reading a VEC3 accessor as VEC4 would pull the next vertex's
+                    // components in as alpha, so alpha is the tell: the spec says
+                    // it is 1.
+                    check(std::fabs(prim.vertices[0].color.w - 1.0f) < 1e-5f, "VEC3 colour gets alpha 1");
+                    check(std::fabs(prim.vertices[0].color.y - 1.0f) < 1e-5f, "VEC3 rgb read exactly");
+                }
+            }
+        }
+    }
+
+    section("no COLOR_0 leaves vertex colour white and the flag off");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        // colorComponents stays 0.
+
+        const fs::path path = writeAsset(dir, "nocolor.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model without COLOR_0 loads"))
+        {
+            const auto& geom = model.GetGeometry();
+            bool got = !geom.empty() && !geom[0].primitive.empty();
+            check(got, "primitive survived");
+            if (got)
+            {
+                const auto& prim = geom[0].primitive[0];
+                check(!prim.hasVertexColor, "hasVertexColor off when COLOR_0 is absent");
+                if (!prim.vertices.empty())
+                {
+                    // WHITE, not black. A zero default here tints every mesh in
+                    // the engine black the moment the shader starts multiplying it.
+                    check(prim.vertices[0].color == glm::vec4(1.0f), "default vertex colour is opaque white");
+                }
+            }
+        }
+    }
+
+    section("COLOR_0 survives vertex merging and reordering");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        // Normals and UVs give the merge pass two vertices differing only in
+        // colour to collapse - the case where losing the attribute would be
+        // visible.
+        spec.withNormals = true;
+        spec.withUvs = true;
+        spec.colorComponents = 4;
+
+        const fs::path path = writeAsset(dir, "color_opt.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "optimized model with COLOR_0 loads"))
+        {
+            const auto& geom = model.GetGeometry();
+            bool got = !geom.empty() && !geom[0].primitive.empty();
+            check(got, "primitive survived optimization");
+            if (got)
+            {
+                const auto& prim = geom[0].primitive[0];
+                check(prim.hasVertexColor, "hasVertexColor survives optimization");
+                // Every colour must still be one the fixture wrote. If the merge
+                // hashed colour out, or the fetch reorder lost it, some vertex
+                // would carry a value that is not in the fixture's ramp.
+                bool allKnown = true;
+                for (const auto& v : prim.vertices)
+                {
+                    const bool bOk = std::fabs(v.color.z - 0.5f) < 1e-5f;
+                    const bool rgOk = std::fabs(v.color.x + v.color.y - 1.0f) < 1e-4f;
+                    // Alpha is tied to R by the fixture's ramp, so this also
+                    // catches alpha being dropped or defaulted to 1.
+                    const bool aOk = std::fabs(v.color.w - (0.25f + 0.5f * v.color.x)) < 1e-4f;
+                    if (!bOk || !rgOk || !aOk)
+                    {
+                        allKnown = false;
+                        break;
+                    }
+                }
+                check(allKnown, "every vertex keeps a colour the fixture wrote, after merge + fetch reorder");
+            }
         }
     }
 

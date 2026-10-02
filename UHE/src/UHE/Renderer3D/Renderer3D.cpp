@@ -75,7 +75,8 @@ void Renderer3D::Init()
                              {RHI::ShaderDataType::Float2, "a_TexCoord"},
                              {RHI::ShaderDataType::Int4, "a_Joints"},
                              {RHI::ShaderDataType::Float4, "a_Weights"},
-                             {RHI::ShaderDataType::Float4, "a_Tangent"}};
+                             {RHI::ShaderDataType::Float4, "a_Tangent"},
+                             {RHI::ShaderDataType::Float4, "a_Color"}};
 
     // 256 bytes, which is EXACTLY maxPushConstantsSize on this device (vulkaninfo,
     // GFX9). There is no headroom left: a fourth texture map or any new material
@@ -249,7 +250,7 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
         int emissiveTextureSlot;
         float normalScale;
         float occlusionStrength;
-        float alphaCutoff;
+        int alphaCutoff;
         int alphaMode;
         // 12 bytes of explicit padding, NOT an assumption that the compiler will
         // insert it. Slang lays this block out in std430: alphaMode ends at 212,
@@ -258,7 +259,12 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
         // 12 bytes - which reads as plausible garbage in every material field
         // rather than as a validation error. The matching static_assert below
         // pins both offsets against the compiled SPIR-V layout.
-        float padding[3];
+        //
+        // One of those 12 spare bytes is spent here on useVertexColor. The struct
+        // is already at maxPushConstantsSize (256 on GFX9), so a new flag has to
+        // come out of existing padding - there is no room to append one.
+        int useVertexColor;
+        float padding[2];
         glm::vec4 baseColorFactor;
         glm::vec4 emissiveFactor;
     } pc;
@@ -286,6 +292,7 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
     pc.occlusionStrength = 1.0f;
     pc.alphaCutoff = 0.5f;
     pc.alphaMode = 0;
+    pc.useVertexColor = 0;
     pc.baseColorFactor = glm::vec4(1.0f);
     pc.emissiveFactor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -337,6 +344,10 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
             glm::vec4 baseColorFactor(1.0f);
             glm::vec4 emissiveFactor(0.0f, 0.0f, 0.0f, 0.0f);
             bool doubleSided = false;
+            // COLOR_0 is a per-PRIMITIVE attribute in glTF, so the flag lives on
+            // the primitive rather than the material: two materials in one mesh
+            // can have vertex colours on different primitives.
+            int useVertexColor = prim.hasVertexColor ? 1 : 0;
 
             if (prim.materialIndex < model.GetMaterials().size())
             {
@@ -378,6 +389,7 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
             pc.occlusionStrength = occlusionStrength;
             pc.alphaCutoff = alphaCutoff;
             pc.alphaMode = alphaMode;
+            pc.useVertexColor = useVertexColor;
             pc.baseColorFactor = baseColorFactor;
             pc.emissiveFactor = emissiveFactor;
             cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
