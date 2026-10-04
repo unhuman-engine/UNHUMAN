@@ -2,7 +2,7 @@
 #include <vector>
 #include "TriangleShaders.h"
 
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 #include "Platform/Vulkan/VulkanDevice.h"
 
 using namespace UHE;

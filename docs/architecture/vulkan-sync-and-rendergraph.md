@@ -1,10 +1,10 @@
 <!-- UHE docs — index: ../README.md · roadmap: ../ROADMAP.md -->
 
 > **Status:** `DESIGN`, not implemented. Related issues:
-> [#2](https://github.com/rajaryan2007/unhuman/issues/2),
-> [PR #27](https://github.com/rajaryan2007/unhuman/pulls/27),
-> [#4](https://github.com/rajaryan2007/unhuman/issues/4),
-> [#14](https://github.com/rajaryan2007/unhuman/issues/14).
+> [#2](https://github.com/unhuman-engine/UNHUMAN/issues/2),
+> [PR #27](https://github.com/unhuman-engine/UNHUMAN/pull/27),
+> [#4](https://github.com/unhuman-engine/UNHUMAN/issues/4),
+> [#14](https://github.com/unhuman-engine/UNHUMAN/issues/14).
 > **Code lands in:** `UHE/src/Platform/Vulkan/`.
 > **Snapshot:** written against `improve_vulkan` at `c271467`; `file:line`
 > references are snapshots and should be re-verified before acting.

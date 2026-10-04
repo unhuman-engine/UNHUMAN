@@ -3,11 +3,11 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include "UHE/AssestsManager/VfsSystem.h"
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
+#include "UHE/Renderer/Font.h"
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/SlangCompiler.h"
-#include "UHE/Renderer/Font.h"
 #include "UHE/Scene/Components.h"
 
 namespace UHE
@@ -32,8 +32,8 @@ struct TextVertex
     float EntityID;
 };
 
-
-struct Renderer2DPushConstants {
+struct Renderer2DPushConstants
+{
     glm::mat4 viewProjection;
     int textureIndices[32];
 };
@@ -55,11 +55,10 @@ struct Renderer2DData
     RHI::ShaderHandle TextVertexShader;
     RHI::ShaderHandle TextFragmentShader;
     RHI::BufferHandle TextVertexBuffers[2];
-    
+
     uint32_t TextIndexCount = 0;
     TextVertex* TextVertexBufferBase = nullptr;
     TextVertex* TextVertexBufferPtr = nullptr;
-
 
     uint32_t QuadIndexCount = 0;
     QuadVertex* QuadVertexBufferBase = nullptr;
@@ -70,7 +69,7 @@ struct Renderer2DData
     Renderer2D::Statistics Stats;
 
     RHI::TextureHandle WhiteTexture;
-    
+
     uint32_t TextureSlots[MaxTextureSlots];
     uint32_t TextureSlotIndex = 1; // 0 is white texture
     glm::mat4 ViewProjectionMatrix;
@@ -132,7 +131,6 @@ void Renderer2D::Init()
     }
     s_Data.TextVertexBufferBase = new TextVertex[s_Data.MaxVertices];
 
-
     RHI::TextureDesc whiteTexDesc{};
     whiteTexDesc.width = 1;
     whiteTexDesc.height = 1;
@@ -140,7 +138,8 @@ void Renderer2D::Init()
     whiteTexDesc.usage = RHI::TextureUsage::Sampled | RHI::TextureUsage::TransferDst;
     s_Data.WhiteTexture = device.CreateTexture(whiteTexDesc);
     u32 whiteTextureData = 0xffffffff;
-    device.GetCurrentCommandBuffer().UpdateTexture(s_Data.WhiteTexture, std::span<const u8>(reinterpret_cast<const u8*>(&whiteTextureData), sizeof(u32)));
+    device.GetCurrentCommandBuffer().UpdateTexture(
+        s_Data.WhiteTexture, std::span<const u8>(reinterpret_cast<const u8*>(&whiteTextureData), sizeof(u32)));
     s_Data.TextureSlots[0] = reinterpret_cast<RHI::RHITexture*>(s_Data.WhiteTexture)->GetTextureIndex();
 
     // Compile Shader
@@ -178,9 +177,10 @@ void Renderer2D::Init()
     RHI::GraphicsPipelineDesc pipeDesc{};
     pipeDesc.vertexShader = s_Data.QuadVertexShader;
     pipeDesc.fragmentShader = s_Data.QuadFragmentShader;
-    pipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"}, {RHI::ShaderDataType::Float4, "a_Color"},
-                             {RHI::ShaderDataType::Float2, "a_TexCoord"}, {RHI::ShaderDataType::Float, "a_TexIndex"},
-                             {RHI::ShaderDataType::Float, "a_TilingFactor"}, {RHI::ShaderDataType::Float, "a_EntityID"}};
+    pipeDesc.vertexLayout = {
+        {RHI::ShaderDataType::Float3, "a_Position"},    {RHI::ShaderDataType::Float4, "a_Color"},
+        {RHI::ShaderDataType::Float2, "a_TexCoord"},    {RHI::ShaderDataType::Float, "a_TexIndex"},
+        {RHI::ShaderDataType::Float, "a_TilingFactor"}, {RHI::ShaderDataType::Float, "a_EntityID"}};
     pipeDesc.pushConstantSize = sizeof(Renderer2DPushConstants);
     pipeDesc.blendMode = RHI::BlendMode::Alpha;
     pipeDesc.depthTest = true;
@@ -226,8 +226,10 @@ void Renderer2D::Init()
     RHI::GraphicsPipelineDesc textPipeDesc{};
     textPipeDesc.vertexShader = s_Data.TextVertexShader;
     textPipeDesc.fragmentShader = s_Data.TextFragmentShader;
-    textPipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"}, {RHI::ShaderDataType::Float4, "a_Color"},
-                                 {RHI::ShaderDataType::Float2, "a_TexCoord"}, {RHI::ShaderDataType::Float, "a_TexIndex"},
+    textPipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"},
+                                 {RHI::ShaderDataType::Float4, "a_Color"},
+                                 {RHI::ShaderDataType::Float2, "a_TexCoord"},
+                                 {RHI::ShaderDataType::Float, "a_TexIndex"},
                                  {RHI::ShaderDataType::Float, "a_EntityID"}};
     textPipeDesc.pushConstantSize = sizeof(Renderer2DPushConstants);
     textPipeDesc.blendMode = RHI::BlendMode::Alpha;
@@ -240,7 +242,6 @@ void Renderer2D::Init()
 
     s_Data.TextPipeline = device.CreateGraphicsPipeline(textPipeDesc);
     UHE_CORE_ASSERT(s_Data.TextPipeline, "Failed to create TextPipeline!");
-
 }
 
 void Renderer2D::Shutdown()
@@ -275,7 +276,7 @@ void Renderer2D::BeginScene(const Camera& camera, const glm::mat4& transform)
     UHE_PROFILE_FUNCTION();
     s_Data.ViewProjectionMatrix = camera.GetProjection() * glm::inverse(transform);
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
-    
+
     StartBatch();
 }
 
@@ -284,7 +285,7 @@ void Renderer2D::BeginScene(const EditorCamera& camera)
     UHE_PROFILE_FUNCTION();
     s_Data.ViewProjectionMatrix = camera.GetViewProjection();
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
-    
+
     StartBatch();
 }
 
@@ -324,10 +325,11 @@ void Renderer2D::Flush()
         cmd.BindPipeline(s_Data.QuadPipeline);
         cmd.BindVertexBuffer(s_Data.QuadVertexBuffers[frameIndex], 0);
         cmd.BindIndexBuffer(s_Data.QuadIndexBuffer, 0);
-        
+
         Renderer2DPushConstants pc;
         pc.viewProjection = s_Data.ViewProjectionMatrix;
-        for (uint32_t i = 0; i < 32; i++) {
+        for (uint32_t i = 0; i < 32; i++)
+        {
             pc.textureIndices[i] = (i < s_Data.TextureSlotIndex) ? s_Data.TextureSlots[i] : 0;
         }
         cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(Renderer2DPushConstants), 0);
@@ -344,10 +346,11 @@ void Renderer2D::Flush()
         cmd.BindPipeline(s_Data.TextPipeline);
         cmd.BindVertexBuffer(s_Data.TextVertexBuffers[frameIndex], 0);
         cmd.BindIndexBuffer(s_Data.QuadIndexBuffer, 0);
-        
+
         Renderer2DPushConstants pc;
         pc.viewProjection = s_Data.ViewProjectionMatrix;
-        for (uint32_t i = 0; i < 32; i++) {
+        for (uint32_t i = 0; i < 32; i++)
+        {
             pc.textureIndices[i] = (i < s_Data.TextureSlotIndex) ? s_Data.TextureSlots[i] : 0;
         }
         cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(Renderer2DPushConstants), 0);
@@ -515,14 +518,16 @@ void Renderer2D::DrawQuad(const glm::mat4& transform, const Ref<SubTexture2D>& s
     s_Data.Stats.QuadCount++;
 }
 
-
-void Renderer2D::DrawString(const std::string& text, Ref<Font2D> font, const glm::mat4& transform, const glm::vec4& color, f32 kerning, f32 lineSpacing, i32 entityID)
+void Renderer2D::DrawString(const std::string& text, Ref<Font2D> font, const glm::mat4& transform,
+                            const glm::vec4& color, f32 kerning, f32 lineSpacing, i32 entityID)
 {
     UHE_PROFILE_FUNCTION();
-    if (!font || !font->IsValid()) return;
-    
+    if (!font || !font->IsValid())
+        return;
+
     const auto& fontGeometry = font->GetAtlas();
-    if (!fontGeometry) return;
+    if (!fontGeometry)
+        return;
 
     f32 textureIndex = 0.0f;
     u32 globalTexIndex = reinterpret_cast<RHI::RHITexture*>(fontGeometry)->GetTextureIndex();
@@ -547,7 +552,7 @@ void Renderer2D::DrawString(const std::string& text, Ref<Font2D> font, const glm
 
     f64 x = 0.0;
     f64 y = 0.0;
-    
+
     f64 scale = 1.0 / (f64)font->GetLineHeight();
 
     for (size_t i = 0; i < text.size(); i++)
@@ -555,7 +560,7 @@ void Renderer2D::DrawString(const std::string& text, Ref<Font2D> font, const glm
         if (s_Data.TextIndexCount >= Renderer2DData::MaxIndices)
         {
             NextBatch();
-            
+
             // Re-resolve texture index as NextBatch resets texture slots
             textureIndex = 0.0f;
             for (u32 j = 1; j < s_Data.TextureSlotIndex; j++)
@@ -582,24 +587,49 @@ void Renderer2D::DrawString(const std::string& text, Ref<Font2D> font, const glm
         char32_t character = 0;
         int seqLen = 1;
 
-        if ((c0 & 0x80) == 0) {
+        if ((c0 & 0x80) == 0)
+        {
             character = c0;
-        } else if ((c0 & 0xE0) == 0xC0) {
-            if (i + 1 < text.length()) {
+        }
+        else if ((c0 & 0xE0) == 0xC0)
+        {
+            if (i + 1 < text.length())
+            {
                 character = ((c0 & 0x1F) << 6) | (text[i + 1] & 0x3F);
                 seqLen = 2;
-            } else { character = 0xFFFD; }
-        } else if ((c0 & 0xF0) == 0xE0) {
-            if (i + 2 < text.length()) {
+            }
+            else
+            {
+                character = 0xFFFD;
+            }
+        }
+        else if ((c0 & 0xF0) == 0xE0)
+        {
+            if (i + 2 < text.length())
+            {
                 character = ((c0 & 0x0F) << 12) | ((text[i + 1] & 0x3F) << 6) | (text[i + 2] & 0x3F);
                 seqLen = 3;
-            } else { character = 0xFFFD; }
-        } else if ((c0 & 0xF8) == 0xF0) {
-            if (i + 3 < text.length()) {
-                character = ((c0 & 0x07) << 18) | ((text[i + 1] & 0x3F) << 12) | ((text[i + 2] & 0x3F) << 6) | (text[i + 3] & 0x3F);
+            }
+            else
+            {
+                character = 0xFFFD;
+            }
+        }
+        else if ((c0 & 0xF8) == 0xF0)
+        {
+            if (i + 3 < text.length())
+            {
+                character = ((c0 & 0x07) << 18) | ((text[i + 1] & 0x3F) << 12) | ((text[i + 2] & 0x3F) << 6) |
+                            (text[i + 3] & 0x3F);
                 seqLen = 4;
-            } else { character = 0xFFFD; }
-        } else {
+            }
+            else
+            {
+                character = 0xFFFD;
+            }
+        }
+        else
+        {
             character = 0xFFFD; // Invalid byte, use replacement character
         }
 
@@ -627,12 +657,10 @@ void Renderer2D::DrawString(const std::string& text, Ref<Font2D> font, const glm
             {glyph->UVMin.x, glyph->UVMin.y}  // Top Left
         };
 
-        glm::vec4 vertexPositions[4] = {
-            {planeL, planeB, 0.0f, 1.0f},
-            {planeR, planeB, 0.0f, 1.0f},
-            {planeR, planeT, 0.0f, 1.0f},
-            {planeL, planeT, 0.0f, 1.0f}
-        };
+        glm::vec4 vertexPositions[4] = {{planeL, planeB, 0.0f, 1.0f},
+                                        {planeR, planeB, 0.0f, 1.0f},
+                                        {planeR, planeT, 0.0f, 1.0f},
+                                        {planeL, planeT, 0.0f, 1.0f}};
 
         for (i32 v = 0; v < 4; v++)
         {

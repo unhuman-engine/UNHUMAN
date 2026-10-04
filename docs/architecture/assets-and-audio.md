@@ -3,7 +3,7 @@
 > **Status:** `DESIGN`. Phase A below is the intended first step and is not
 > started. The immediate audio fixes are independent of the design and can land
 > at any time. Related issue:
-> [#24](https://github.com/rajaryan2007/unhuman/issues/24) for visualization. The
+> [#24](https://github.com/unhuman-engine/UNHUMAN/issues/24) for visualization. The
 > audio backend itself landed earlier with miniaudio.
 > **Code lands in:** `UHE/src/UHE/AssestsManager/`, `UHE/src/UHE/Audio/`,
 > `UHE/src/UHE/Renderer3D/`.

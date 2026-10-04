@@ -1,7 +1,7 @@
 #include "uhepch.h"
 #include "Font.h"
 #include "UHE/AssestsManager/VfsSystem.h"
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Renderer.h"
 #include "msdf-atlas-gen/FontGeometry.h"
@@ -39,20 +39,23 @@ static RHI::TextureHandle CreateAtlasTexture(const std::vector<msdf_atlas::Glyph
     msdfgen::BitmapConstSection<T, N> bitmap = static_cast<msdfgen::BitmapConstSection<T, N>>(generator.atlasStorage());
 
     bool allZeros = true;
-    for (size_t i = 0; i < width * height * N; i++) {
-        if (reinterpret_cast<const u8*>(bitmap.pixels)[i] != 0) {
+    for (size_t i = 0; i < width * height * N; i++)
+    {
+        if (reinterpret_cast<const u8*>(bitmap.pixels)[i] != 0)
+        {
             allZeros = false;
             break;
         }
     }
-    if (allZeros) {
+    if (allZeros)
+    {
         UHE_CORE_ERROR("MSDF ATLAS IS COMPLETELY BLACK!!!");
-    } else {
-        UHE_CORE_INFO("MSDF Atlas generated successfully. First few bytes: {}, {}, {}, {}", 
-            reinterpret_cast<const u8*>(bitmap.pixels)[0],
-            reinterpret_cast<const u8*>(bitmap.pixels)[1],
-            reinterpret_cast<const u8*>(bitmap.pixels)[2],
-            reinterpret_cast<const u8*>(bitmap.pixels)[3]);
+    }
+    else
+    {
+        UHE_CORE_INFO("MSDF Atlas generated successfully. First few bytes: {}, {}, {}, {}",
+                      reinterpret_cast<const u8*>(bitmap.pixels)[0], reinterpret_cast<const u8*>(bitmap.pixels)[1],
+                      reinterpret_cast<const u8*>(bitmap.pixels)[2], reinterpret_cast<const u8*>(bitmap.pixels)[3]);
     }
 
     auto& device = Renderer::GetDevice();

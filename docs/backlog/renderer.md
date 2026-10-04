@@ -1,7 +1,7 @@
 # Renderer Backlog (Vulkan)
 
-> **Status:** mirror of [#7](https://github.com/rajaryan2007/unhuman/issues/7), items split into
-> [#25](https://github.com/rajaryan2007/unhuman/issues/25) and [#29](https://github.com/rajaryan2007/unhuman/issues/29).
+> **Status:** mirror of [#7](https://github.com/unhuman-engine/UNHUMAN/issues/7), items split into
+> [#25](https://github.com/unhuman-engine/UNHUMAN/issues/25) and [#29](https://github.com/unhuman-engine/UNHUMAN/issues/29).
 > **Index:** [../README.md](../README.md) · **Roadmap:** [../ROADMAP.md](../ROADMAP.md)
 > Last truth-up: 2026-09-13 against `improve_vulkan` @ `c271467`.
 
@@ -16,8 +16,8 @@ Status vocabulary: `DONE` · `IN PROGRESS` · `STUB` (files exist, no behaviour)
 ## Descriptor / fallback
 
 - [x] Descriptor set binding for fallback — **DONE** (`VulkanDescriptorManager/Pool/Set`, PR #6/#11)
-- [ ] Descriptor set path in the *frontend* — **TODO** — [#14](https://github.com/rajaryan2007/unhuman/issues/14); backend supports the new path, `Renderer3D`/editor still call the old one
-- [ ] Synchronization of `1.1` for fallback (Android-shaped path) — **TODO** — [#2](https://github.com/rajaryan2007/unhuman/issues/2), design §2.2 capability tiers in the sync doc
+- [ ] Descriptor set path in the *frontend* — **TODO** — [#14](https://github.com/unhuman-engine/UNHUMAN/issues/14); backend supports the new path, `Renderer3D`/editor still call the old one
+- [ ] Synchronization of `1.1` for fallback (Android-shaped path) — **TODO** — [#2](https://github.com/unhuman-engine/UNHUMAN/issues/2), design §2.2 capability tiers in the sync doc
 - [ ] Compute feature — **IN PROGRESS** — `VulkanComputePipeline.{h,cpp}` builds through
       `RHIDevice::CreateComputePipeline`; `RHICommandBuffer::Dispatch` and compute pipeline creation
       are wired (`37b7660`). Still no compute shader asset, no caller dispatching, and
@@ -31,7 +31,7 @@ Status vocabulary: `DONE` · `IN PROGRESS` · `STUB` (files exist, no behaviour)
 
 ## Command submission
 
-- [x] Job system — **DONE** — `UHE/Jobsystem/{Jobsystem,Taskgraph}` landed in `c271467`, documented in [../architecture/jobsystem.md](../architecture/jobsystem.md) (issue [#5](https://github.com/rajaryan2007/unhuman/issues/5) is still open only for the upgrades listed there, §10)
+- [x] Job system — **DONE** — `UHE/Jobsystem/{Jobsystem,Taskgraph}` landed in `c271467`, documented in [../architecture/jobsystem.md](../architecture/jobsystem.md) (issue [#5](https://github.com/unhuman-engine/UNHUMAN/issues/5) is still open only for the upgrades listed there, §10)
 - [ ] Multithreaded command buffer recording and submission — **TODO** — sync doc §2.8; blocked on per-thread command pools in `VulkanDevice::ImmediateSubmit`
 
 ## Shader system
