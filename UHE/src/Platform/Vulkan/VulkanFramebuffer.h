@@ -15,6 +15,8 @@ struct FramebufferDesc
     u32 layers = 1;
 };
 
+/// Owns a VkFramebuffer binding a set of image views to a render pass.
+/// \see https://docs.vulkan.org/refpages/latest/refpages/source/VkFramebuffer.html
 class VulkanFramebuffer
 {
 public:
@@ -26,7 +28,7 @@ public:
     void Init(const FramebufferDesc& desc);
     void Cleanup();
 
-    vk::Framebuffer GetHandle() const { return *m_Framebuffer; }
+    [[nodiscard]] vk::Framebuffer GetHandle() const { return *m_Framebuffer; }
 
 private:
     vk::raii::Framebuffer m_Framebuffer = nullptr;

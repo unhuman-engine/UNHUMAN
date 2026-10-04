@@ -4,6 +4,7 @@
 
 namespace UHE::RHI::VULKAN
 {
+
 void VulkanBinaryFence::Init(VulkanContext* context, bool signaled)
 {
     m_context = context;
@@ -19,7 +20,6 @@ void VulkanBinaryFence::Init(VulkanContext* context, bool signaled)
 
 void VulkanBinaryFence::Shutdown()
 {
-
     m_Fence = nullptr;
     m_context = nullptr;
 }
@@ -28,7 +28,6 @@ void VulkanBinaryFence::WaitOnCpuIn() const
 {
     if (m_context && *m_Fence)
     {
-
         (void)m_context->logicalDeviceHandle->waitForFences({*m_Fence}, VK_TRUE, UINT64_MAX);
     }
 }
@@ -44,7 +43,9 @@ void VulkanBinaryFence::ResetIn() const
 bool VulkanBinaryFence::IsSignaled() const
 {
     if (!m_context || !*m_Fence)
+    {
         return false;
+    }
     return m_Fence.getStatus() == vk::Result::eSuccess;
 }
 

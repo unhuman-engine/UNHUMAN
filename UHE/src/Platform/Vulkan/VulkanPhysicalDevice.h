@@ -6,12 +6,17 @@
 
 namespace UHE::RHI::VULKAN
 {
+/// Selected queue family indices for the physical device.
 struct QueueFamilyIndices
 {
     std::optional<uint32_t> graphicsFamily;
-    bool isComplete() const { return graphicsFamily.has_value(); }
+    [[nodiscard]] bool isComplete() const { return graphicsFamily.has_value(); }
 };
 
+/**
+ * \brief Picks and wraps the physical device (GPU) the backend will use.
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/vkEnumeratePhysicalDevices.html
+ */
 class VulkanPhysicalDevice
 {
 public:
@@ -22,6 +27,7 @@ public:
     void initPhysicalDevice(VulkanInstance& instance);
     [[nodiscard]] vk::raii::PhysicalDevice& getPhysicalDevice() { return m_physicalDevice; }
     [[nodiscard]] const QueueFamilyIndices& getQueueFamilyIndices() const { return m_queueFamilyIndices; }
+    /// Scores a candidate device (higher is better); used to pick among suitable GPUs.
     [[nodiscard]] i32 RateDevice(const vk::raii::PhysicalDevice& device) const;
     [[nodiscard]] bool IsDeviceSuitable(const vk::raii::PhysicalDevice& device) const;
     void GetLogicalDeviceInfo(u32& vendorID, u32& deviceID) const

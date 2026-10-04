@@ -1,8 +1,8 @@
 #pragma once
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
+#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
 #include "Platform/Vulkan/VulkanBarrierEncoder.h"
 #include "Platform/Vulkan/VulkanContext.h"
 #include "Platform/Vulkan/VulkanDescriptorManager.h"
@@ -20,6 +20,16 @@ namespace UHE::RHI::VULKAN
 {
 
 class VulkanBuffer;
+
+/**
+ * \brief Vulkan implementation of RHIDevice; owns the whole backend object graph.
+ *
+ * Created by RHIDevice::Create and torn down with the renderer. It builds the
+ * instance / physical / logical device, swapchain, descriptor manager, per-frame
+ * contexts, render graph and the sync-tier selection, then drives the Begin/End loop.
+ *
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/vkCreateInstance.html
+ */
 class UHE_API VulkanDevice final : public RHIDevice
 {
 public:
@@ -139,15 +149,15 @@ private:
     // Frame-in-flight sync
     static constexpr u32 MAX_FRAMES_IN_FLIGHT = 2;
     std::array<VulkanFrameContext, MAX_FRAMES_IN_FLIGHT> m_Frames;
-    std::vector<vk::raii::Semaphore> m_RenderFinishedSemaphores; // binary, per swapchain image (§9.1.3)
-    // Frame timeline per frame slot (§9.1.1/D1 v1): CPU pacing before touching
-    // slot-indexed resources. Inert on the Legacy tier (binary + fence pacing).
+    std::vector<vk::raii::Semaphore> m_RenderFinishedSemaphores; // binary, one per swapchain image
+    // Frame timeline per frame slot: CPU pacing before touching slot-indexed
+    // resources. Inert on the Legacy tier (binary + fence pacing).
     std::array<VulkanSemaphore, MAX_FRAMES_IN_FLIGHT> m_FrameTimelines;
     std::array<u64, MAX_FRAMES_IN_FLIGHT> m_FrameTimelineValues{}; // next value to signal
     u32 m_CurrentFrame = 0;
     u32 m_ImageIndex = 0; // Current swapchain image index
     bool m_FramebufferResized = false;
-    bool m_FrameSkipped = false;            // §9.1.4: acquire failed → recreate + skip
+    bool m_FrameSkipped = false;            // acquire failed → recreate the swapchain and skip the frame
     bool m_FrameGraphFailed = false;        // graph compile/resolve failed → recovery path
     bool m_LegacySwapchainRendered = false; // legacy BeginRenderPass wrote the swapchain this frame
 
@@ -162,8 +172,8 @@ private:
     Jobsystem::UheJobsystem m_Jobsystem;
     Jobsystem::TaskGraph m_TaskGraph;
     std::vector<Jobsystem::TaskID> m_PassNodes;
-    // §9.1.4: imported swapchain identity — bumped per re-import so a resize
-    // (new vk::SwapchainKHR) changes the topology hash and rebuilds the cache.
+    // Imported swapchain identity — bumped per re-import so a resize (new
+    // vk::SwapchainKHR) changes the topology hash and rebuilds the cache.
     u64 m_SwapchainGeneration = 0;
     // The RG slot the swapchain import actually occupies this frame (BeginImGuiPass
     // stores it). Registration must key on THIS handle — the raw image index is

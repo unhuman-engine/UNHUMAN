@@ -7,6 +7,12 @@
 namespace UHE::RHI::VULKAN
 {
 
+/**
+ * \brief Per-frame command buffer, pool and sync handles.
+ *
+ * One instance exists per frame-in-flight. The deletion queue lets resources be
+ * retired safely: their teardown runs once this frame's fence/timeline has passed.
+ */
 class VulkanFrameContext
 {
 public:

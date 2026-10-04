@@ -1,12 +1,18 @@
 #pragma once
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
+#include "UHE/Core/Core.h"
 
 namespace UHE::RHI::VULKAN
 {
 
-// ---------------- Vulkan Buffer Abstraction -----------------
+/// Sentinel stored in a buffer's bindless slot before it is registered.
+inline constexpr u32 kInvalidBindlessIndex = static_cast<u32>(-1);
 
+/**
+ * \brief GPU buffer (vertex/index/uniform/storage) backed by Vulkan Memory Allocator.
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/VkBuffer.html
+ */
 class VulkanBuffer
 {
 public:
@@ -17,51 +23,54 @@ public:
     VulkanBuffer& operator=(const VulkanBuffer&) = delete;
 
     void init(VmaAllocator allocator, vk::DeviceSize size, vk::BufferUsageFlags usage, VmaMemoryUsage memoryUsage);
+    /// Writes \p size bytes into host-visible memory (buffer must be CPU-mappable).
     void UploadData(const void* data, vk::DeviceSize size);
+    /// Records a device-local copy of \p size bytes into \p dstBuffer.
     void CopyTo(VulkanBuffer& dstBuffer, vk::DeviceSize size, vk::raii::CommandBuffer& commandBuffer);
     void Destroy();
 
-    vk::Buffer GetHandle() const { return m_Buffer; }
-    vk::DeviceSize GetSize() const { return m_Size; }
+    [[nodiscard]] vk::Buffer GetHandle() const { return m_Buffer; }
+    [[nodiscard]] vk::DeviceSize GetSize() const { return m_Size; }
 
-    u32 GetBindlessIndex() const { return m_BindlessIndex; }
+    [[nodiscard]] u32 GetBindlessIndex() const { return m_BindlessIndex; }
     void SetBindlessIndex(u32 index) { m_BindlessIndex = index; }
 
 private:
-    u32 m_BindlessIndex = -1;
+    u32 m_BindlessIndex = kInvalidBindlessIndex;
     VmaAllocator m_Allocator = nullptr;
     vk::Buffer m_Buffer = nullptr;
     VmaAllocation m_Allocation = nullptr;
     vk::DeviceSize m_Size = 0;
 };
 
-// ----------- Vulkan Vertex Buffer Abstraction ---------------
-
+/// Vertex buffer: owns a GPU buffer sized to \c vertexCount * \c stride.
 class VulkanVertexBuffer
 {
 public:
+    VulkanVertexBuffer() = default;
     VulkanVertexBuffer(const VulkanVertexBuffer&) = delete;
     VulkanVertexBuffer& operator=(const VulkanVertexBuffer&) = delete;
 
     void Create(VmaAllocator allocator, const void* vertexData, uint32_t vertexCount, uint32_t stride);
-    vk::Buffer GetHandle() const { return m_Buffer.GetHandle(); }
-    u32 GetVertexCount() const { return m_VertexCount; }
+    [[nodiscard]] vk::Buffer GetHandle() const { return m_Buffer.GetHandle(); }
+    [[nodiscard]] u32 GetVertexCount() const { return m_VertexCount; }
 
 private:
     VulkanBuffer m_Buffer;
     u32 m_VertexCount = 0;
 };
 
-// ------------ Vulkan Index Buffer Abstraction --------------
+/// Index buffer: owns a 32-bit index GPU buffer.
 class VulkanIndexBuffer
 {
 public:
+    VulkanIndexBuffer() = default;
     VulkanIndexBuffer(const VulkanIndexBuffer&) = delete;
     VulkanIndexBuffer& operator=(const VulkanIndexBuffer&) = delete;
 
     void Create(VmaAllocator allocator, const std::vector<uint32_t>& indices);
-    vk::Buffer GetHandle() const { return m_Buffer.GetHandle(); }
-    u32 GetIndexCount() const { return m_IndexCount; }
+    [[nodiscard]] vk::Buffer GetHandle() const { return m_Buffer.GetHandle(); }
+    [[nodiscard]] u32 GetIndexCount() const { return m_IndexCount; }
 
 private:
     VulkanBuffer m_Buffer;

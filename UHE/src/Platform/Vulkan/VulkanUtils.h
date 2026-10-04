@@ -1,13 +1,24 @@
 #pragma once
-#include <vulkan/vulkan_raii.hpp>
+/**
+ * \file VulkanUtils.h
+ * \brief Small, dependency-free Vulkan helpers shared across the backend.
+ *
+ * These wrap the repetitive parts of resource creation — staging uploads, image and
+ * buffer allocation through VMA, layout transitions and one-shot submissions — so the
+ * higher-level resource classes stay readable. They are free functions on purpose:
+ * none of them own state beyond the context they borrow.
+ *
+ * \see https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/
+ */
 #include <vk_mem_alloc.h>
+#include <vulkan/vulkan_raii.hpp>
 #include "UHE/Core/Core.h"
 #include "UHE/RHI/RHITypes.h"
 
 namespace UHE::RHI::VULKAN
 {
 
-// ─── Staging Buffer ──────────────────────────────────────────────
+/// Host-visible, device-local staging buffer used as a copy source for uploads.
 struct StagingBuffer
 {
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -16,57 +27,66 @@ struct StagingBuffer
     VkDeviceSize size = 0;
 };
 
+/// Allocates a persistently-mapped staging buffer of \p size bytes (transfer-src usage).
 StagingBuffer CreateStagingBuffer(VkDeviceSize size);
+/// Copies \p size bytes into the staging buffer's mapped memory and flushes the range.
 void StagingBufferCopy(StagingBuffer& staging, const void* data, VkDeviceSize size);
+/// Unmaps and frees a staging buffer. Safe to call on an already-destroyed buffer.
 void DestroyStagingBuffer(StagingBuffer& staging);
 
-// ─── Image Creation ──────────────────────────────────────────────
+// ── Image creation ───────────────────────────────────────────────────────────
+
 struct CreatedImage
 {
     vk::Image image = nullptr;
     VmaAllocation allocation = VK_NULL_HANDLE;
 };
 
-CreatedImage CreateImage(u32 width, u32 height, vk::Format format,
-                         vk::ImageUsageFlags usage, u32 mipLevels = 1,
+/// Creates a 2D image; \p memUsage defaults to GPU-only (pair with a staging upload).
+CreatedImage CreateImage(u32 width, u32 height, vk::Format format, vk::ImageUsageFlags usage, u32 mipLevels = 1,
                          VmaMemoryUsage memUsage = VMA_MEMORY_USAGE_GPU_ONLY);
 
-vk::raii::ImageView CreateImageView(vk::Image image, vk::Format format,
-                                     vk::ImageAspectFlags aspect,
-                                     u32 mipLevels = 1);
+/// Creates a full-range image view over \p image. \p aspect selects colour or depth/stencil.
+[[nodiscard]] vk::raii::ImageView CreateImageView(vk::Image image, vk::Format format, vk::ImageAspectFlags aspect,
+                                                  u32 mipLevels = 1);
 
-// ─── Buffer Creation ─────────────────────────────────────────────
+// ── Buffer creation ──────────────────────────────────────────────────────────
+
 struct CreatedBuffer
 {
     vk::Buffer buffer = nullptr;
     VmaAllocation allocation = VK_NULL_HANDLE;
 };
 
-CreatedBuffer CreateBuffer(VkDeviceSize size, vk::BufferUsageFlags usage,
-                            VmaMemoryUsage memUsage);
+CreatedBuffer CreateBuffer(VkDeviceSize size, vk::BufferUsageFlags usage, VmaMemoryUsage memUsage);
 
-// ─── Image Layout Transitions ────────────────────────────────────
-void TransitionLayout(vk::raii::CommandBuffer& cmd, vk::Image image,
-                       vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
-                       vk::AccessFlags srcAccess, vk::AccessFlags dstAccess,
-                       vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage,
-                       vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor,
-                       u32 mipLevels = 1, u32 baseMipLevel = 0,
-                       u32 layerCount = 1, u32 baseArrayLayer = 0);
+// ── Image layout transitions ─────────────────────────────────────────────────
 
-// ─── Sampler Creation ────────────────────────────────────────────
-vk::raii::Sampler CreateSampler(vk::Filter magFilter = vk::Filter::eLinear,
-                                 vk::Filter minFilter = vk::Filter::eLinear,
-                                 vk::SamplerMipmapMode mipmapMode = vk::SamplerMipmapMode::eLinear,
-                                 vk::SamplerAddressMode addressMode = vk::SamplerAddressMode::eRepeat,
-                                 f32 maxLod = 1.0f);
+/// Records a single image memory barrier. Convenience wrapper around vkCmdPipelineBarrier2.
+void TransitionLayout(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLayout oldLayout,
+                      vk::ImageLayout newLayout, vk::AccessFlags srcAccess, vk::AccessFlags dstAccess,
+                      vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage,
+                      vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor, u32 mipLevels = 1,
+                      u32 baseMipLevel = 0, u32 layerCount = 1, u32 baseArrayLayer = 0);
 
-// ─── Format Mapping ──────────────────────────────────────────────
-vk::ImageAspectFlags FormatToAspect(vk::Format format);
-bool FormatHasStencil(vk::Format format);
+// ── Sampler creation ─────────────────────────────────────────────────────────
 
-// ─── Immediate Submit ────────────────────────────────────────────
-// Helper for one-shot upload commands (used by CreateTexture etc.)
+[[nodiscard]] vk::raii::Sampler CreateSampler(vk::Filter magFilter = vk::Filter::eLinear,
+                                              vk::Filter minFilter = vk::Filter::eLinear,
+                                              vk::SamplerMipmapMode mipmapMode = vk::SamplerMipmapMode::eLinear,
+                                              vk::SamplerAddressMode addressMode = vk::SamplerAddressMode::eRepeat,
+                                              f32 maxLod = 1.0f);
+
+// ── Format mapping ───────────────────────────────────────────────────────────
+
+/// \returns the aspect mask (colour vs. depth ± stencil) implied by \p format.
+[[nodiscard]] vk::ImageAspectFlags FormatToAspect(vk::Format format);
+[[nodiscard]] bool FormatHasStencil(vk::Format format);
+
+// ── Immediate submit ─────────────────────────────────────────────────────────
+
+/// Records \p function into a one-shot command buffer, submits it and waits. Used by
+/// upload paths (CreateTexture etc.) that cannot wait for the frame loop.
 void ImmediateSubmit(std::function<void(vk::raii::CommandBuffer& cmd)>&& function);
 
 } // namespace UHE::RHI::VULKAN

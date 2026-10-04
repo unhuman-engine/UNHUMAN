@@ -9,6 +9,15 @@ namespace UHE::RHI::VULKAN
 class VulkanPhysicalDevice;
 class VulkanInstance;
 class VulkanExtensionCheck;
+
+/**
+ * \brief Owns the logical device, its graphics queue, the surface and the VMA allocator.
+ *
+ * Queue family selection and device capability tiers are negotiated here, so the rest
+ * of the backend can assume a single graphics queue and a valid allocator.
+ *
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/VkDevice.html
+ */
 class VulkanLogicalDevice
 {
 public:
@@ -23,12 +32,12 @@ public:
 
     void cleanup();
 
-    VmaAllocator& getAllocator() { return m_allocator; };
+    [[nodiscard]] VmaAllocator& getAllocator() { return m_allocator; }
 
-    [[nodiscard]] inline vk::raii::Device& getLogicalDevice() { return m_logicalDevice; }
+    [[nodiscard]] vk::raii::Device& getLogicalDevice() { return m_logicalDevice; }
     [[nodiscard]] u32 getGraphicsQueueFamilyIndex() const { return m_graphicsQueueFamilyIndex; }
-    [[nodiscard]] inline vk::raii::Queue& getGraphicsQueue() { return m_graphicsQueue; }
-    [[nodiscard]] inline vk::raii::SurfaceKHR& getSurface() { return surface; }
+    [[nodiscard]] vk::raii::Queue& getGraphicsQueue() { return m_graphicsQueue; }
+    [[nodiscard]] vk::raii::SurfaceKHR& getSurface() { return surface; }
 
 private:
     u32 m_graphicsQueueFamilyIndex{0};
@@ -37,6 +46,8 @@ private:
     vk::raii::SurfaceKHR surface = nullptr;
     VmaAllocator m_allocator = nullptr;
 
+    // \todo Dead member — device-extension selection is done in initialize(). Either
+    //       wire it in or delete it (tracked in docs/ROADMAP.md).
     std::vector<const char*> requiredDeviceExtension = {
         vk::KHRSwapchainExtensionName,           vk::KHRSpirv14ExtensionName,
         vk::KHRSynchronization2ExtensionName,    vk::KHRCreateRenderpass2ExtensionName,
