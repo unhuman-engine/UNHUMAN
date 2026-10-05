@@ -32,6 +32,9 @@
 
 #include "UHE/Core/Log.h"
 #include "UHE/Renderer3D/LoadModel.h"
+#include "UHE/Renderer3D/LightSystem.h"
+#include "UHE/Renderer3D/MaterialGPU.h"
+#include "UHE/Scene/Components.h"
 
 #include <meshoptimizer.h>
 
@@ -45,6 +48,25 @@ RHI::SamplerDesc StubLastRequestedSampler();
 const std::vector<RHI::SamplerDesc>& StubRequestedSamplers();
 int StubTextureCreateCallCount();
 void StubReset();
+} // namespace UHE
+
+// A minimal Texture2D whose bindless index is a fixed known value, so the
+// FillMaterialGPU test can assert slot table wiring rather than always seeing
+// the -1 the null stubs produce. Never uploaded anywhere - no GPU in this
+// harness.
+namespace UHE
+{
+class FakeTexture final : public Texture2D
+{
+public:
+    u32 GetWidth() const override { return 1; }
+    u32 GetHeight() const override { return 1; }
+    void Bind(u32) const override {}
+    void* GetImGuiTextureID() override { return nullptr; }
+    RHI::TextureHandle GetTextureHandle() const override { return nullptr; }
+    u32 GetTextureIndex() const override { return 4242; }
+    bool operator==(const Texture&) const override { return false; }
+};
 } // namespace UHE
 
 namespace
@@ -69,6 +91,13 @@ bool check(bool condition, std::string_view what)
 void section(std::string_view name)
 {
     std::printf("[ %.*s ]\n", static_cast<int>(name.size()), name.data());
+}
+
+// Component-wise closeness for vec3 assertions: glm's vector-relational
+// helpers need gtc includes and read worse than this at call sites.
+bool closeTo(const glm::vec3& a, const glm::vec3& b, float eps = 1e-4f)
+{
+    return std::fabs(a.x - b.x) <= eps && std::fabs(a.y - b.y) <= eps && std::fabs(a.z - b.z) <= eps;
 }
 
 
@@ -2578,6 +2607,215 @@ int main()
         }
         check(sawDraco, "KHR_draco_mesh_compression reported as unsupported");
         check(sawBasisu, "KHR_texture_basisu reported as unsupported");
+    }
+
+    // =====================================================================
+    // The renderer-facing layer, still headless: FillMaterialGPU is what
+    // carries the parsed material to the shader's buffer layout, and
+    // LightSystem::ExtractLights is what carries KHR_lights_punctual into the
+    // frame. Both are pure CPU code, so a wrong slot index or a flipped cone
+    // cosine is assertable here rather than only visible as wrong shading.
+    // =====================================================================
+
+    section("FillMaterialGPU packs the loaded material for the GPU");
+    {
+        // Built directly rather than through a fixture: the loader's PARSING
+        // is covered above; this test pins the packing - the step between
+        // RD3d::Material and the bytes the shader reads.
+        UHE::RD3d::Material material;
+        material.BaseColorFactor = glm::vec4(0.25f, 0.5f, 0.75f, 0.5f);
+        material.MetallicFactor = 0.8f;
+        material.RoughnessFactor = 0.6f;
+        material.Alpha = UHE::RD3d::AlphaMode::Blend;
+        material.AlphaCutoff = 0.3f;
+        material.EmissiveFactor = glm::vec3(0.1f, 0.2f, 0.3f);
+
+        // Engine-space transform (what the loader produces), packed verbatim.
+        auto& uv = material.UVTransforms[static_cast<size_t>(UHE::RD3d::MaterialTextureSlot::Albedo)];
+        uv.cosRotation = 0.9f;
+        uv.sinRotation = 0.1f;
+        uv.scale = glm::vec2(2.0f, 3.0f);
+        uv.offset = glm::vec2(0.1f, 0.2f);
+        uv.HasTransform = true;
+        material.AlbedoTexture = std::make_shared<UHE::FakeTexture>();
+
+        auto& ext = material.Extensions;
+        ext.Unlit = true;
+        ext.IOR = 1.7f;
+        ext.EmissiveStrength = 3.0f;
+        ext.HasClearcoat = true;
+        ext.ClearcoatFactor = 0.75f;
+        ext.HasTransmission = true;
+        ext.TransmissionFactor = 0.9f;
+        ext.ThicknessFactor = 0.5f;
+        ext.AttenuationDistance = 2.0f;
+        ext.AttenuationColor = glm::vec3(0.5f, 0.6f, 0.7f);
+        ext.HasDiffuseTransmission = true;
+        ext.DiffuseTransmissionFactor = 0.4f;
+
+        const auto gpu = UHE::RD3d::FillMaterialGPU(material);
+
+        check(std::fabs(gpu.baseColorFactor.r - 0.25f) < 1e-6f, "baseColorFactor.r packed");
+        check(std::fabs(gpu.baseColorFactor.a - 0.5f) < 1e-6f, "baseColorFactor.a packed");
+        check(std::fabs(gpu.metallicFactor - 0.8f) < 1e-6f, "metallicFactor packed");
+        check(std::fabs(gpu.roughnessFactor - 0.6f) < 1e-6f, "roughnessFactor packed");
+        check(std::fabs(gpu.alphaCutoff - 0.3f) < 1e-6f, "alphaCutoff packed as FLOAT (was int-truncated before)");
+        check(std::fabs(gpu.ior - 1.7f) < 1e-6f, "ior packed");
+        check(std::fabs(gpu.emissiveFactorStrength.r - 0.1f) < 1e-6f, "emissive rgb packed");
+        check(std::fabs(gpu.emissiveFactorStrength.a - 3.0f) < 1e-6f, "emissiveStrength rides in alpha");
+        check(std::fabs(gpu.clearcoatFactor - 0.75f) < 1e-6f, "clearcoatFactor packed");
+        check(std::fabs(gpu.attenuationDistance - 2.0f) < 1e-6f, "attenuationDistance packed");
+        check(std::fabs(gpu.diffuseTransmissionFactor - 0.4f) < 1e-6f, "diffuseTransmissionFactor packed");
+
+        check(gpu.flags.x == 2, "alphaMode Blend packed");
+        check(gpu.flags.y == 1, "unlit flag packed");
+        check((gpu.flags.z & UHE::RD3d::kFeatureClearcoat) != 0, "clearcoat feature bit set");
+        check((gpu.flags.z & UHE::RD3d::kFeatureVolume) != 0,
+              "volume bit set (transmission + non-zero thickness)");
+        check((gpu.flags.z & UHE::RD3d::kFeatureDiffuseTransmission) != 0, "diffuse transmission bit set");
+        check((gpu.flags.z & UHE::RD3d::kFeatureSheen) == 0, "undeclared extensions keep their bits off");
+
+        check(gpu.slots[UHE::RD3d::kSlotAlbedo].index.x == 4242, "albedo slot carries the texture index");
+        check(gpu.slots[UHE::RD3d::kSlotNormal].index.x == -1, "absent slots are -1, not 0");
+        check(std::fabs(gpu.slots[UHE::RD3d::kSlotAlbedo].rotationScale.x - 0.9f) < 1e-6f,
+              "albedo UV transform cos packed");
+        check(std::fabs(gpu.slots[UHE::RD3d::kSlotAlbedo].rotationScale.z - 2.0f) < 1e-6f,
+              "albedo UV transform scale packed");
+        check(std::fabs(gpu.slots[UHE::RD3d::kSlotAlbedo].offset.x - 0.1f) < 1e-6f,
+              "albedo UV transform offset packed");
+
+        // Identity by default: a material with no transform must sample
+        // untouched UVs, which is what keeps every pre-transform asset intact.
+        UHE::RD3d::Material plain;
+        const auto plainGpu = UHE::RD3d::FillMaterialGPU(plain);
+        check(plainGpu.slots[UHE::RD3d::kSlotAlbedo].rotationScale ==
+                  glm::vec4(1.0f, 0.0f, 1.0f, 1.0f),
+              "default slot transform is identity (cos 1, sin 0, scale 1)");
+        check(plainGpu.slots[UHE::RD3d::kSlotAlbedo].offset == glm::vec4(0.0f), "default slot offset is zero");
+
+        // The volume bit gates on thickness: transmission without thickness
+        // has no medium to attenuate, and the bit being set anyway would run
+        // the attenuation path on a zero-distance division.
+        UHE::RD3d::Material noVolume;
+        noVolume.Extensions.HasTransmission = true;
+        noVolume.Extensions.ThicknessFactor = 0.0f;
+        const auto noVolumeGpu = UHE::RD3d::FillMaterialGPU(noVolume);
+        check((noVolumeGpu.flags.z & UHE::RD3d::kFeatureVolume) == 0,
+              "transmission with zero thickness does not claim volume");
+    }
+
+    section("KHR_lights_punctual lights reach the scene light list");
+    {
+        // The same fixture the parsing test used, now run through the REAL
+        // LightSystem::ExtractLights: the frame's light list is what actually
+        // shades, so a light parsed but never extracted still renders black.
+        AssetSpec spec;
+        spec.meshCount = 2;
+        spec.materialCount = 1;
+        AssetSpec::LightSpec point;
+        point.type = "point";
+        point.color = {1.0, 0.5, 0.25};
+        point.intensity = 3.0;
+        point.hasRange = true;
+        point.range = 10.0;
+        AssetSpec::LightSpec spot;
+        spot.type = "spot";
+        spot.color = {1.0, 1.0, 1.0};
+        spot.intensity = 5.0;
+        spot.hasInnerCone = true;
+        spot.innerCone = 0.2;
+        spot.hasOuterCone = true;
+        spot.outerCone = 0.9;
+        spec.lights = {point, spot};
+        spec.nodeLightIndices = {0, 1};
+
+        const fs::path path = writeAsset(dir, "lights_scene.gltf", spec);
+
+        entt::registry registry;
+        auto entity = registry.create();
+        auto& tc = registry.emplace<UHE::TransformComponent>(entity);
+        // The model entity sits away from the origin: node placements are
+        // MODEL-space, so only composing with the entity transform puts the
+        // light where the author put it.
+        tc.Translation = glm::vec3(10.0f, 0.0f, 0.0f);
+
+        auto& mc = registry.emplace<UHE::Model3DComponent>(entity);
+        if (check(mc.ModelData->loadModel(path), "light model loads into the component"))
+        {
+            mc.IsLoaded = true;
+
+            const auto lights = UHE::RD3d::LightSystem::ExtractLights(registry);
+            check(lights.size() == 2, "two glTF lights extracted");
+            if (lights.size() == 2)
+            {
+                const auto& pointData = lights[0];
+                check(int(pointData.Type_Radius_Pad.x) == 1, "light 0 extracted as a point light");
+                check(closeTo(glm::vec3(pointData.PositionOrDirection), glm::vec3(10.0f, 0.0f, 0.0f)),
+                      "point light sits at node placement x model entity transform");
+                check(std::fabs(pointData.ColorIntensity.g - 0.5f) < 1e-5f, "point light colour reaches the list");
+                check(std::fabs(pointData.ColorIntensity.w - 3.0f) < 1e-5f, "point light intensity reaches the list");
+                check(std::fabs(pointData.Type_Radius_Pad.y - 10.0f) < 1e-4f, "point light range becomes the radius");
+
+                const auto& spotData = lights[1];
+                check(int(spotData.Type_Radius_Pad.x) == 2, "light 1 extracted as a spot light");
+                check(closeTo(glm::vec3(spotData.PositionOrDirection), glm::vec3(15.0f, 0.0f, 0.0f)),
+                      "spot light sits at its node's placement");
+                // Cone angles travel as COSINES (one dot product per fragment
+                // in the shader); packing degrees or radians here would light
+                // the wrong cone entirely.
+                check(std::fabs(spotData.Type_Radius_Pad.z - std::cos(0.2f)) < 1e-5f,
+                      "inner cone packed as cos(innerConeAngle)");
+                check(std::fabs(spotData.Type_Radius_Pad.w - std::cos(0.9f)) < 1e-5f,
+                      "outer cone packed as cos(outerConeAngle)");
+                // Omitted range -> INFINITY at parse; extraction resolves that
+                // to the engine's finite fallback rather than a zero-reach light.
+                check(std::fabs(spotData.Type_Radius_Pad.y - 25.0f) < 1e-4f,
+                      "infinite spot range resolves to the finite engine fallback");
+                // glTF lights point down the node's local -Z; the model entity
+                // is unrotated, so the forward axis passes through unchanged.
+                check(closeTo(glm::vec3(spotData.Direction_Pad), glm::vec3(0.0f, 0.0f, -1.0f)),
+                      "spot forward axis is the node's -Z");
+            }
+        }
+    }
+
+    section("scene spot light components extract like glTF spots");
+    {
+        entt::registry registry;
+        auto entity = registry.create();
+        auto& tc = registry.emplace<UHE::TransformComponent>(entity);
+        tc.Translation = glm::vec3(1.0f, 2.0f, 3.0f);
+        // Scene stores radians (glm::eulerAngles output feeds this field).
+        tc.Rotation = glm::vec3(0.0f, glm::pi<float>() / 2.0f, 0.0f); // yaw 90 degrees
+
+        auto& spot = registry.emplace<UHE::SpotLightComponent>(entity);
+        spot.InnerConeAngle = 0.2f;
+        spot.OuterConeAngle = 0.9f;
+        spot.Radius = 7.0f;
+        spot.Intensity = 4.0f;
+
+        const auto lights = UHE::RD3d::LightSystem::ExtractLights(registry);
+        check(lights.size() == 1, "one spot component extracted");
+        if (lights.size() == 1)
+        {
+            check(int(lights[0].Type_Radius_Pad.x) == 2, "component extracted as a spot light");
+            check(closeTo(glm::vec3(lights[0].PositionOrDirection), glm::vec3(1.0f, 2.0f, 3.0f)),
+                  "component position extracted");
+            check(std::fabs(lights[0].Type_Radius_Pad.z - std::cos(0.2f)) < 1e-5f,
+                  "component inner cone packed as cosine");
+            check(closeTo(glm::vec3(lights[0].Direction_Pad), glm::vec3(-1.0f, 0.0f, 0.0f)),
+                  "yaw of 90 degrees aims the cone down -X");
+            check(std::fabs(lights[0].ColorIntensity.w - 4.0f) < 1e-5f, "component intensity extracted");
+        }
+    }
+
+    section("a scene with no lights keeps the fallback light");
+    {
+        entt::registry registry;
+        const auto lights = UHE::RD3d::LightSystem::ExtractLights(registry);
+        check(lights.size() == 1, "fallback light emitted");
+        if (!lights.empty())
+            check(int(lights[0].Type_Radius_Pad.x) == 0, "fallback is directional");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

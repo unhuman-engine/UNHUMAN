@@ -124,4 +124,10 @@ static_assert(offsetof(MaterialGPU, flags) == 192, "MaterialGPU layout must matc
 static_assert(offsetof(MaterialGPU, slots) == 208, "MaterialGPU layout must match Basic3D.slang");
 static_assert(sizeof(MaterialGPU) == 208 + kSlotCount * 48, "MaterialGPU layout must match Basic3D.slang");
 
+// Packs a loaded material into the GPU layout. Implemented in MaterialGPU.cpp,
+// deliberately free of RHI/Vulkan types so the headless test harness can
+// verify the packing against what the loader parsed.
+struct Material;
+MaterialGPU FillMaterialGPU(const Material& material);
+
 } // namespace UHE::RD3d

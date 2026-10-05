@@ -20,92 +20,6 @@ namespace
 // is reserved for that default and is never handed to a model.
 constexpr uint32_t kMaxMaterialsPerFrame = 2048;
 
-// Fills the GPU struct from a loaded material. The mapping is deliberately
-// dumb: the loader owns glTF semantics (including the engine-space UV
-// transform conversion), the renderer only packs.
-RD3d::MaterialGPU FillMaterialGPU(const RD3d::Material& material)
-{
-    RD3d::MaterialGPU gpu{};
-    const auto& ext = material.Extensions;
-
-    gpu.baseColorFactor = material.BaseColorFactor;
-    gpu.emissiveFactorStrength = glm::vec4(material.EmissiveFactor, ext.EmissiveStrength);
-    gpu.specularColorFactor = glm::vec4(ext.SpecularColorFactor, 1.0f);
-    gpu.sheenColorFactor = glm::vec4(ext.SheenColorFactor, 1.0f);
-    gpu.attenuationColor = glm::vec4(ext.AttenuationColor, 1.0f);
-    gpu.diffuseTransmissionColor = glm::vec4(ext.DiffuseTransmissionColor, 1.0f);
-
-    gpu.metallicFactor = material.MetallicFactor;
-    gpu.roughnessFactor = material.RoughnessFactor;
-    gpu.normalScale = material.NormalScale;
-    gpu.occlusionStrength = material.OcclusionStrength;
-    gpu.alphaCutoff = material.AlphaCutoff;
-    gpu.ior = ext.IOR;
-    gpu.specularFactor = ext.SpecularFactor;
-    gpu.clearcoatFactor = ext.ClearcoatFactor;
-    gpu.clearcoatRoughnessFactor = ext.ClearcoatRoughnessFactor;
-    gpu.clearcoatNormalScale = ext.ClearcoatNormalScale;
-    gpu.sheenRoughnessFactor = ext.SheenRoughnessFactor;
-    gpu.transmissionFactor = ext.TransmissionFactor;
-    gpu.thicknessFactor = ext.ThicknessFactor;
-    gpu.attenuationDistance = ext.AttenuationDistance;
-    gpu.diffuseTransmissionFactor = ext.DiffuseTransmissionFactor;
-    gpu.iridescenceFactor = ext.IridescenceFactor;
-    gpu.iridescenceIor = ext.IridescenceIOR;
-    gpu.iridescenceThicknessMinimum = ext.IridescenceThicknessMinimum;
-    gpu.iridescenceThicknessMaximum = ext.IridescenceThicknessMaximum;
-    gpu.anisotropyStrength = ext.AnisotropyStrength;
-    gpu.anisotropyRotation = ext.AnisotropyRotation;
-
-    uint32_t features = 0;
-    if (ext.HasClearcoat) features |= RD3d::kFeatureClearcoat;
-    if (ext.HasSpecular) features |= RD3d::kFeatureSpecular;
-    if (ext.HasSheen) features |= RD3d::kFeatureSheen;
-    if (ext.HasTransmission) features |= RD3d::kFeatureTransmission;
-    if (ext.HasTransmission && ext.ThicknessFactor > 0.0f) features |= RD3d::kFeatureVolume;
-    if (ext.HasIridescence) features |= RD3d::kFeatureIridescence;
-    if (ext.HasAnisotropy) features |= RD3d::kFeatureAnisotropy;
-    if (ext.HasDiffuseTransmission) features |= RD3d::kFeatureDiffuseTransmission;
-
-    gpu.flags = glm::ivec4(static_cast<int>(material.Alpha), ext.Unlit ? 1 : 0,
-                           static_cast<int>(features), 0);
-
-    // Texture slots. Each carries its own (already engine-space) UV transform,
-    // so KHR_texture_transform applies per map, not per material.
-    const Ref<Texture2D> slotTextures[] = {
-        material.AlbedoTexture,             material.MetallicRoughnessTexture,
-        material.NormalTexture,             material.OcclusionTexture,
-        material.EmissiveTexture,           ext.ClearcoatTexture,
-        ext.ClearcoatRoughnessTexture,      ext.ClearcoatNormalTexture,
-        ext.SpecularTexture,                ext.SpecularColorTexture,
-        ext.SheenColorTexture,              ext.SheenRoughnessTexture,
-        ext.TransmissionTexture,            ext.ThicknessTexture,
-        ext.IridescenceTexture,             ext.IridescenceThicknessTexture,
-        ext.AnisotropyTexture,              ext.DiffuseTransmissionTexture,
-        ext.DiffuseTransmissionColorTexture,
-    };
-    static_assert(std::size(slotTextures) == RD3d::kSlotCount, "slot table must cover every GPU slot");
-
-    for (int slot = 0; slot < RD3d::kSlotCount; ++slot)
-    {
-        auto& out = gpu.slots[slot];
-        const auto& transform = material.UVTransforms[slot];
-        if (slotTextures[slot])
-        {
-            out.index = glm::ivec4(static_cast<int>(slotTextures[slot]->GetTextureIndex()), 0, 0, 0);
-        }
-        else
-        {
-            out.index = glm::ivec4(-1, 0, 0, 0);
-        }
-        out.rotationScale =
-            glm::vec4(transform.cosRotation, transform.sinRotation, transform.scale.x, transform.scale.y);
-        out.offset = glm::vec4(transform.offset, 0.0f, 0.0f);
-    }
-
-    return gpu;
-}
-
 } // namespace
 
 struct Renderer3DData
@@ -327,7 +241,7 @@ void Renderer3D::RestartMaterialRegion()
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
     RD3d::Material defaultMaterial;
-    RD3d::MaterialGPU defaultGPU = FillMaterialGPU(defaultMaterial);
+    RD3d::MaterialGPU defaultGPU = RD3d::FillMaterialGPU(defaultMaterial);
     cmd.UpdateBuffer(s_Data3D.MaterialStorageBufferHandle, &defaultGPU, sizeof(defaultGPU), 0);
 
     s_Data3D.MaterialBufferOffset = 1;
@@ -397,7 +311,7 @@ Renderer3D::MaterialBinding Renderer3D::PrepareMaterialBinding(const RD3d::Model
     const uint32_t count = std::min<uint32_t>(static_cast<uint32_t>(materials.size()), available);
     for (uint32_t i = 0; i < count; ++i)
     {
-        RD3d::MaterialGPU gpu = FillMaterialGPU(materials[i]);
+        RD3d::MaterialGPU gpu = RD3d::FillMaterialGPU(materials[i]);
         cmd.UpdateBuffer(s_Data3D.MaterialStorageBufferHandle, &gpu, sizeof(gpu),
                          (s_Data3D.MaterialBufferOffset + i) * sizeof(RD3d::MaterialGPU));
     }
