@@ -1,6 +1,6 @@
 // Scene-lifetime validation harness (issue #17 follow-up).
 //
-// Compiles the REAL Scene.cpp, SceneCamera.cpp, UIID.cpp, VfsSystem.cpp and
+// Compiles the REAL Scene.cpp, SceneCamera.cpp, UUID.cpp, VfsSystem.cpp and
 // PhysicsSystem3D.cpp plus the real box2d and Jolt libraries, and stubs only
 // the GPU-facing renderer/font/texture layer (stubs.cpp). No GPU required;
 // under the ASan preset this is the regression net for the entt lifetime

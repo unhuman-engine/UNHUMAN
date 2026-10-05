@@ -6,3 +6,4 @@
 add_subdirectory(rendergraph)
 add_subdirectory(scene)
 add_subdirectory(animation)
+add_subdirectory(assets)

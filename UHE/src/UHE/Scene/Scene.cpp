@@ -5,7 +5,7 @@
 #include "Components.h"
 #include "Entity.h"
 #include "ScriptableEntity.h"
-#include "UHE/Core/UIID.h"
+#include "UHE/Core/UUID.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 #include "UHE/Renderer2D/SubTexture2D.h"
