@@ -2,7 +2,7 @@
 #include "Renderer3D.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include "UHE/AssestsManager/VfsSystem.h"
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/SlangCompiler.h"
@@ -238,8 +238,7 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
 
 // Issue #17: submit a single mesh (one glTF node) with its model's materials.
 void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, int entityID,
-                            const std::vector<RD3d::Material>& materials, int boneBufferIndex,
-                            int boneOffset)
+                            const std::vector<RD3d::Material>& materials, int boneBufferIndex, int boneOffset)
 {
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 

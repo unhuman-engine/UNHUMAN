@@ -2,7 +2,7 @@
 
 > **Status:** `DONE` — `UheJobsystem` and `TaskGraph` are implemented (`c271467`) and this doc matches
 > the code, including the bugs found while building it (§7). §10 lists the upgrades that are *not* done.
-> **Related issues:** [#5](https://github.com/rajaryan2007/unhuman/issues/5) (still open for §10 only)
+> **Related issues:** [#5](https://github.com/unhuman-engine/UNHUMAN/issues/5) (still open for §10 only)
 > · **Code:** `UHE/src/UHE/Jobsystem/{Jobsystem,Taskgraph}.{h,cpp}`
 > **Snapshot:** matches `improve_vulkan` @ `c271467` plus the uncommitted improvements; re-verify `file:line` refs.
 

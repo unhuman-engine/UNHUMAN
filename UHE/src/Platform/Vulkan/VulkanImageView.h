@@ -43,9 +43,9 @@ private:
     vk::raii::Sampler textureSampler;
     vk::raii::ImageView depthImageView;
     vk::Image rawHandle = nullptr;
-    VkImage rawImage;
+    VkImage rawImage = nullptr;
     vk::raii::Image depthImage;
     VmaAllocator m_allocator = nullptr;
-    VmaAllocation depthImageAllocation;
+    VmaAllocation depthImageAllocation = nullptr;
 };
 } // namespace UHE::RHI::VULKAN

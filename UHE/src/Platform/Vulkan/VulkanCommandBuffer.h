@@ -2,7 +2,7 @@
 #include <vulkan/vulkan_raii.hpp>
 #include "Platform/Vulkan/VulkanContext.h"
 #include "Platform/Vulkan/VulkanSwapChain.h"
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 // #include "VulkanCommandPool.h"
 
 namespace UHE::RHI::VULKAN
@@ -11,6 +11,14 @@ class VulkanDevice;
 class VulkanCommandPool;
 class VulkanDescriptorManager;
 
+/**
+ * \brief Vulkan recording context; the RHICommandBuffer implementation.
+ *
+ * Records into a vk::raii::CommandBuffer owned by the frame's command pool. The
+ * render-pass desc is cached so draw calls can validate state without re-deriving it.
+ *
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/VkCommandBuffer.html
+ */
 class VulkanCommandBuffer final : public RHICommandBuffer
 {
 public:

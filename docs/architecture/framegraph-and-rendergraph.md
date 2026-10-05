@@ -2,9 +2,9 @@
 
 > **Status:** `DESIGN`. The target shape of the RHI and graph layers, reached in
 > five phases. Related issues:
-> [#4](https://github.com/rajaryan2007/unhuman/issues/4),
-> [#14](https://github.com/rajaryan2007/unhuman/issues/14),
-> [#12](https://github.com/rajaryan2007/unhuman/issues/12).
+> [#4](https://github.com/unhuman-engine/UNHUMAN/issues/4),
+> [#14](https://github.com/unhuman-engine/UNHUMAN/issues/14),
+> [#12](https://github.com/unhuman-engine/UNHUMAN/issues/12).
 > **Code lands in:** `UHE/src/UHE/RHI/` for the frontend and
 > `UHE/src/Platform/Vulkan/RenderGraph/` for the backend, currently a stub.
 > **Snapshot:** written against `improve_vulkan` at `c271467`; `file:line`

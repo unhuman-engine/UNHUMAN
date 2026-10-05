@@ -1,6 +1,6 @@
 # Scripting
 
-Status: `DESIGN`. Issue [#28](https://github.com/rajaryan2007/unhuman/issues/28).
+Status: `DESIGN`. Issue [#28](https://github.com/unhuman-engine/UNHUMAN/issues/28).
 Roadmap M6.3, decision D18. Code lands in `UHE/src/UHE/Scripting/` (new module)
 and `ScriptComponent` in `Scene/Components.h`. Written against `improve_vulkan`
 at `c271467`.

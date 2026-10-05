@@ -10,10 +10,10 @@ void VulkanSemaphore::Init(bool requestTimeline, u64 initialValue, VulkanContext
 {
     ctx = context;
 
-    // Timeline semaphores are only valid on the Sync2 submit path: the Legacy
-    // vkQueueSubmit path cannot carry semaphore values. Degrade to binary
-    // unless the device is on the Sync2Timeline tier — this also covers devices
-    // that expose timeline semaphores without VK_KHR_synchronization2.
+    // Timeline semaphores are only usable on the Sync2 submit path: the legacy
+    // vkQueueSubmit path has no way to carry a value. Degrade to binary unless the
+    // device is on the Sync2Timeline tier — this also covers drivers that expose
+    // timeline semaphores without VK_KHR_synchronization2.
     m_IsTimeline = requestTimeline && ctx->CheckExtensions->GetSyncTier() == SyncTier::Sync2Timeline;
 
     vk::SemaphoreTypeCreateInfo timelineInfo;
@@ -35,15 +35,17 @@ void VulkanSemaphore::ShutDown()
 bool VulkanSemaphore::WaitCPU(u64 value, u64 timeoutNs)
 {
     if (!m_IsTimeline)
-        return true; // Legacy tier: binary pacing is a no-op (fence is the gate)
+    {
+        return true; // Legacy tier: binary pacing is a no-op; the frame fence is the gate.
+    }
 
     vk::SemaphoreWaitInfo waitInfo;
     waitInfo.semaphoreCount = 1;
     waitInfo.pSemaphores = &m_Semaphore.operator*();
     waitInfo.pValues = &value;
 
-    // §9.1.5: bounded waits only — a timeout means device loss or a sync bug,
-    // and the caller must see it instead of hanging forever.
+    // Bounded waits only: a timeout means device loss or a sync bug, and the caller
+    // must see it rather than hang forever.
     const vk::Result waitResult = ctx->logicalDeviceHandle->waitSemaphores(waitInfo, timeoutNs);
     return waitResult == vk::Result::eSuccess;
 }
@@ -51,7 +53,9 @@ bool VulkanSemaphore::WaitCPU(u64 value, u64 timeoutNs)
 u64 VulkanSemaphore::GetValue()
 {
     if (!m_IsTimeline)
+    {
         return 0;
+    }
 
     return m_Semaphore.getCounterValue();
 }
@@ -60,10 +64,11 @@ void VulkanSemaphore::Submit(VulkanContext* context, vk::raii::Queue& queue, con
 {
     const SyncTier tier = context != nullptr ? context->CheckExtensions->GetSyncTier() : SyncTier::Legacy;
 
+    // ── Legacy path (vkQueueSubmit) ──────────────────────────────────────────
     if (tier == SyncTier::Legacy)
     {
-        // v1 submit: binary semaphores and a per-wait stage mask. Timeline values
-        // have no representation here and are ignored.
+        // v1 submit carries binary semaphores plus a per-wait stage mask. Timeline
+        // values have no representation here and are dropped.
         std::vector<vk::Semaphore> waitSemaphores;
         std::vector<vk::PipelineStageFlags> waitStages;
         waitSemaphores.reserve(info.Waits.size());
@@ -77,7 +82,9 @@ void VulkanSemaphore::Submit(VulkanContext* context, vk::raii::Queue& queue, con
         std::vector<vk::Semaphore> signalSemaphores;
         signalSemaphores.reserve(info.Signals.size());
         for (const SemaphoreSignal& signal : info.Signals)
+        {
             signalSemaphores.push_back(signal.Semaphore);
+        }
 
         const std::vector<vk::CommandBuffer> commandBuffers(info.CommandBuffers.begin(), info.CommandBuffers.end());
 
@@ -95,6 +102,7 @@ void VulkanSemaphore::Submit(VulkanContext* context, vk::raii::Queue& queue, con
         return;
     }
 
+    // ── Modern path (vkQueueSubmit2) ─────────────────────────────────────────
     std::vector<vk::SemaphoreSubmitInfo> waits;
     waits.reserve(info.Waits.size());
     for (const SemaphoreWait& wait : info.Waits)
@@ -120,7 +128,9 @@ void VulkanSemaphore::Submit(VulkanContext* context, vk::raii::Queue& queue, con
     std::vector<vk::CommandBufferSubmitInfo> commandInfos;
     commandInfos.reserve(info.CommandBuffers.size());
     for (const vk::CommandBuffer& commandBuffer : info.CommandBuffers)
+    {
         commandInfos.push_back({.commandBuffer = commandBuffer});
+    }
 
     const vk::SubmitInfo2 submitInfo{
         .waitSemaphoreInfoCount = static_cast<u32>(waits.size()),

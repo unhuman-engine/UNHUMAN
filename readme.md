@@ -80,7 +80,7 @@ UHE uses a fully automated bootstrap system. You do not need to manually configu
 ### Windows Installation
 1. Clone the repository recursively (to fetch the lightweight submodules like `glm` and `spdlog`):
    ```cmd
-   git clone --recursive https://github.com/rajaryan2007/unhuman.git
+   git clone --recursive https://github.com/unhuman-engine/UNHUMAN.git
    cd unhuman
    ```
 2. Run the generation script. This will download the Windows binaries for Slang and generate a `.sln` file:
@@ -92,7 +92,7 @@ UHE uses a fully automated bootstrap system. You do not need to manually configu
 ### Linux Installation
 1. Clone the repository recursively:
    ```bash
-   git clone --recursive https://github.com/rajaryan2007/unhuman.git
+   git clone --recursive https://github.com/unhuman-engine/UNHUMAN.git
    cd unhuman
    ```
 2. Run the generation script. This will download the Linux binaries for Slang and generate `build.ninja`:
