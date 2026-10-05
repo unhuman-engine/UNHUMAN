@@ -1,4 +1,16 @@
 #pragma once
+/**
+ * \file VulkanDescriptorSet.h
+ * \brief Builder and owner of a single descriptor set and its layout.
+ *
+ * Descriptors are how shaders find buffers and images. This class lets callers add
+ * bindings first (AddBinding), bake the layout (BuildLayout), then allocate and fill
+ * the set (AllocateSet + Write*). Keeping the layout and the set together avoids the
+ * usual "layout outlives set / set outlives pool" ordering bugs.
+ *
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/VkDescriptorSet.html
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/vkUpdateDescriptorSets.html
+ */
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
 #include "UHE/RHI/RHITypes.h"
@@ -10,17 +22,23 @@ class VulkanDescriptorSet
 public:
     VulkanDescriptorSet() = default;
     ~VulkanDescriptorSet() = default;
-    VulkanDescriptorSet(VulkanDescriptorSet&) = delete;
-    VulkanDescriptorSet operator=(VulkanDescriptorSet&) = delete;
-    // Builder Methods
-    void AddBinding(u32 binding, const UHE::RHI::BufferUsageFlags usage, vk::ShaderStageFlags flags,
-                    u32 descriptorCount = 1);
+    VulkanDescriptorSet(const VulkanDescriptorSet&) = delete;
+    VulkanDescriptorSet& operator=(const VulkanDescriptorSet&) = delete;
+
+    // ── Builders ─────────────────────────────────────────────────────────────
+
+    /// Adds a binding described by an RHI buffer-usage bitmask.
+    void AddBinding(u32 binding, BufferUsageFlags usage, vk::ShaderStageFlags flags, u32 descriptorCount = 1);
+    /// Adds a raw binding, optionally with extra binding flags (e.g. partially bound / update-after-bind).
     void AddBinding(u32 binding, vk::DescriptorType type, vk::ShaderStageFlags flags, u32 descriptorCount = 1,
                     vk::DescriptorBindingFlags bindingFlags = {});
+    /// Bakes the accumulated bindings into a VkDescriptorSetLayout.
     void BuildLayout(vk::Device device);
+    /// Allocates the set itself from \p pool (call after BuildLayout).
     void AllocateSet(vk::Device device, class VulkanDescriptorPool* pool);
 
-    // Writers
+    // ── Writers ──────────────────────────────────────────────────────────────
+
     void WriteBuffer(vk::Device device, u32 binding, vk::Buffer buffer, vk::DeviceSize size, vk::DeviceSize offset = 0);
     void WriteImage(vk::Device device, u32 binding, vk::ImageView imageView, vk::Sampler sampler,
                     vk::ImageLayout layout = vk::ImageLayout::eShaderReadOnlyOptimal);

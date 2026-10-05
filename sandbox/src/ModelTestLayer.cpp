@@ -2,7 +2,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 
 #include "UHE/Renderer3D/Renderer3D.h"
 

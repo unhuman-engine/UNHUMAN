@@ -180,20 +180,20 @@ Vulkan loader, Release-only Linux build (no assertions compiled anywhere), no `f
 
 | Issue | Title | Stream | Milestone |
 |---|---|---|---|
-| [#2](https://github.com/rajaryan2007/unhuman/issues/2) | Feature detection for Vulkan 1.1 → 1.4 | W1 | M0/M1 |
-| [#27](https://github.com/rajaryan2007/unhuman/pulls/27) | **PR** Vulkan sync2 fallback setup | W1 | M1 |
-| [#14](https://github.com/rajaryan2007/unhuman/issues/14) | Descriptor set implementation in the frontend | W1 | M1 |
-| [#4](https://github.com/rajaryan2007/unhuman/issues/4) | RenderGraph in the Vulkan backend | W2 | M2/M5 |
-| [#7](https://github.com/rajaryan2007/unhuman/issues/7) | TODO for renderer (checklist mirror) | W2/W3 | M0–M2 |
-| [#29](https://github.com/rajaryan2007/unhuman/issues/29) | glTF/GLB material + extension gaps (black foliage) | W3 | M3.1 |
-| [#25](https://github.com/rajaryan2007/unhuman/issues/25) | Renderer feature list (culling → terrain) | W3 | M3 |
-| [#5](https://github.com/rajaryan2007/unhuman/issues/5) | Multithreading | W4 | M4 |
-| [#9](https://github.com/rajaryan2007/unhuman/issues/9) | Add ASan | W5 | CI ladder |
-| [#10](https://github.com/rajaryan2007/unhuman/issues/10) | CI/CD checks (image comparison still open) | W5 | CI ladder |
-| [#12](https://github.com/rajaryan2007/unhuman/issues/12) | Documentation for rendering + architecture | W5 | this pass + M5 |
-| [#17](https://github.com/rajaryan2007/unhuman/issues/17) | Entity child nodes / hierarchy | W5 | M6.1 |
-| [#24](https://github.com/rajaryan2007/unhuman/issues/24) | Animation + audio visualization | W5 | M6.2 |
-| [#28](https://github.com/rajaryan2007/unhuman/issues/28) | Scripting language (Lua) | W5 | M6.3 |
+| [#2](https://github.com/unhuman-engine/UNHUMAN/issues/2) | Feature detection for Vulkan 1.1 → 1.4 | W1 | M0/M1 |
+| [#27](https://github.com/unhuman-engine/UNHUMAN/pull/27) | **PR** Vulkan sync2 fallback setup | W1 | M1 |
+| [#14](https://github.com/unhuman-engine/UNHUMAN/issues/14) | Descriptor set implementation in the frontend | W1 | M1 |
+| [#4](https://github.com/unhuman-engine/UNHUMAN/issues/4) | RenderGraph in the Vulkan backend | W2 | M2/M5 |
+| [#7](https://github.com/unhuman-engine/UNHUMAN/issues/7) | TODO for renderer (checklist mirror) | W2/W3 | M0–M2 |
+| [#29](https://github.com/unhuman-engine/UNHUMAN/issues/29) | glTF/GLB material + extension gaps (black foliage) | W3 | M3.1 |
+| [#25](https://github.com/unhuman-engine/UNHUMAN/issues/25) | Renderer feature list (culling → terrain) | W3 | M3 |
+| [#5](https://github.com/unhuman-engine/UNHUMAN/issues/5) | Multithreading | W4 | M4 |
+| [#9](https://github.com/unhuman-engine/UNHUMAN/issues/9) | Add ASan | W5 | CI ladder |
+| [#10](https://github.com/unhuman-engine/UNHUMAN/issues/10) | CI/CD checks (image comparison still open) | W5 | CI ladder |
+| [#12](https://github.com/unhuman-engine/UNHUMAN/issues/12) | Documentation for rendering + architecture | W5 | this pass + M5 |
+| [#17](https://github.com/unhuman-engine/UNHUMAN/issues/17) | Entity child nodes / hierarchy | W5 | M6.1 |
+| [#24](https://github.com/unhuman-engine/UNHUMAN/issues/24) | Animation + audio visualization | W5 | M6.2 |
+| [#28](https://github.com/unhuman-engine/UNHUMAN/issues/28) | Scripting language (Lua) | W5 | M6.3 |
 
 Delivered already, so it doesn't get re-litigated: #26/#18/#8 text rendering (MSDF), #23 sandbox
 AimLab game, #22/#20 audio (miniaudio), #19/#10-partial headless CI + sanitizers, #16/#15

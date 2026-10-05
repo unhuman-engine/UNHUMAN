@@ -2,7 +2,7 @@
 #include "Renderer3D.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include "UHE/AssestsManager/VfsSystem.h"
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/SlangCompiler.h"

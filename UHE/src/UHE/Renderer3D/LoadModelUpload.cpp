@@ -6,7 +6,7 @@
 
 #include "uhepch.h"
 #include "LoadModel.h"
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/Renderer.h"
 
 namespace UHE::RD3d

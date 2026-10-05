@@ -16,7 +16,8 @@ enum class SyncTier
     Sync2Timeline // Sync2 plus timeline semaphores (Vulkan 1.2 or extension)
 };
 
-const char *SyncTierName(SyncTier tier);
+/// Human-readable name for logging and diagnostics.
+[[nodiscard]] const char* SyncTierName(SyncTier tier);
 
 // Every extension the engine knows about. Each maps to a name and the core
 // version it was promoted to (0, 0 means never promoted). This is the single
@@ -93,6 +94,16 @@ enum class Extension : uint8_t
     VideoEncodeFeedback2,
 };
 
+/**
+ * \brief Queries and caches the physical device's capabilities and picks a sync tier.
+ *
+ * "Supports X" means the capability is usable — a core feature of the device's API
+ * version or an advertised extension — not merely that an extension string exists.
+ * Higher layers branch on SyncTier rather than poking extension strings directly.
+ *
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/VK_API_VERSION_1_0.html
+ * \see https://www.khronos.org/blog/vulkan-timeline-semaphores
+ */
 class VulkanExtensionCheck
 {
 public:
@@ -103,7 +114,7 @@ public:
     // engine enables it.
     [[nodiscard]] bool IsAdvertised(std::string_view name) const noexcept
     {
-        for (const auto &advertised : m_advertised)
+        for (const auto& advertised : m_advertised)
         {
             if (std::string_view(advertised) == name)
                 return true;
@@ -123,9 +134,13 @@ public:
 
     // Extension strings to enable, built from the table: every extension marked
     // as enabled that this device advertises.
+    /// Extension strings to enable: every enabled extension this device advertises.
     [[nodiscard]] std::vector<const char*> GetEnabledDeviceExtensions() const;
+    /// Builds the pNext chain of feature structs to enable at vkCreateDevice time.
     [[nodiscard]] vk::PhysicalDeviceFeatures2* BuildDeviceFeatureChain();
+    /// Records the extensions \p PhysicalDevice advertises.
     void TickTheAvailableExtension(const vk::raii::PhysicalDevice& PhysicalDevice);
+    /// Queries which optional feature bits the hardware actually reports as true.
     void QuerySupportedFeatures(const vk::raii::PhysicalDevice& PhysicalDevice);
 
 private:

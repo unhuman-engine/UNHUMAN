@@ -15,7 +15,7 @@
 #include <algorithm>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/Renderer.h"
 #include "fastgltf/core.hpp"
 #include "fastgltf/math.hpp"
@@ -729,29 +729,29 @@ void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const gl
     out.Name = node.name.empty() ? "Node_" + std::to_string(nodeIndex) : std::string(node.name);
 
     // Local transform (glTF: TRS or matrix)
-    std::visit(fastgltf::visitor{
-                   [&](const fastgltf::math::fmat4x4& matrix)
-                   {
-                       glm::mat4 m{1.0f};
-                       memcpy(&m, matrix.data(), sizeof(glm::mat4));
-                       glm::vec3 translation, scale;
-                       glm::quat rotation;
-                       glm::vec3 skew;
-                       glm::vec4 perspective;
-                       if (glm::decompose(m, scale, rotation, translation, skew, perspective))
-                       {
-                           out.Translation = translation;
-                           out.Rotation = rotation;
-                           out.Scale = scale;
-                       }
-                   },
-                   [&](const fastgltf::TRS& trs)
-                   {
-                       out.Translation = glm::vec3(trs.translation[0], trs.translation[1], trs.translation[2]);
-                       out.Rotation =
-                           glm::quat(trs.rotation[3], trs.rotation[0], trs.rotation[1], trs.rotation[2]); // w,x,y,z
-                       out.Scale = glm::vec3(trs.scale[0], trs.scale[1], trs.scale[2]);
-                   }},
+    std::visit(fastgltf::visitor{[&](const fastgltf::math::fmat4x4& matrix)
+                                 {
+                                     glm::mat4 m{1.0f};
+                                     memcpy(&m, matrix.data(), sizeof(glm::mat4));
+                                     glm::vec3 translation, scale;
+                                     glm::quat rotation;
+                                     glm::vec3 skew;
+                                     glm::vec4 perspective;
+                                     if (glm::decompose(m, scale, rotation, translation, skew, perspective))
+                                     {
+                                         out.Translation = translation;
+                                         out.Rotation = rotation;
+                                         out.Scale = scale;
+                                     }
+                                 },
+                                 [&](const fastgltf::TRS& trs)
+                                 {
+                                     out.Translation =
+                                         glm::vec3(trs.translation[0], trs.translation[1], trs.translation[2]);
+                                     out.Rotation = glm::quat(trs.rotation[3], trs.rotation[0], trs.rotation[1],
+                                                              trs.rotation[2]); // w,x,y,z
+                                     out.Scale = glm::vec3(trs.scale[0], trs.scale[1], trs.scale[2]);
+                                 }},
                node.transform);
 
     // The transform contributed by every ancestor. Without accumulating this,

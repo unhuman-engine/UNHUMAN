@@ -1,4 +1,16 @@
 #pragma once
+/**
+ * \file VulkanDescriptorManager.h
+ * \brief Central descriptor-set owner for bindless buffers and textures.
+ *
+ * One global descriptor set holds every assignable buffer and texture slot, so a
+ * shader can index them dynamically instead of rebinding per draw. Slots are handed
+ * out on registration and recycled on unregistration; a freed slot's only cost is a
+ * descriptor rewrite, never a layout change.
+ *
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdBindDescriptorSets.html
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_descriptor_indexing.html
+ */
 #include <deque>
 #include <vulkan/vulkan_raii.hpp>
 #include "Platform/Vulkan/VulkanDescriptorPool.h"
@@ -6,6 +18,12 @@
 
 namespace UHE::RHI::VULKAN
 {
+/**
+ * \brief Fluent collector for VkWriteDescriptorSet entries.
+ *
+ * Keeps its DescriptorBufferInfo/ImageInfo in deques for pointer stability, because
+ * the write descriptors point into them until Build() runs.
+ */
 class DescriptorBuilder
 {
 public:
@@ -16,7 +34,7 @@ public:
     DescriptorBuilder& BindImage(u32 binding, vk::DescriptorImageInfo* imageInfo, vk::DescriptorType type,
                                  vk::ShaderStageFlags stageFlags);
 
-    // For bindless array elements
+    /// Writes one element of a bindless array (for indexed access from the shader).
     DescriptorBuilder& BindBufferArray(u32 binding, u32 arrayElement, vk::DescriptorBufferInfo* bufferInfo,
                                        vk::DescriptorType type);
     DescriptorBuilder& BindImageArray(u32 binding, u32 arrayElement, vk::DescriptorImageInfo* imageInfo,
@@ -26,8 +44,8 @@ public:
 
 private:
     std::vector<vk::WriteDescriptorSet> m_Writes;
-    std::deque<vk::DescriptorBufferInfo> m_BufferInfos; // Keep alive until build, use deque for pointer stability
-    std::deque<vk::DescriptorImageInfo> m_ImageInfos;   // Keep alive until build, use deque for pointer stability
+    std::deque<vk::DescriptorBufferInfo> m_BufferInfos; // pointer-stable until Build()
+    std::deque<vk::DescriptorImageInfo> m_ImageInfos;   // pointer-stable until Build()
 };
 
 class VulkanDevice;
@@ -39,11 +57,17 @@ public:
     VulkanDescriptorManager& operator=(const VulkanDescriptorManager&) = delete;
 
     void init(VulkanDevice& device);
+
+    /// Registers \p buffer and \returns its bindless slot (recycled when possible).
     u32 RegisterBuffer(vk::raii::Device& device, vk::Buffer buffer, vk::DeviceSize size);
+    /// Frees \p slot for reuse. The descriptor is not cleared; the next registrant overwrites it.
     void UnregisterBuffer(u32 slot);
 
+    /// Registers \p imageView/\p sampler and \returns its bindless slot.
     u32 BindTexture(vk::raii::Device& device, vk::ImageView imageView, vk::Sampler sampler);
+    /// Frees \p slot for reuse.
     void UnbindTexture(u32 slot);
+
     void UpdateDescriptorWithSameState(vk::raii::Device& device, vk::DescriptorSet DescriptorSet,
                                        DescriptorBuilder& builder);
     void UpdateDescriptorWithNewState(vk::raii::Device& device, vk::DescriptorSet DescriptorSet,
@@ -53,6 +77,7 @@ public:
     [[nodiscard]] vk::DescriptorSetLayout GetLayoutHandle() const { return m_GlobalDescriptorSet.GetLayout(); }
     [[nodiscard]] vk::DescriptorSet GetSetHandle() const { return m_GlobalDescriptorSet.GetSet(); }
 
+    /// Mutable cursor accessors used while filling the bindless arrays.
     [[nodiscard]] u32& GetNextBufferIndex() { return m_NextBufferIndex; }
     [[nodiscard]] u32& GetNextTextureIndex() { return m_NextTextureIndex; }
 

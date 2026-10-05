@@ -253,12 +253,15 @@ void VulkanTexture::ExecuteCopyCommand(VulkanDevice& device, VkBuffer srcBuffer,
 
     if (mipLevels > 1)
     {
-        GenerateMipmaps(device, dstImage, width, height, mipLevels);
+        // The image was created with the colour-space-derived format
+        // (ToVkTextureFormat in CreateTexture); the mip chain blits on the
+        // same format.
+        GenerateMipmaps(device, dstImage, ToVkTextureFormat(m_SamplerDesc.colorSpace), width, height, mipLevels);
     }
 }
 
-void VulkanTexture::GenerateMipmaps(VulkanDevice& device, vk::Image image,
-                                     int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
+void VulkanTexture::GenerateMipmaps(VulkanDevice& device, vk::Image image, vk::Format imageFormat,
+                                    int32_t texWidth, int32_t texHeight, uint32_t mipLevels)
 {
     device.ImmediateSubmit([&](vk::raii::CommandBuffer& cmd)
     {

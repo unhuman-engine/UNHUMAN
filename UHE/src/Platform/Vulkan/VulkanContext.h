@@ -1,4 +1,15 @@
 #pragma once
+/**
+ * \file VulkanContext.h
+ * \brief Process-wide handle bag for the live Vulkan backend.
+ *
+ * The context is deliberately a flat struct rather than a set of singletons so the
+ * ownership graph stays obvious: whoever creates the context (VulkanDevice) owns
+ * every pointer in it. Helper code reaches it through GetVulkanContext().
+ *
+ * \warning The pointed-to objects are non-owning references. Do not delete through
+ *          the context and do not outlive the device that created it.
+ */
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
 #include "UHE/Core/Core.h"
@@ -16,6 +27,7 @@ class VulkanExtensionCheck;
 class VulkanGraphicPipeline;
 class VulkanDescriptorPool;
 
+/// Non-owning bundle of the objects that make up a running Vulkan backend.
 struct VulkanContext
 {
     VulkanInstance* instance = nullptr;
@@ -25,10 +37,10 @@ struct VulkanContext
     VulkanSwapChain* swapChain = nullptr;
     VulkanDevice* device = nullptr;
     VulkanDescriptorManager* descriptorManager = nullptr;
-    VulkanGraphicPipeline* graphicPipeline;
+    VulkanGraphicPipeline* graphicPipeline = nullptr;
     VulkanDescriptorPool* fallbackDescriptorPool = nullptr;
 
-    VmaAllocator allocator = nullptr;
+    VmaAllocator allocator = nullptr; ///< Vulkan Memory Allocator instance.
     vk::raii::Device* logicalDeviceHandle = nullptr;
     vk::raii::PhysicalDevice* physicalDeviceHandle = nullptr;
     vk::raii::Instance* instanceHandle = nullptr;
@@ -40,8 +52,11 @@ struct VulkanContext
     u32 imageIndex = 0;
 };
 
+/// Current context, or nullptr before the device is up. Set by VulkanDevice.
 extern VulkanContext* g_VulkanContext;
 
+/// \returns the live context. Only valid while a VulkanDevice exists.
+/// \see VulkanUtils.cpp for the definition of g_VulkanContext.
 inline VulkanContext& GetVulkanContext()
 {
     return *g_VulkanContext;

@@ -1,4 +1,14 @@
 #pragma once
+/**
+ * \file RHITypes.h
+ * \brief Backend-agnostic descriptors, enums and handles shared by every RHI backend.
+ *
+ * This header is intentionally free of any graphics-API types: it is the vocabulary
+ * the engine and the backends agree on. Vulkan specifics live in
+ * Platform/Vulkan/VulkanTypes.h, which maps these values onto vk:: enums.
+ *
+ * \see https://docs.vulkan.org/spec/latest/
+ */
 #include <array>
 #include <glm/glm.hpp>
 #include <initializer_list>
@@ -9,7 +19,9 @@
 namespace UHE::RHI
 {
 
-// ─── Backend Selection ───────────────────────────────────────────
+// ─── Backend selection ───────────────────────────────────────────
+
+/// Graphics API backing an RHIDevice instance.
 enum class Backend : u8
 {
     None = 0,
@@ -18,7 +30,9 @@ enum class Backend : u8
     Metal
 };
 
-// ─── Opaque Handles ─────────────────────────────────────────────
+// ─── Opaque handles ──────────────────────────────────────────────
+// Pointer-to-incomplete-type idioms keep API detail out of the public headers and
+// give a tiny bit of type safety (BufferHandle and TextureHandle are distinct).
 
 using BufferHandle = struct BufferHandle_T*;
 using TextureHandle = struct TextureHandle_T*;
@@ -28,6 +42,7 @@ using DescriptorHandle = struct DescriptorHandle_T*;
 
 // ─── Enums ──────────────────────────────────────────────────────
 
+/// Coarse intent for a buffer slot; the backend turns it into usage flags.
 enum class BufferUsage : u8
 {
     Vertex,
@@ -37,6 +52,11 @@ enum class BufferUsage : u8
     Staging
 };
 
+/**
+ * \brief Descriptor-type bitmask — one bit per role a resource can play.
+ * \note  Values mirror VkDescriptorType so the Vulkan backend maps them 1:1.
+ * \see   https://docs.vulkan.org/refpages/latest/refpages/source/VkDescriptorType.html
+ */
 enum class BufferUsageFlags : u32
 {
     None = 0,
@@ -71,6 +91,7 @@ inline bool operator&(BufferUsageFlags a, BufferUsageFlags b)
     return (static_cast<u32>(a) & static_cast<u32>(b)) != 0;
 }
 
+/// Pixel/texel format. The Vulkan backend maps these to vk::Format.
 enum class TextureFormat : u8
 {
     Undefined = 0,
@@ -87,6 +108,7 @@ enum class TextureFormat : u8
     D32_FLOAT,    // depth only
 };
 
+/// How a texture is used across the frame (sampled, attachment, storage, copy source/sink).
 enum class TextureUsage : u32
 {
     Sampled = 1 << 0,
@@ -106,6 +128,7 @@ inline bool operator&(TextureUsage a, TextureUsage b)
     return (static_cast<u32>(a) & static_cast<u32>(b)) != 0;
 }
 
+/// Programmable pipeline stage a shader or push range binds to.
 enum class ShaderStage : u8
 {
     Vertex,
@@ -114,18 +137,24 @@ enum class ShaderStage : u8
     AllGraphics
 };
 
+/// Attachment load behaviour (keep vs. clear vs. leave undefined).
 enum class LoadOp : u8
 {
     Load,
     Clear,
     DontCare
 };
+/// Attachment store behaviour (write back vs. discard).
 enum class StoreOp : u8
 {
     Store,
     DontCare
 };
 
+/**
+ * \brief How vertices are assembled into primitives.
+ * \see https://docs.vulkan.org/refpages/latest/refpages/source/VkPrimitiveTopology.html
+ */
 enum class PrimitiveTopology : u8
 {
     TriangleList,
@@ -134,6 +163,7 @@ enum class PrimitiveTopology : u8
     PointList
 };
 
+/// Colour blend preset for a graphics pipeline.
 enum class BlendMode : u8
 {
     None,
@@ -154,6 +184,7 @@ enum class CullMode : u8
 
 // ─── Descriptors ────────────────────────────────────────────────
 
+/// Parameters for RHIDevice::CreateBuffer.
 struct BufferDesc
 {
     u64 size = 0;
@@ -162,6 +193,7 @@ struct BufferDesc
     const char* debugName = nullptr;
 };
 
+/// Parameters for RHIDevice::CreateTexture.
 struct TextureDesc
 {
     u32 width = 1;
@@ -175,6 +207,7 @@ struct TextureDesc
 
 // ─── Buffer Layout ──────────────────────────────────────────────
 
+/// Vertex-attribute component type used by BufferLayout.
 enum class ShaderDataType
 {
     None = 0,
@@ -221,6 +254,7 @@ inline u32 ShaderDataTypeSize(ShaderDataType type)
     return 0;
 }
 
+/// One vertex attribute: name, type, byte size and offset within a vertex.
 struct BufferElement
 {
     std::string Name;
@@ -266,6 +300,7 @@ struct BufferElement
     }
 };
 
+/// Ordered set of vertex attributes; computes per-element offsets and the vertex stride.
 class BufferLayout
 {
 public:
@@ -302,6 +337,7 @@ private:
 
 // ─── Descriptors ────────────────────────────────────────────────
 
+/// SPIR-V blob plus the stage it belongs to.
 struct ShaderDesc
 {
     ShaderStage stage = ShaderStage::Vertex;
@@ -311,6 +347,7 @@ struct ShaderDesc
     const char* debugName = nullptr;
 };
 
+/// Attachment wiring for one subpass (which colour/depth targets it reads and writes).
 struct SubpassDesc
 {
     u32 colorAttachmentCount = 0;
@@ -318,6 +355,7 @@ struct SubpassDesc
     u32 depthAttachment = 0;
 };
 
+/// A single colour target with its clear/store policy and layout requirements.
 struct ColorAttachment
 {
     TextureHandle texture = nullptr;
@@ -332,6 +370,7 @@ struct ColorAttachment
     StoreOp stencilStoreOp = StoreOp::DontCare;
 };
 
+/// Optional depth/stencil target with its clear values.
 struct DepthAttachment
 {
     TextureHandle texture = nullptr;
@@ -341,6 +380,7 @@ struct DepthAttachment
     u8 clearStencil = 0;
 };
 
+/// Everything needed to begin a render pass: targets, subpasses and output extent.
 struct RenderPassDesc
 {
     ColorAttachment colorAttachments[8] = {};
@@ -354,6 +394,7 @@ struct RenderPassDesc
     u32 renderHeight = 0;
 };
 
+/// Parameters for RHIDevice::CreateGraphicsPipeline.
 struct GraphicsPipelineDesc
 {
     ShaderHandle vertexShader = nullptr;
@@ -375,6 +416,7 @@ struct GraphicsPipelineDesc
     RenderPassDesc renderPassDesc = {};
 };
 
+/// Parameters for RHIDevice::CreateComputePipeline.
 struct ComputePipelineDesc
 {
     ShaderHandle computeShader = nullptr;
@@ -384,6 +426,7 @@ struct ComputePipelineDesc
 
 // ─── Swapchain Info ─────────────────────────────────────────────
 
+/// Native window handle plus the initial client size for the swapchain.
 struct SwapchainDesc
 {
     void* nativeWindow = nullptr;

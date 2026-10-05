@@ -6,7 +6,7 @@
 #include "ImGuizmo.h"
 #include "UHE/AssestsManager/VfsSystem.h"
 #include "UHE/Math/Math.h"
-#include "UHE/RHI/RHICommadBuffer.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 
 ImVec2 m_ViewportPos;

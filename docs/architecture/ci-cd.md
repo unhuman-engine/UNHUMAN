@@ -3,8 +3,8 @@
 > **Status:** `IN PROGRESS`. Build, sanitizer and headless-render workflows run,
 > but there are no in-tree unit tests or CTest target yet, which is the central
 > point of this document. Related issues:
-> [#9](https://github.com/rajaryan2007/unhuman/issues/9),
-> [#10](https://github.com/rajaryan2007/unhuman/issues/10).
+> [#9](https://github.com/unhuman-engine/UNHUMAN/issues/9),
+> [#10](https://github.com/unhuman-engine/UNHUMAN/issues/10).
 > **Code lands in:** `.github/workflows/`, `.github/actions/`, `ci/`,
 > `CMakePresets.json`.
 > **Snapshot:** re-verify action SHAs and SDK or NDK pins when implementing.
