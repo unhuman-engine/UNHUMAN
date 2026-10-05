@@ -46,6 +46,7 @@ public:
     // ─── Resource Creation ──────────────────────────────────────
     BufferHandle CreateBuffer(const BufferDesc& desc) override;
     u32 GetBufferBindlessIndex(BufferHandle handle) override;
+    u32 GetMaterialBufferBindlessIndex(BufferHandle handle) override;
     TextureHandle CreateTexture(const TextureDesc& desc) override;
     ShaderHandle CreateShader(const ShaderDesc& desc) override;
     PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc& desc) override;
@@ -60,6 +61,8 @@ public:
     void DestroyComputePipeline(PipelineHandle handle) override;
     void DeferDestruction(std::function<void()>&& function);
     u32 RegisterBuffer(VulkanBuffer* buffer);
+    /// Registers \p buffer into the material-buffer array (binding 2).
+    u32 RegisterMaterialBuffer(VulkanBuffer* buffer);
 
     // ─── Command Buffer Access ──────────────────────────────────
     RHICommandBuffer& GetCurrentCommandBuffer() override;

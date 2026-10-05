@@ -91,12 +91,9 @@ void Renderer3D::Init()
     pipeDesc.vertexShader = s_Data3D.VertexShader;
     pipeDesc.fragmentShader = s_Data3D.FragmentShader;
     // Location 5 (a_Tangent) must match VertexInput in Basic3D.slang.
-    pipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"},
-                             {RHI::ShaderDataType::Float3, "a_Normal"},
-                             {RHI::ShaderDataType::Float2, "a_TexCoord"},
-                             {RHI::ShaderDataType::Int4, "a_Joints"},
-                             {RHI::ShaderDataType::Float4, "a_Weights"},
-                             {RHI::ShaderDataType::Float4, "a_Tangent"},
+    pipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"}, {RHI::ShaderDataType::Float3, "a_Normal"},
+                             {RHI::ShaderDataType::Float2, "a_TexCoord"}, {RHI::ShaderDataType::Int4, "a_Joints"},
+                             {RHI::ShaderDataType::Float4, "a_Weights"},  {RHI::ShaderDataType::Float4, "a_Tangent"},
                              {RHI::ShaderDataType::Float4, "a_Color"}};
 
     // Push constants only carry where things live (camera, bones, lights, and
@@ -179,7 +176,9 @@ void Renderer3D::Init()
     materialBufferDesc.usage = RHI::BufferUsage::Storage;
     materialBufferDesc.hostVisible = true;
     s_Data3D.MaterialStorageBufferHandle = device.CreateBuffer(materialBufferDesc);
-    s_Data3D.MaterialStorageBufferIndex = device.GetBufferBindlessIndex(s_Data3D.MaterialStorageBufferHandle);
+    // The material array lives in its own bindless namespace (shader binding
+    // 2), separate from the light/bone arrays of binding 0.
+    s_Data3D.MaterialStorageBufferIndex = device.GetMaterialBufferBindlessIndex(s_Data3D.MaterialStorageBufferHandle);
     s_Data3D.MaterialBufferOffset = 1; // Slot 0 is the default material, written each BeginScene.
 }
 
@@ -338,9 +337,8 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
 }
 
 // Issue #17: submit a single mesh (one glTF node) with its model's materials.
-void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, int entityID,
-                            const RD3d::Model& model, const MaterialBinding& materialBinding,
-                            int boneBufferIndex, int boneOffset)
+void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, int entityID, const RD3d::Model& model,
+                            const MaterialBinding& materialBinding, int boneBufferIndex, int boneOffset)
 {
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 

@@ -100,10 +100,18 @@ void VulkanDescriptorManager::init(VulkanDevice& device)
             0, vk::DescriptorType::eStorageBuffer,
             vk::ShaderStageFlags(vk::ShaderStageFlagBits::eAllGraphics | vk::ShaderStageFlagBits::eCompute),
             MAX_BINDLESS_RESOURCES, flags);
-        m_GlobalDescriptorSet.AddBinding(1, vk::DescriptorType::eCombinedImageSampler,
-                                         vk::ShaderStageFlags(vk::ShaderStageFlagBits::eAllGraphics |
-                                                              vk::ShaderStageFlagBits::eCompute),
-                                         MAX_BINDLESS_RESOURCES, flags);
+        m_GlobalDescriptorSet.AddBinding(
+            1, vk::DescriptorType::eCombinedImageSampler,
+            vk::ShaderStageFlags(vk::ShaderStageFlagBits::eAllGraphics | vk::ShaderStageFlagBits::eCompute),
+            MAX_BINDLESS_RESOURCES, flags);
+        // Binding 2: per-material StructuredBuffer<MaterialGPU> arrays
+        // (Basic3D.slang). Same descriptor type as binding 0 but a different
+        // array - SPIR-V gives one type per binding, and LightData/BoneMatrix
+        // and MaterialGPU are different structs.
+        m_GlobalDescriptorSet.AddBinding(
+            2, vk::DescriptorType::eStorageBuffer,
+            vk::ShaderStageFlags(vk::ShaderStageFlagBits::eAllGraphics | vk::ShaderStageFlagBits::eCompute),
+            MAX_BINDLESS_RESOURCES, flags);
 
         m_GlobalDescriptorSet.BuildLayout(mdevice);
         m_GlobalDescriptorSet.AllocateSet(mdevice, &m_FallbackDescriptorPool);
@@ -149,6 +157,43 @@ void VulkanDescriptorManager::UnregisterBuffer(u32 slot)
     if (slot != static_cast<u32>(-1))
     {
         m_FreeBufferIndices.push_back(slot);
+    }
+}
+
+u32 VulkanDescriptorManager::RegisterMaterialBuffer(vk::raii::Device& device, vk::Buffer buffer, vk::DeviceSize size)
+{
+    if (!m_IsBindless)
+        return static_cast<u32>(-1);
+
+    u32 bindingIndex = 0;
+    if (!m_FreeMaterialBufferIndices.empty())
+    {
+        bindingIndex = m_FreeMaterialBufferIndices.back();
+        m_FreeMaterialBufferIndices.pop_back();
+    }
+    else
+    {
+        if (m_NextMaterialBufferIndex >= MAX_BINDLESS_RESOURCES)
+        {
+            return static_cast<u32>(-1);
+        }
+        bindingIndex = m_NextMaterialBufferIndex++;
+    }
+
+    vk::DescriptorBufferInfo bufferInfo{.buffer = buffer, .offset = 0, .range = size};
+
+    DescriptorBuilder builder;
+    builder.BindBufferArray(2, bindingIndex, &bufferInfo, vk::DescriptorType::eStorageBuffer)
+        .Build(device, m_GlobalDescriptorSet.GetSet());
+
+    return bindingIndex;
+}
+
+void VulkanDescriptorManager::UnregisterMaterialBuffer(u32 slot)
+{
+    if (slot != static_cast<u32>(-1))
+    {
+        m_FreeMaterialBufferIndices.push_back(slot);
     }
 }
 u32 VulkanDescriptorManager::BindTexture(vk::raii::Device& device, vk::ImageView imageView, vk::Sampler sampler)

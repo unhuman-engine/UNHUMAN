@@ -1,7 +1,7 @@
 #include "uhepch.h"
 #include "VulkanDevice.h"
-#include <algorithm>
 #include <GLFW/glfw3.h>
+#include <algorithm>
 
 // ─── Frame-loop timeouts (§9.1.5: bounded waits, never UINT64_MAX) ──────────
 // One second of GPU silence on a live submission means the device is gone or a
@@ -16,11 +16,16 @@ static UHE::RHI::TextureFormat ToEngineFormat(vk::Format format)
     using UHE::RHI::TextureFormat;
     switch (format)
     {
-        case vk::Format::eB8G8R8A8Unorm: return TextureFormat::BGRA8_UNORM;
-        case vk::Format::eB8G8R8A8Srgb: return TextureFormat::BGRA8_SRGB;
-        case vk::Format::eR8G8B8A8Unorm: return TextureFormat::RGBA8_UNORM;
-        case vk::Format::eR8G8B8A8Srgb: return TextureFormat::RGBA8_SRGB;
-        default: return TextureFormat::RGBA8_UNORM;
+        case vk::Format::eB8G8R8A8Unorm:
+            return TextureFormat::BGRA8_UNORM;
+        case vk::Format::eB8G8R8A8Srgb:
+            return TextureFormat::BGRA8_SRGB;
+        case vk::Format::eR8G8B8A8Unorm:
+            return TextureFormat::RGBA8_UNORM;
+        case vk::Format::eR8G8B8A8Srgb:
+            return TextureFormat::RGBA8_SRGB;
+        default:
+            return TextureFormat::RGBA8_UNORM;
     }
 }
 
@@ -32,8 +37,8 @@ static UHE::RHI::TextureFormat ToEngineFormat(vk::Format format)
 #else
     #include <unistd.h>
 #endif
-#include <vulkan/vulkan_raii.hpp>
 #include <volk.h>
+#include <vulkan/vulkan_raii.hpp>
 #include "Platform/Vulkan/UI/VulkanImGuiPass.h"
 #include "Platform/Vulkan/VulkanBuffer.h"
 #include "Platform/Vulkan/VulkanComputePipeline.h"
@@ -77,7 +82,7 @@ void VulkanDevice::InitVulkan(const SwapchainDesc& swapDesc)
     m_PhysicalDevice.initPhysicalDevice(m_Instance);
 
     m_LogicalDevice.initialize(m_PhysicalDevice, *m_LogicalDevice.getSurface(), m_Instance, m_ExtensionCheck);
-    
+
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*m_LogicalDevice.getLogicalDevice());
 
     // The frame graph drives the frame loop (scene + ImGui passes) and
@@ -265,6 +270,36 @@ u32 VulkanDevice::RegisterBuffer(VulkanBuffer* buffer)
     return index;
 }
 
+u32 VulkanDevice::RegisterMaterialBuffer(VulkanBuffer* buffer)
+{
+    if (!m_ExtensionCheck.Supports(Extension::DescriptorIndexing))
+    {
+        buffer->SetMaterialBindlessIndex(static_cast<u32>(-1));
+        return static_cast<u32>(-1);
+    }
+
+    u32 index = m_DescriptorManager.RegisterMaterialBuffer(m_LogicalDevice.getLogicalDevice(), buffer->GetHandle(),
+                                                           buffer->GetSize());
+    buffer->SetMaterialBindlessIndex(index);
+    return index;
+}
+
+u32 VulkanDevice::GetMaterialBufferBindlessIndex(BufferHandle handle)
+{
+    if (!handle)
+        return static_cast<u32>(-1);
+
+    auto* buffer = reinterpret_cast<VulkanBuffer*>(handle);
+    u32 index = buffer->GetMaterialBindlessIndex();
+
+    if (index == static_cast<u32>(-1))
+    {
+        index = RegisterMaterialBuffer(buffer);
+    }
+
+    return index;
+}
+
 u32 VulkanDevice::GetBufferBindlessIndex(BufferHandle handle)
 {
     if (!handle)
@@ -273,12 +308,12 @@ u32 VulkanDevice::GetBufferBindlessIndex(BufferHandle handle)
     // the handle points to a VulkanBuffer instance. We return its stored bindless index.
     auto* buffer = reinterpret_cast<VulkanBuffer*>(handle);
     u32 index = buffer->GetBindlessIndex();
-    
+
     if (index == static_cast<u32>(-1))
     {
         index = RegisterBuffer(buffer);
     }
-    
+
     return index;
 }
 
@@ -296,20 +331,26 @@ ShaderHandle VulkanDevice::CreateShader(const ShaderDesc& desc)
 }
 PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& desc)
 {
-    return m_PipelineStateCache.Acquire(desc, [this, &desc]() {
-        auto* pipeline = new VulkanGraphicPipeline();
-        pipeline->createGraphicsPipeline(m_LogicalDevice, m_DescriptorManager, m_Context, desc);
-        return reinterpret_cast<PipelineHandle>(static_cast<VulkanPipelineState*>(pipeline));
-    });
+    return m_PipelineStateCache.Acquire(
+        desc,
+        [this, &desc]()
+        {
+            auto* pipeline = new VulkanGraphicPipeline();
+            pipeline->createGraphicsPipeline(m_LogicalDevice, m_DescriptorManager, m_Context, desc);
+            return reinterpret_cast<PipelineHandle>(static_cast<VulkanPipelineState*>(pipeline));
+        });
 }
 
 PipelineHandle VulkanDevice::CreateComputePipeline(const ComputePipelineDesc& desc)
 {
-    return m_PipelineStateCache.Acquire(desc, [this, &desc]() {
-        auto* pipeline = new VulkanComputePipeline();
-        pipeline->CreateComputePipeline(m_LogicalDevice, m_DescriptorManager, desc);
-        return reinterpret_cast<PipelineHandle>(static_cast<VulkanPipelineState*>(pipeline));
-    });
+    return m_PipelineStateCache.Acquire(desc,
+                                        [this, &desc]()
+                                        {
+                                            auto* pipeline = new VulkanComputePipeline();
+                                            pipeline->CreateComputePipeline(m_LogicalDevice, m_DescriptorManager, desc);
+                                            return reinterpret_cast<PipelineHandle>(
+                                                static_cast<VulkanPipelineState*>(pipeline));
+                                        });
 }
 
 void VulkanDevice::DestroyBuffer(BufferHandle handle)
@@ -376,8 +417,8 @@ void VulkanDevice::Begin()
     // (§9.1.7) — the slot's resources are free to reuse from here on.
     if (m_FrameTimelineValues[m_CurrentFrame] > 0)
     {
-        const bool paced = m_FrameTimelines[m_CurrentFrame].WaitCPU(
-            m_FrameTimelineValues[m_CurrentFrame] - 1, kFramePacingTimeoutNs);
+        const bool paced =
+            m_FrameTimelines[m_CurrentFrame].WaitCPU(m_FrameTimelineValues[m_CurrentFrame] - 1, kFramePacingTimeoutNs);
         if (!paced)
             UHE_CORE_ERROR("VulkanDevice::Begin: frame timeline wait timed out (device lost?)");
     }
@@ -442,11 +483,9 @@ void VulkanDevice::End()
         // transition here so the frame can still be submitted and presented —
         // consuming the acquire semaphore and releasing the image — instead of
         // being dropped with an acquired-but-unpresented image.
-        TransitionLayout(cmd, m_SwapChain.GetImages()[m_ImageIndex],
-                         vk::ImageLayout::eUndefined, vk::ImageLayout::ePresentSrcKHR,
-                         vk::AccessFlags{}, vk::AccessFlags{},
-                         vk::PipelineStageFlagBits::eTopOfPipe,
-                         vk::PipelineStageFlagBits::eBottomOfPipe);
+        TransitionLayout(cmd, m_SwapChain.GetImages()[m_ImageIndex], vk::ImageLayout::eUndefined,
+                         vk::ImageLayout::ePresentSrcKHR, vk::AccessFlags{}, vk::AccessFlags{},
+                         vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eBottomOfPipe);
     }
     m_FrameGraphFailed = false;
 
@@ -540,12 +579,9 @@ void VulkanDevice::BeginImGuiPass(const std::string& name)
     // import must start there or the compiler's entry barrier would assert the
     // wrong oldLayout. The compiler then emits the entry transition and the
     // ColorAttachment→Present exit as this pass's pre/post barriers.
-    const ImageState swapInitialState =
-        m_LegacySwapchainRendered ? ImageState::Present : ImageState::Undefined;
-    RGTextureHandle swap = m_FrameGraph.ImportTexture("Swapchain", m_SwapchainGeneration,
-                                                      extent.width, extent.height, 1,
-                                                      swapInitialState,
-                                                      ImageState::Present);
+    const ImageState swapInitialState = m_LegacySwapchainRendered ? ImageState::Present : ImageState::Undefined;
+    RGTextureHandle swap = m_FrameGraph.ImportTexture("Swapchain", m_SwapchainGeneration, extent.width, extent.height,
+                                                      1, swapInitialState, ImageState::Present);
     m_SwapchainRGHandle = swap; // executor registration keys on this exact slot
 
     auto& pass = m_FrameGraph.AddPass(name, RGPassType::Graphics);
@@ -570,10 +606,8 @@ void VulkanDevice::RegisterFrameTextureImpl(RGTextureHandle rgTexture, TextureHa
         return;
     auto* vulkanTexture = reinterpret_cast<VulkanTexture*>(texture);
     m_RenderGraphExecutor.RegisterTexture(rgTexture, vulkanTexture->GetImage(),
-                                          vulkanTexture->GetImageView().operator*(),
-                                          vulkanTexture->GetDesc().width,
-                                          vulkanTexture->GetDesc().height,
-                                          vulkanTexture->GetDesc().format);
+                                          vulkanTexture->GetImageView().operator*(), vulkanTexture->GetDesc().width,
+                                          vulkanTexture->GetDesc().height, vulkanTexture->GetDesc().format);
 }
 
 void VulkanDevice::EndFrameGraph()
@@ -608,8 +642,8 @@ void VulkanDevice::EndFrameGraph()
     RegisterSwapchainResources();
 
     std::vector<std::string> resolveErrors;
-    RGResolvedFrame resolved = m_RenderGraphExecutor.Resolve(
-        compiled.frame, m_FrameGraph.GetBuilder().Passes(), resolveErrors);
+    RGResolvedFrame resolved =
+        m_RenderGraphExecutor.Resolve(compiled.frame, m_FrameGraph.GetBuilder().Passes(), resolveErrors);
     if (!resolveErrors.empty())
     {
         for (const std::string& error : resolveErrors)
@@ -636,9 +670,9 @@ void VulkanDevice::EndFrameGraph()
             deps.push_back(previous);
     }
 
-    m_PassNodes = m_RenderGraphExecutor.MapToTaskgraph(
-        m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(),
-        m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), m_BarrierEncoder);
+    m_PassNodes =
+        m_RenderGraphExecutor.MapToTaskgraph(m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(),
+                                             m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), m_BarrierEncoder);
     m_RenderGraphExecutor.ExecuteGraph(m_TaskGraph, m_Jobsystem, m_PassNodes);
     m_TaskGraph.Reset();
     m_FrameGraph.Reset();
@@ -661,10 +695,8 @@ void VulkanDevice::RegisterSwapchainResources()
     // Key on the slot the import actually allocated, NOT the raw image index:
     // imported resources get sequential registry slots, which only coincide
     // with imageIndex when it happens to be 0.
-    m_RenderGraphExecutor.RegisterTexture(m_SwapchainRGHandle, image,
-                                          m_SwapChain.GetImageView(m_ImageIndex),
-                                          m_SwapChain.GetExtent().width,
-                                          m_SwapChain.GetExtent().height, swapFormat);
+    m_RenderGraphExecutor.RegisterTexture(m_SwapchainRGHandle, image, m_SwapChain.GetImageView(m_ImageIndex),
+                                          m_SwapChain.GetExtent().width, m_SwapChain.GetExtent().height, swapFormat);
 }
 
 void VulkanDevice::ImmediateSubmit(std::function<void(vk::raii::CommandBuffer& cmd)>&& function)

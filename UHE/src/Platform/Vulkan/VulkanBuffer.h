@@ -35,8 +35,16 @@ public:
     [[nodiscard]] u32 GetBindlessIndex() const { return m_BindlessIndex; }
     void SetBindlessIndex(u32 index) { m_BindlessIndex = index; }
 
+    // Slot in the material-buffer array (global set, binding 2). A buffer only
+    // ever lives in ONE of the two namespaces; the fields exist separately
+    // because the two arrays are distinct SPIR-V bindings and their slot
+    // spaces must not be mixed up.
+    [[nodiscard]] u32 GetMaterialBindlessIndex() const { return m_MaterialBindlessIndex; }
+    void SetMaterialBindlessIndex(u32 index) { m_MaterialBindlessIndex = index; }
+
 private:
     u32 m_BindlessIndex = kInvalidBindlessIndex;
+    u32 m_MaterialBindlessIndex = kInvalidBindlessIndex;
     VmaAllocator m_Allocator = nullptr;
     vk::Buffer m_Buffer = nullptr;
     VmaAllocation m_Allocation = nullptr;
