@@ -24,7 +24,7 @@ public:
 
     void init(VmaAllocator allocator, vk::DeviceSize size, vk::BufferUsageFlags usage, VmaMemoryUsage memoryUsage);
     /// Writes \p size bytes into host-visible memory (buffer must be CPU-mappable).
-    void UploadData(const void* data, vk::DeviceSize size);
+    void UploadData(const void* data, vk::DeviceSize size, vk::DeviceSize offset = 0);
     /// Records a device-local copy of \p size bytes into \p dstBuffer.
     void CopyTo(VulkanBuffer& dstBuffer, vk::DeviceSize size, vk::raii::CommandBuffer& commandBuffer);
     void Destroy();
