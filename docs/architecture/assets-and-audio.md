@@ -38,7 +38,7 @@ real clients of the job system, so building them also exercises it.
 | Path resolver | `AssestsManager/VfsSystem.h/.cpp` | Singleton, linear search for `UHE_EDITOR/assets`, `Resolve` prepends the root |
 | Shader manager | `AssestsManager/ShaderManager.h` | Stub, `void Init()` |
 | Model loading | `Renderer3D/LoadModel.h/.cpp` | Synchronous `Model::loadModel(path)` using fastgltf |
-| Textures | `Renderer/Texture.h` | `Texture2D` loaded by path through stb_image |
+| Textures | `Renderer/Texture.h` | `Texture2D` by path (stb_image) and from memory; KTX2/Basis decoded via `Renderer/KTX2.h` (LDR, level 0 + file-authored chains, issue #42); sampler state (wrap/filter/colour space/anisotropy/maxLod) per `RHI::SamplerDesc`; per-load texture dedup in the glTF loader |
 | UUID | `Core/UIID.h/.cpp` | Exists, random `u64`; the uniqueness set is unused |
 | Ref types | `Core/Core.h:59,66` | `Scope` is `unique_ptr`, `Ref` is `shared_ptr` |
 

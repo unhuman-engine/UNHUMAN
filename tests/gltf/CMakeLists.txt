@@ -18,6 +18,7 @@ set(GLTF_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/MaterialGPU.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LightSystem.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer/KTX2.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer/Mipmap.cpp
 )
 
 # The loader reports failures through UHE::Log macros, which the test does not

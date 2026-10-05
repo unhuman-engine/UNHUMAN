@@ -103,7 +103,7 @@ parsed*, and it fixes visible wrongness (foliage renders black).
 | 5 | Shadows: directional CSM, then point-light cubemaps | #25 §2 | `TODO` |
 | 6 | IBL: skybox + irradiance/prefilter generation; then analytical area lights in `Basic3D.slang` | #25 §2 | `TODO` |
 | 7 | Post stack: ACES tonemap → bloom → FXAA | #25 §4 | `TODO` |
-| 8 | Extended PBR: clearcoat, transmission/volume, sheen, iridescence, anisotropy; KTX2/Draco/meshopt loaders | #29 tiers 2–4, #25 §3 | `TODO` |
+| 8 | Extended PBR: clearcoat, transmission/volume, sheen, iridescence, anisotropy; KTX2/meshopt loaders (Draco still `TODO`: needs the vendored decoder) | #29 tiers 2–4, #42, #25 §3 | `IN PROGRESS` |
 | — | Terrain system, water/SSR shader | #25 §4 | `DEFERRED` |
 
 **Exit per step:** a sandbox scene exists that shows the feature, and the PR says which scene.

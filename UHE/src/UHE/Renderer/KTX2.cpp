@@ -1,6 +1,5 @@
 #include "uhepch.h"
 #include "KTX2.h"
-
 #include "basisu_transcoder.h"
 
 namespace UHE
@@ -24,8 +23,7 @@ const TranscoderInit g_transcoderInit;
 
 bool IsKTX2(const void* data, size_t size)
 {
-    return data != nullptr && size >= sizeof(kKTX2Magic) &&
-           std::memcmp(data, kKTX2Magic, sizeof(kKTX2Magic)) == 0;
+    return data != nullptr && size >= sizeof(kKTX2Magic) && std::memcmp(data, kKTX2Magic, sizeof(kKTX2Magic)) == 0;
 }
 
 bool LoadKTX2(const void* data, size_t size, KTX2Image& out)
@@ -54,8 +52,7 @@ bool LoadKTX2(const void* data, size_t size, KTX2Image& out)
 
     if (transcoder.get_faces() != 1)
     {
-        UHE_CORE_ERROR("KTX2 load failed: {} faces, cubemaps are not supported yet",
-                       transcoder.get_faces());
+        UHE_CORE_ERROR("KTX2 load failed: {} faces, cubemaps are not supported yet", transcoder.get_faces());
         return false;
     }
 
@@ -80,18 +77,36 @@ bool LoadKTX2(const void* data, size_t size, KTX2Image& out)
         return false;
     }
 
-    out.rgba.resize(static_cast<size_t>(out.width) * out.height * 4);
+    out.rgba.resize(RGBA8Size(out.width, out.height));
 
-    // Transcode level 0 / layer 0 / face 0. cTFRGBA32 is raster-order RGBA8,
-    // byte order R,G,B,A - the exact layout the upload path expects.
-    if (!transcoder.transcode_image_level(0, 0, 0, out.rgba.data(),
-                                          static_cast<u32>(out.width) * out.height,
-                                          basist::transcoder_texture_format::cTFRGBA32))
+    // cTFRGBA32 is raster-order RGBA8, byte order R,G,B,A - the exact layout
+    // the upload path expects. Every level is transcoded ONCE into the chain;
+    // out.rgba then aliases level 0 for callers that never look further.
+    out.mips.reserve(transcoder.get_levels());
+    for (u32 level = 0; level < transcoder.get_levels(); ++level)
     {
-        UHE_CORE_ERROR("KTX2 load failed: level 0 transcode returned false ({}x{})", out.width, out.height);
-        return false;
+        basist::ktx2_image_level_info info{};
+        if (!transcoder.get_image_level_info(info, level, 0, 0))
+        {
+            UHE_CORE_ERROR("KTX2 load failed: level {} info unavailable", level);
+            return false;
+        }
+
+        MipLevel mip;
+        mip.width = info.m_orig_width;
+        mip.height = info.m_orig_height;
+        mip.rgba.resize(RGBA8Size(mip.width, mip.height));
+
+        if (!transcoder.transcode_image_level(level, 0, 0, mip.rgba.data(), static_cast<u32>(mip.width) * mip.height,
+                                              basist::transcoder_texture_format::cTFRGBA32))
+        {
+            UHE_CORE_ERROR("KTX2 load failed: level {} transcode returned false ({}x{})", level, mip.width, mip.height);
+            return false;
+        }
+        out.mips.push_back(std::move(mip));
     }
 
+    out.rgba = out.mips.front().rgba;
     return true;
 }
 

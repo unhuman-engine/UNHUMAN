@@ -57,6 +57,15 @@ void StagingBufferCopy(StagingBuffer& staging, const void* data, VkDeviceSize si
     }
 }
 
+void StagingBufferCopy(StagingBuffer& staging, const void* data, VkDeviceSize size, VkDeviceSize offset)
+{
+    if (staging.mappedData && data && offset + size <= staging.size)
+    {
+        memcpy(static_cast<std::byte*>(staging.mappedData) + offset, data, size);
+        vmaFlushAllocation(GetVulkanContext().allocator, staging.allocation, offset, size);
+    }
+}
+
 void DestroyStagingBuffer(StagingBuffer& staging)
 {
     if (!staging.buffer || !staging.allocation)
@@ -231,7 +240,8 @@ vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter, vk::
                                       .addressModeV = addressModeV,
                                       .addressModeW = addressModeW,
                                       .mipLodBias = 0.0f,
-                                      .anisotropyEnable = anisotropy > 1.0f ? vk::Bool32{VK_TRUE} : vk::Bool32{VK_FALSE},
+                                      .anisotropyEnable =
+                                          anisotropy > 1.0f ? vk::Bool32{VK_TRUE} : vk::Bool32{VK_FALSE},
                                       .maxAnisotropy = anisotropy,
                                       .compareEnable = VK_FALSE,
                                       .compareOp = vk::CompareOp::eAlways,

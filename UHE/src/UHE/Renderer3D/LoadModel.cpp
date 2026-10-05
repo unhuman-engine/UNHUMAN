@@ -11,10 +11,12 @@
 
 #include "uhepch.h"
 #include "LoadModel.h"
-#include "MeshoptDecode.h"
 #include <algorithm>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
+#include <map>
+#include <tuple>
+#include "MeshoptDecode.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/Renderer.h"
 #include "fastgltf/core.hpp"
@@ -99,17 +101,18 @@ glm::mat4 Model::NodeLocalTransform(const fastgltf::Node& node)
 {
     glm::mat4 local{1.0f};
 
-    std::visit(fastgltf::visitor{
-                   [&](const fastgltf::math::fmat4x4& matrix) {
-                       std::memcpy(&local, matrix.data(), sizeof(glm::mat4));
-                   },
-                   [&](const fastgltf::TRS& trs) {
-                       const glm::vec3 T(trs.translation[0], trs.translation[1], trs.translation[2]);
-                       // glTF stores quaternions as x, y, z, w; glm::quat takes w, x, y, z.
-                       const glm::quat R(trs.rotation[3], trs.rotation[0], trs.rotation[1], trs.rotation[2]);
-                       const glm::vec3 S(trs.scale[0], trs.scale[1], trs.scale[2]);
-                       local = glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(R) * glm::scale(glm::mat4(1.0f), S);
-                   }},
+    std::visit(fastgltf::visitor{[&](const fastgltf::math::fmat4x4& matrix)
+                                 { std::memcpy(&local, matrix.data(), sizeof(glm::mat4)); },
+                                 [&](const fastgltf::TRS& trs)
+                                 {
+                                     const glm::vec3 T(trs.translation[0], trs.translation[1], trs.translation[2]);
+                                     // glTF stores quaternions as x, y, z, w; glm::quat takes w, x, y, z.
+                                     const glm::quat R(trs.rotation[3], trs.rotation[0], trs.rotation[1],
+                                                       trs.rotation[2]);
+                                     const glm::vec3 S(trs.scale[0], trs.scale[1], trs.scale[2]);
+                                     local = glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(R) *
+                                             glm::scale(glm::mat4(1.0f), S);
+                                 }},
                node.transform);
 
     return local;
@@ -234,7 +237,8 @@ RHI::SamplerDesc SamplerDescForTexture(const fastgltf::Asset& asset, size_t text
     // A glTF minFilter that selects a mip level only matters when minifying, so
     // every non-Nearest variant maps to Vulkan's eLinear min filter; the mip
     // selection itself is carried by SamplerMipmapMode::eLinear below.
-    const auto toFilter = [](fastgltf::Filter f) {
+    const auto toFilter = [](fastgltf::Filter f)
+    {
         switch (f)
         {
             case fastgltf::Filter::Nearest:
@@ -312,8 +316,7 @@ UVTransform EngineUVTransform(const fastgltf::TextureTransform& t)
     out.cosRotation = c;
     out.sinRotation = s;
     out.scale = glm::vec2(t.uvScale.x(), t.uvScale.y());
-    out.offset = glm::vec2(t.uvOffset.x() - s * t.uvScale.y(),
-                           1.0f - c * t.uvScale.y() - t.uvOffset.y());
+    out.offset = glm::vec2(t.uvOffset.x() - s * t.uvScale.y(), 1.0f - c * t.uvScale.y() - t.uvOffset.y());
     out.texCoordSet = static_cast<u32>(t.texCoordIndex.value_or(0));
     out.HasTransform = true;
     return out;
@@ -324,6 +327,9 @@ UVTransform EngineUVTransform(const fastgltf::TextureTransform& t)
 void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::path& filepath)
 {
     m_LoadedMaterials.resize(asset.materials.size());
+
+    // Per-load texture cache; see the dedup note inside loadTexture.
+    std::map<std::tuple<size_t, int, size_t>, Ref<Texture2D>> textureCache;
 
     for (size_t i = 0; i < asset.materials.size(); ++i)
     {
@@ -345,10 +351,14 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         // gamma-decodes the linear maps on every sample, which is why a normal
         // map can light a surface the wrong way round.
         auto loadTexture = [&](const fastgltf::TextureInfo* texInfo, size_t matIdx,
-                               RHI::SamplerDesc::ColorSpace colorSpace = RHI::SamplerDesc::ColorSpace::SRGB) -> Ref<Texture2D> {
-            if (!texInfo) return nullptr;
+                               RHI::SamplerDesc::ColorSpace colorSpace =
+                                   RHI::SamplerDesc::ColorSpace::SRGB) -> Ref<Texture2D>
+        {
+            if (!texInfo)
+                return nullptr;
             auto textureIndex = texInfo->textureIndex;
-            if (textureIndex >= asset.textures.size()) return nullptr;
+            if (textureIndex >= asset.textures.size())
+                return nullptr;
 
             // KHR_texture_basisu (issue #29 Tier 4, #42): when the file ships a
             // KTX2 image it is the PRIMARY representation and imageIndex is the
@@ -357,9 +367,24 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             // the file carries one, which also keeps GLB-with-PNG-fallback
             // assets rendering if the KTX2 itself fails to decode.
             const auto& gltfTexture = asset.textures[textureIndex];
-            auto imageIndex = gltfTexture.basisuImageIndex.has_value() ? gltfTexture.basisuImageIndex
-                                                                       : gltfTexture.imageIndex;
-            if (!imageIndex.has_value()) return nullptr;
+            auto imageIndex =
+                gltfTexture.basisuImageIndex.has_value() ? gltfTexture.basisuImageIndex : gltfTexture.imageIndex;
+            if (!imageIndex.has_value())
+                return nullptr;
+
+            // Texture dedup (issue #42): one glTF image is frequently bound by
+            // several slots and materials (packed metalRough/occlusion images,
+            // shared base colours across a foliage set). Without this cache
+            // every reference decoded AND uploaded its own GPU texture -
+            // identical pixels resident N times. The key includes the colour
+            // space (the same image legitimately becomes both an sRGB and a
+            // linear texture) and the declared sampler index (a shared image
+            // can be bound with different wrap/filter state per texture).
+            const auto cacheKey =
+                std::make_tuple(*imageIndex, static_cast<int>(colorSpace),
+                                gltfTexture.samplerIndex.value_or(std::numeric_limits<size_t>::max()));
+            if (const auto found = textureCache.find(cacheKey); found != textureCache.end())
+                return found->second;
 
             auto& image = asset.images[imageIndex.value()];
 
@@ -371,59 +396,66 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
 
             Ref<Texture2D> result = nullptr;
             std::visit(
-                fastgltf::visitor{[&](const fastgltf::sources::URI& filePath)
-                                  {
-                                      std::filesystem::path imgPath = filepath.parent_path() / filePath.uri.path();
-                                      result = Texture2D::Create(imgPath.string(), sampler);
-                                  },
-                                  [&](const fastgltf::sources::Array& array)
-                                  {
-                                      result = Texture2D::CreateFromMemory(array.bytes.data(), array.bytes.size(), sampler);
-                                      UHE_CORE_INFO("Loaded texture for material {0} from Array, size: {1}", matIdx, array.bytes.size());
-                                  },
-                                  [&](const fastgltf::sources::ByteView& byteView)
-                                  {
-                                      result = Texture2D::CreateFromMemory(byteView.bytes.data(), byteView.bytes.size(), sampler);
-                                      UHE_CORE_INFO("Loaded texture for material {0} from ByteView, size: {1}", matIdx, byteView.bytes.size());
-                                  },
-                                  [&](const fastgltf::sources::Vector& vector)
-                                  {
-                                      result = Texture2D::CreateFromMemory(vector.bytes.data(), vector.bytes.size(), sampler);
-                                      UHE_CORE_INFO("Loaded texture for material {0} from Vector, size: {1}", matIdx, vector.bytes.size());
-                                  },
-                                  [&](const fastgltf::sources::Fallback& fallback)
-                                  {
-                                      UHE_CORE_ERROR("fastgltf fallback triggered for material {0} image! Image could not be loaded.", matIdx);
-                                  },
-                                  [&](const fastgltf::sources::BufferView& view)
-                                  {
-                                      // The view may be EXT_meshopt_compression-compressed
-                                      // (meshopt exports compress atlas pages with the
-                                      // geometry); GetBufferViewBytes handles both cases.
-                                      std::vector<std::byte> scratch;
-                                      auto bytes = GetBufferViewBytes(asset, view.bufferViewIndex, scratch);
-                                      if (bytes.empty())
-                                      {
-                                          UHE_CORE_ERROR("BufferView for material {0} has no readable data", matIdx);
-                                          return;
-                                      }
-                                      result = Texture2D::CreateFromMemory(bytes.data(), bytes.size(), sampler);
-                                      UHE_CORE_INFO("Loaded texture for material {0} from BufferView, size: {1}", matIdx, bytes.size());
-                                  },
-                                  [&](const auto&) {
-                                      UHE_CORE_ERROR("Unhandled image data type in glTF! Variant index: {0}", image.data.index());
-                                  }},
+                fastgltf::visitor{
+                    [&](const fastgltf::sources::URI& filePath)
+                    {
+                        std::filesystem::path imgPath = filepath.parent_path() / filePath.uri.path();
+                        result = Texture2D::Create(imgPath.string(), sampler);
+                    },
+                    [&](const fastgltf::sources::Array& array)
+                    {
+                        result = Texture2D::CreateFromMemory(array.bytes.data(), array.bytes.size(), sampler);
+                        UHE_CORE_INFO("Loaded texture for material {0} from Array, size: {1}", matIdx,
+                                      array.bytes.size());
+                    },
+                    [&](const fastgltf::sources::ByteView& byteView)
+                    {
+                        result = Texture2D::CreateFromMemory(byteView.bytes.data(), byteView.bytes.size(), sampler);
+                        UHE_CORE_INFO("Loaded texture for material {0} from ByteView, size: {1}", matIdx,
+                                      byteView.bytes.size());
+                    },
+                    [&](const fastgltf::sources::Vector& vector)
+                    {
+                        result = Texture2D::CreateFromMemory(vector.bytes.data(), vector.bytes.size(), sampler);
+                        UHE_CORE_INFO("Loaded texture for material {0} from Vector, size: {1}", matIdx,
+                                      vector.bytes.size());
+                    },
+                    [&](const fastgltf::sources::Fallback& fallback)
+                    {
+                        UHE_CORE_ERROR("fastgltf fallback triggered for material {0} image! Image could not be loaded.",
+                                       matIdx);
+                    },
+                    [&](const fastgltf::sources::BufferView& view)
+                    {
+                        // The view may be EXT_meshopt_compression-compressed
+                        // (meshopt exports compress atlas pages with the
+                        // geometry); GetBufferViewBytes handles both cases.
+                        std::vector<std::byte> scratch;
+                        auto bytes = GetBufferViewBytes(asset, view.bufferViewIndex, scratch);
+                        if (bytes.empty())
+                        {
+                            UHE_CORE_ERROR("BufferView for material {0} has no readable data", matIdx);
+                            return;
+                        }
+                        result = Texture2D::CreateFromMemory(bytes.data(), bytes.size(), sampler);
+                        UHE_CORE_INFO("Loaded texture for material {0} from BufferView, size: {1}", matIdx,
+                                      bytes.size());
+                    },
+                    [&](const auto&)
+                    { UHE_CORE_ERROR("Unhandled image data type in glTF! Variant index: {0}", image.data.index()); }},
                 image.data);
+            textureCache.emplace(cacheKey, result);
             return result;
         };
 
         // Loads a texture into its slot AND records the slot's KHR_texture_transform.
         // Both come off the same TextureInfo, so pairing them here is what keeps a
         // transform from silently diverging from the map it belongs to.
-        auto assignSlot = [&](Ref<Texture2D>& target, int slotIndex,
-                              const fastgltf::TextureInfo* texInfo,
-                              RHI::SamplerDesc::ColorSpace colorSpace = RHI::SamplerDesc::ColorSpace::SRGB) {
-            if (!texInfo) return;
+        auto assignSlot = [&](Ref<Texture2D>& target, int slotIndex, const fastgltf::TextureInfo* texInfo,
+                              RHI::SamplerDesc::ColorSpace colorSpace = RHI::SamplerDesc::ColorSpace::SRGB)
+        {
+            if (!texInfo)
+                return;
             target = loadTexture(texInfo, i, colorSpace);
             if (texInfo->transform)
             {
@@ -435,7 +467,8 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
                     // the transform over UV0 is closer to the file's intent than
                     // dropping it, but the author should know the map wanted a
                     // second UV set the engine does not carry.
-                    UHE_CORE_WARN("Material {0}: texture transform targets TEXCOORD_{1}; only TEXCOORD_0 exists, applying it to TEXCOORD_0",
+                    UHE_CORE_WARN("Material {0}: texture transform targets TEXCOORD_{1}; only TEXCOORD_0 exists, "
+                                  "applying it to TEXCOORD_0",
                                   i, dst.texCoordSet);
                 }
             }
@@ -550,8 +583,10 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         // get a pointer would be UB before assignSlot's null check could run,
         // so the has_value test has to happen on THIS side of the call.
         auto assignSlotOpt = [&](Ref<Texture2D>& target, int slotIndex, const auto& texInfo,
-                                 RHI::SamplerDesc::ColorSpace colorSpace = RHI::SamplerDesc::ColorSpace::SRGB) {
-            if (!texInfo.has_value()) return;
+                                 RHI::SamplerDesc::ColorSpace colorSpace = RHI::SamplerDesc::ColorSpace::SRGB)
+        {
+            if (!texInfo.has_value())
+                return;
             assignSlot(target, slotIndex, &texInfo.value(), colorSpace);
         };
 
@@ -579,8 +614,8 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             const auto& sp = *gltfMaterial.specular;
             ext.HasSpecular = true;
             ext.SpecularFactor = sp.specularFactor;
-            ext.SpecularColorFactor = glm::vec3(sp.specularColorFactor[0], sp.specularColorFactor[1],
-                                                 sp.specularColorFactor[2]);
+            ext.SpecularColorFactor =
+                glm::vec3(sp.specularColorFactor[0], sp.specularColorFactor[1], sp.specularColorFactor[2]);
             assignSlotOpt(ext.SpecularTexture, static_cast<int>(MaterialTextureSlot::Specular), sp.specularTexture,
                           RHI::SamplerDesc::ColorSpace::Linear);
             assignSlotOpt(ext.SpecularColorTexture, static_cast<int>(MaterialTextureSlot::SpecularColor),
@@ -593,7 +628,8 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             ext.HasSheen = true;
             ext.SheenColorFactor = glm::vec3(sh.sheenColorFactor[0], sh.sheenColorFactor[1], sh.sheenColorFactor[2]);
             ext.SheenRoughnessFactor = sh.sheenRoughnessFactor;
-            assignSlotOpt(ext.SheenColorTexture, static_cast<int>(MaterialTextureSlot::SheenColor), sh.sheenColorTexture);
+            assignSlotOpt(ext.SheenColorTexture, static_cast<int>(MaterialTextureSlot::SheenColor),
+                          sh.sheenColorTexture);
             assignSlotOpt(ext.SheenRoughnessTexture, static_cast<int>(MaterialTextureSlot::SheenRoughness),
                           sh.sheenRoughnessTexture, RHI::SamplerDesc::ColorSpace::Linear);
         }
@@ -656,12 +692,11 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             const auto& dt = *gltfMaterial.diffuseTransmission;
             ext.HasDiffuseTransmission = true;
             ext.DiffuseTransmissionFactor = dt.diffuseTransmissionFactor;
-            ext.DiffuseTransmissionColor = glm::vec3(dt.diffuseTransmissionColorFactor[0],
-                                                     dt.diffuseTransmissionColorFactor[1],
-                                                     dt.diffuseTransmissionColorFactor[2]);
-            assignSlotOpt(ext.DiffuseTransmissionTexture,
-                          static_cast<int>(MaterialTextureSlot::DiffuseTransmission), dt.diffuseTransmissionTexture,
-                          RHI::SamplerDesc::ColorSpace::Linear);
+            ext.DiffuseTransmissionColor =
+                glm::vec3(dt.diffuseTransmissionColorFactor[0], dt.diffuseTransmissionColorFactor[1],
+                          dt.diffuseTransmissionColorFactor[2]);
+            assignSlotOpt(ext.DiffuseTransmissionTexture, static_cast<int>(MaterialTextureSlot::DiffuseTransmission),
+                          dt.diffuseTransmissionTexture, RHI::SamplerDesc::ColorSpace::Linear);
             assignSlotOpt(ext.DiffuseTransmissionColorTexture,
                           static_cast<int>(MaterialTextureSlot::DiffuseTransmissionColor),
                           dt.diffuseTransmissionColorTexture);
@@ -715,8 +750,7 @@ void Model::ParsePunctualLights(const fastgltf::Asset& asset)
 
         out.Color = glm::vec3(light.color.x(), light.color.y(), light.color.z());
         out.Intensity = static_cast<float>(light.intensity);
-        out.Range = light.range.has_value() ? static_cast<float>(*light.range)
-                                            : std::numeric_limits<float>::infinity();
+        out.Range = light.range.has_value() ? static_cast<float>(*light.range) : std::numeric_limits<float>::infinity();
         out.InnerConeAngle = static_cast<float>(light.innerConeAngle.value_or(0.0));
         out.OuterConeAngle = static_cast<float>(light.outerConeAngle.value_or(glm::pi<double>() / 4.0));
         out.Name = std::string(light.name);
@@ -777,8 +811,8 @@ void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const gl
         if (*node.lightIndex < m_PunctualLights.size())
             out.LightIndex = static_cast<int>(*node.lightIndex);
         else
-            UHE_CORE_WARN("Node {0} references light {1} but the file declares {2} lights; ignoring",
-                          nodeIndex, *node.lightIndex, m_PunctualLights.size());
+            UHE_CORE_WARN("Node {0} references light {1} but the file declares {2} lights; ignoring", nodeIndex,
+                          *node.lightIndex, m_PunctualLights.size());
     }
 
     // Authoritative accumulated placement for node-carried lights. Written

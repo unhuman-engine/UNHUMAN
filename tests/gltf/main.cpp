@@ -17,8 +17,6 @@
 // No GPU: the loader is exercised through its CPU-side scene walk only, so this
 // links no RHI and needs no Vulkan device.
 
-#include <glm/glm.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <concepts>
@@ -26,23 +24,23 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <glm/glm.hpp>
+#include <meshoptimizer.h>
 #include <string>
 #include <string_view>
 #include <vector>
-
 #include "UHE/Core/Log.h"
-#include "UHE/Renderer3D/LoadModel.h"
 #include "UHE/Renderer3D/LightSystem.h"
+#include "UHE/Renderer3D/LoadModel.h"
 #include "UHE/Renderer3D/MaterialGPU.h"
 #include "UHE/Scene/Components.h"
 
-#include <meshoptimizer.h>
-
 // Basis Universal: the encoder generates real KTX2 fixtures at run time, the
 // transcoder is what the engine (and KTX2.h) use to decode them.
+#include "UHE/Renderer/KTX2.h"
+#include "UHE/Renderer/Mipmap.h"
 #include "basisu_comp.h"
 #include "basisu_transcoder.h"
-#include "UHE/Renderer/KTX2.h" 
 
 // Defined in gpu_stub.cpp: records every sampler the loader asked for, so a test
 // can assert glTF's declared sampler state and colour space actually reached the
@@ -107,7 +105,6 @@ bool closeTo(const glm::vec3& a, const glm::vec3& b, float eps = 1e-4f)
 {
     return std::fabs(a.x - b.x) <= eps && std::fabs(a.y - b.y) <= eps && std::fabs(a.z - b.z) <= eps;
 }
-
 
 namespace fs = std::filesystem;
 
@@ -250,11 +247,7 @@ public:
     }
 
     // key + scalar in one call.
-    template <typename T>
-    Json& field(std::string_view name, T&& v)
-    {
-        return key(name).value(std::forward<T>(v));
-    }
+    template <typename T> Json& field(std::string_view name, T&& v) { return key(name).value(std::forward<T>(v)); }
 
     // key + array of numbers.
     Json& numberArray(std::string_view name, const std::vector<double>& values)
@@ -300,11 +293,21 @@ private:
         {
             switch (c)
             {
-                case '"': m_Out += "\\\""; break;
-                case '\\': m_Out += "\\\\"; break;
-                case '\n': m_Out += "\\n"; break;
-                case '\r': m_Out += "\\r"; break;
-                case '\t': m_Out += "\\t"; break;
+                case '"':
+                    m_Out += "\\\"";
+                    break;
+                case '\\':
+                    m_Out += "\\\\";
+                    break;
+                case '\n':
+                    m_Out += "\\n";
+                    break;
+                case '\r':
+                    m_Out += "\\r";
+                    break;
+                case '\t':
+                    m_Out += "\\t";
+                    break;
                 default:
                     if (static_cast<unsigned char>(c) < 0x20)
                     {
@@ -419,13 +422,13 @@ inline ExtSpec& WithArray(ExtSpec& s, std::string_view name, std::vector<double>
 struct MaterialSpec
 {
     std::string alphaMode;
-    float alphaCutoff = -1.0f;      // negative = omit, so the spec default shows through
+    float alphaCutoff = -1.0f; // negative = omit, so the spec default shows through
     bool doubleSided = false;
     bool hasBaseColorFactor = false;
     float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     bool hasEmissiveFactor = false;
     float emissive[3] = {0.0f, 0.0f, 0.0f};
-    float normalScale = -1.0f;      // negative = omit
+    float normalScale = -1.0f; // negative = omit
     float occlusionStrength = -1.0f;
     // Which texture SLOTS to declare. Each one forces a separate texture load,
     // which is what makes per-slot colour space observable: baseColor and
@@ -435,6 +438,10 @@ struct MaterialSpec
     // Mutually exclusive with baseColorTexture; the texture entry carries the
     // extension instead of a plain source.
     bool baseColorBasisTexture = false;
+    // When set together with baseColorTexture, EVERY material binds the same
+    // texture instead of only material 0 - the fixture for the dedup cache,
+    // where N references to one image must decode/upload exactly once.
+    bool baseColorTextureOnAllMaterials = false;
     bool metallicRoughnessTexture = false;
     bool emissiveTexture = false;
     std::optional<SamplerSpec> sampler;
@@ -578,15 +585,15 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     for (std::size_t v = 0; v < Quad::kVertexCount; ++v)
     {
         const float t = static_cast<float>(v) / static_cast<float>(Quad::kVertexCount);
-        quadColors.push_back(t);                        // R ramps 0 -> 1
-        quadColors.push_back(1.0f - t);                  // G ramps 1 -> 0
+        quadColors.push_back(t);        // R ramps 0 -> 1
+        quadColors.push_back(1.0f - t); // G ramps 1 -> 0
         if (spec.colorComponents >= 4)
         {
-            quadColors.push_back(0.5f);                  // B constant, a canary
+            quadColors.push_back(0.5f); // B constant, a canary
             // Alpha VARIES per vertex. A constant 1 is indistinguishable from
             // hardcoding alpha to 1, which is the exact defect the VEC4 branch
             // exists to prevent.
-            quadColors.push_back(0.25f + 0.5f * t);       // A ramps 0.25 -> 0.75
+            quadColors.push_back(0.25f + 0.5f * t); // A ramps 0.25 -> 0.75
         }
     }
     const std::size_t kColorBytes = Quad::kVertexCount * spec.colorComponents * sizeof(float);
@@ -635,8 +642,10 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     // truncated header parses as a valid file and then fails at decode time,
     // which reads as a loader bug rather than a fixture bug.
     static constexpr std::uint8_t kWhitePixelPng[] = {
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0x0f, 0x04, 0x00, 0x09, 0xfb, 0x03, 0xfd, 0x68, 0xfa, 0x1c, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
-    };
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00,
+        0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0x0f, 0x04, 0x00, 0x09, 0xfb, 0x03,
+        0xfd, 0x68, 0xfa, 0x1c, 0xcc, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
     dir.writeBinary("tex.png", kWhitePixelPng, sizeof(kWhitePixelPng));
 
     // ---- JSON ----
@@ -768,7 +777,7 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     // guessed, because a hardcoded constant here silently points JOINTS_0 at the
     // wrong accessor the moment another attribute is added before it.
     const std::size_t viewsBeforeSkin = spec.meshCount * (1 + (spec.useIndices ? 1 : 0) + (spec.withNormals ? 1 : 0) +
-                                                         (spec.withUvs ? 1 : 0) + (spec.colorComponents > 0 ? 1 : 0));
+                                                          (spec.withUvs ? 1 : 0) + (spec.colorComponents > 0 ? 1 : 0));
 
     j.key("accessors").beginArray();
     for (std::size_t i = 0; i < spec.meshCount; ++i)
@@ -822,7 +831,8 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
         {
             j.beginObject()
                 .field("bufferView", spec.meshCount * (1 + (spec.useIndices ? 1 : 0) + (spec.withNormals ? 1 : 0) +
-                                                      (spec.withUvs ? 1 : 0)) + i)
+                                                       (spec.withUvs ? 1 : 0)) +
+                                         i)
                 .field("componentType", 5126)
                 .field("count", Quad::kVertexCount)
                 .field("type", spec.colorComponents == 3 ? "VEC3" : "VEC4")
@@ -889,13 +899,11 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     // One 1x1 texture, declared only when a material actually references one.
     // A material pointing at texture 0 with no images/samplers/textures declared
     // is invalid glTF and fastgltf rejects the whole file.
-    const bool needsTexture = spec.material && (spec.material->normalScale >= 0.0f ||
-                                                spec.material->occlusionStrength >= 0.0f ||
-                                                spec.material->baseColorTexture ||
-                                                spec.material->baseColorBasisTexture ||
-                                                spec.material->metallicRoughnessTexture ||
-                                                spec.material->emissiveTexture ||
-                                                spec.material->sampler.has_value());
+    const bool needsTexture =
+        spec.material && (spec.material->normalScale >= 0.0f || spec.material->occlusionStrength >= 0.0f ||
+                          spec.material->baseColorTexture || spec.material->baseColorBasisTexture ||
+                          spec.material->metallicRoughnessTexture || spec.material->emissiveTexture ||
+                          spec.material->sampler.has_value());
     if (needsTexture)
     {
         // The basisu fixture's image 0 is the .ktx2 written by the test; PNG
@@ -907,7 +915,13 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
         }
         else
         {
-            j.key("images").beginArray().beginObject().field("uri", "tex.png").field("mimeType", "image/png").endObject().endArray();
+            j.key("images")
+                .beginArray()
+                .beginObject()
+                .field("uri", "tex.png")
+                .field("mimeType", "image/png")
+                .endObject()
+                .endArray();
         }
 
         // Samplers and textures are emitted exactly once each. A second
@@ -968,14 +982,16 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
             // Only material 0 gets a baseColorFactor override; the others keep it
             // absent so the spec default is what gets observed.
             if (i == 0 && spec.material && spec.material->hasBaseColorFactor)
-                j.field("baseColorFactor", std::vector<double>{spec.material->baseColor[0], spec.material->baseColor[1],
-                                                              spec.material->baseColor[2], spec.material->baseColor[3]});
+                j.field("baseColorFactor",
+                        std::vector<double>{spec.material->baseColor[0], spec.material->baseColor[1],
+                                            spec.material->baseColor[2], spec.material->baseColor[3]});
             j.field("metallicFactor", 0.0).field("roughnessFactor", 0.5);
             // baseColorTexture and metallicRoughnessTexture are children of
             // pbrMetallicRoughness, not of the material. Emitting them at
             // material level produces valid JSON that fastgltf silently ignores,
             // so the slots never load and the test asserts on nothing.
-            if (i == 0 && spec.material && (spec.material->baseColorTexture || spec.material->baseColorBasisTexture))
+            if (spec.material && (spec.material->baseColorTexture || spec.material->baseColorBasisTexture) &&
+                (i == 0 || spec.material->baseColorTextureOnAllMaterials))
             {
                 // The basisu variant emits the SAME TextureInfo here: the
                 // extension object lives on the texture entry, not on the
@@ -989,10 +1005,10 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                         .beginObject()
                         .key("KHR_texture_transform")
                         .beginObject()
-                        .field("offset", std::vector<double>{spec.material->transformOffsetX,
-                                                             spec.material->transformOffsetY})
-                        .field("scale", std::vector<double>{spec.material->transformScaleX,
-                                                            spec.material->transformScaleY})
+                        .field("offset",
+                               std::vector<double>{spec.material->transformOffsetX, spec.material->transformOffsetY})
+                        .field("scale",
+                               std::vector<double>{spec.material->transformScaleX, spec.material->transformScaleY})
                         .field("rotation", spec.material->transformRotation)
                         .endObject()
                         .endObject();
@@ -1021,7 +1037,11 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                 if (m.normalScale >= 0.0f)
                     j.key("normalTexture").beginObject().field("index", 0).field("scale", m.normalScale).endObject();
                 if (m.occlusionStrength >= 0.0f)
-                    j.key("occlusionTexture").beginObject().field("index", 0).field("strength", m.occlusionStrength).endObject();
+                    j.key("occlusionTexture")
+                        .beginObject()
+                        .field("index", 0)
+                        .field("strength", m.occlusionStrength)
+                        .endObject();
 
                 // Extension blocks. Emitted only for material 0, and only when
                 // the test asked for one, so a material with no extensions emits
@@ -1052,7 +1072,10 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                     if (m.unlit)
                         j.key("KHR_materials_unlit").beginObject().endObject();
                     if (m.hasEmissiveStrength)
-                        j.key("KHR_materials_emissive_strength").beginObject().field("emissiveStrength", m.emissiveStrength).endObject();
+                        j.key("KHR_materials_emissive_strength")
+                            .beginObject()
+                            .field("emissiveStrength", m.emissiveStrength)
+                            .endObject();
                     if (m.hasIOR)
                         j.key("KHR_materials_ior").beginObject().field("ior", m.ior).endObject();
                     for (const auto& e : kExts)
@@ -1074,12 +1097,17 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                 if (anyExt || m.hasTextureTransform)
                 {
                     std::vector<std::string> used;
-                    if (m.unlit) used.push_back("KHR_materials_unlit");
-                    if (m.hasEmissiveStrength) used.push_back("KHR_materials_emissive_strength");
-                    if (m.hasIOR) used.push_back("KHR_materials_ior");
-                    if (m.hasTextureTransform) used.push_back("KHR_texture_transform");
+                    if (m.unlit)
+                        used.push_back("KHR_materials_unlit");
+                    if (m.hasEmissiveStrength)
+                        used.push_back("KHR_materials_emissive_strength");
+                    if (m.hasIOR)
+                        used.push_back("KHR_materials_ior");
+                    if (m.hasTextureTransform)
+                        used.push_back("KHR_texture_transform");
                     for (const auto& e : kExts)
-                        if (e.spec->has_value()) used.push_back(e.name);
+                        if (e.spec->has_value())
+                            used.push_back(e.name);
                     j.key("extensionsUsed").beginArray();
                     for (const auto& u : used)
                         j.value(u);
@@ -1490,7 +1518,6 @@ int main()
         check(!model.loadModel(dir.path() / "does_not_exist.gltf"), "missing file returns false");
     }
 
-
     // =====================================================================
     // Materials. Every default here is one the spec defines and that is easy to
     // get wrong by habit - emissive being black rather than white is the one
@@ -1668,7 +1695,8 @@ int main()
                         Quad::kVertexCount);
             check(!prim.vertices.empty(), "seam test produced vertices");
             check(prim.indices.size() % 3 == 0, "index count is a whole number of triangles");
-            check(prim.indices.size() / 3 == Quad::kIndexCount / 3, "triangle count is unchanged by tangent generation");
+            check(prim.indices.size() / 3 == Quad::kIndexCount / 3,
+                  "triangle count is unchanged by tangent generation");
         }
     }
 
@@ -1699,7 +1727,6 @@ int main()
             check(indicesInRange, "every skinned index is in range after tangent generation");
         }
     }
-
 
     // =====================================================================
     // Drawable invariants. The loader's scene walk copies GPU handles into the
@@ -1744,8 +1771,7 @@ int main()
                 }
             }
 
-            check(primitivesSeen > 0, "node instances carry primitives (" +
-                                         std::to_string(primitivesSeen) + ")");
+            check(primitivesSeen > 0, "node instances carry primitives (" + std::to_string(primitivesSeen) + ")");
             check(missingVertexBuffer == 0,
                   "every primitive has a vertex buffer (" + std::to_string(missingVertexBuffer) + " missing)");
             check(missingIndexBuffer == 0,
@@ -1789,7 +1815,6 @@ int main()
         }
     }
 
-
     // =====================================================================
     // Sampler state. glTF declares magFilter/minFilter/wrapS/wrapT per texture;
     // before this the backend hardcoded linear/repeat for everything, so a
@@ -1810,10 +1835,10 @@ int main()
         // applied to both axes cannot express this, which is the whole reason
         // the per-axis overload exists.
         SamplerSpec sp;
-        sp.magFilter = 9728;  // NEAREST
-        sp.minFilter = 9984;  // NEAREST_MIPMAP_NEAREST
-        sp.wrapS = 33071;     // CLAMP_TO_EDGE
-        sp.wrapT = 33648;     // MIRRORED_REPEAT
+        sp.magFilter = 9728; // NEAREST
+        sp.minFilter = 9984; // NEAREST_MIPMAP_NEAREST
+        sp.wrapS = 33071;    // CLAMP_TO_EDGE
+        sp.wrapT = 33648;    // MIRRORED_REPEAT
         ms.sampler = sp;
         ms.normalScale = 0.5f; // forces a texture reference
         spec.material = ms;
@@ -1923,24 +1948,24 @@ int main()
         if (check(model.loadModel(path), "model with every texture slot loads"))
         {
             const auto& requested = ::UHE::StubRequestedSamplers();
-            // Five slots: baseColor, metallicRoughness, normal, occlusion, emissive.
-            check(requested.size() == 5,
-                  "all five texture slots requested a texture (" + std::to_string(requested.size()) + ")");
+            // Five slots reference ONE image, so the dedup cache collapses the
+            // loads to one per colour space: the sRGB pair (baseColor,
+            // emissive) shares a texture, and the linear trio (metalRough,
+            // normal, occlusion) shares another. Two calls, both kinds seen.
+            check(requested.size() == 2, "five slots on one image load twice, once per colour space (" +
+                                             std::to_string(requested.size()) + ")");
 
             int srgb = 0;
             int linear = 0;
             for (const auto& s : requested)
             {
-                if (s.colorSpace == CS::SRGB) ++srgb;
-                else if (s.colorSpace == CS::Linear) ++linear;
+                if (s.colorSpace == CS::SRGB)
+                    ++srgb;
+                else if (s.colorSpace == CS::Linear)
+                    ++linear;
             }
-            // Exactly two colour slots (baseColor, emissive) and three data slots
-            // (metallicRoughness, normal, occlusion). Counting rather than
-            // asserting a load ORDER: the loader is free to visit the slots in
-            // whatever sequence is correct, and pinning that here would fail on
-            // a harmless reorder.
-            check(srgb == 2, "exactly the 2 colour slots (baseColor, emissive) are sRGB (" + std::to_string(srgb) + ")");
-            check(linear == 3, "exactly the 3 data slots (metalRough, normal, occlusion) are linear (" + std::to_string(linear) + ")");
+            check(srgb == 1, "the colour slots' texture is sRGB");
+            check(linear == 1, "the data slots' texture is linear");
         }
     }
 
@@ -2220,8 +2245,7 @@ int main()
             // BLEND, so the loader must route it to the blended path itself.
             check(e.TransmissionBlend == UHE::RD3d::BlendApproach::Blend,
                   "a transmissive material is routed to the blended path");
-            check(model.HasTransparentMaterials(),
-                  "transmission sets HasTransparentMaterials without alphaMode BLEND");
+            check(model.HasTransparentMaterials(), "transmission sets HasTransparentMaterials without alphaMode BLEND");
         }
     }
 
@@ -2231,7 +2255,8 @@ int main()
         spec.meshCount = 1;
         spec.materialCount = 1;
         MaterialSpec ms;
-        ms.iridescence = Ext({{"iridescenceFactor", 0.8}, {"iridescenceIor", 1.5},
+        ms.iridescence = Ext({{"iridescenceFactor", 0.8},
+                              {"iridescenceIor", 1.5},
                               {"iridescenceThicknessMinimum", 200.0},
                               {"iridescenceThicknessMaximum", 600.0}});
         ms.anisotropy = Ext({{"anisotropyStrength", 0.7}, {"anisotropyRotation", 0.25}});
@@ -2347,8 +2372,7 @@ int main()
             // The leaf-translucency extension is NOT see-through glass: it must
             // not flag the material for the blended path the way
             // KHR_materials_transmission does.
-            check(!model.HasTransparentMaterials(),
-                  "diffuse transmission alone does not mark the model transparent");
+            check(!model.HasTransparentMaterials(), "diffuse transmission alone does not mark the model transparent");
         }
     }
 
@@ -2372,8 +2396,8 @@ int main()
         UHE::RD3d::Model model;
         if (check(model.loadModel(path), "texture transform model loads"))
         {
-            const auto& t = model.GetMaterials()[0].UVTransforms[static_cast<size_t>(
-                UHE::RD3d::MaterialTextureSlot::Albedo)];
+            const auto& t =
+                model.GetMaterials()[0].UVTransforms[static_cast<size_t>(UHE::RD3d::MaterialTextureSlot::Albedo)];
             check(t.HasTransform, "albedo slot transform recorded");
 
             // The loader flips V while importing TEXCOORD_0 (engine convention),
@@ -2390,12 +2414,12 @@ int main()
             check(std::fabs(t.scale.y - 3.0f) < 1e-5f, "scale.y carried");
             const float expectedOffsetX = static_cast<float>(0.1 - s * 3.0);
             const float expectedOffsetY = static_cast<float>(1.0 - c * 3.0 - 0.2);
-            check(std::fabs(t.offset.x - expectedOffsetX) < 1e-4f,
-                  "offset.x converted for the V flip (" + std::to_string(t.offset.x) +
-                      " vs " + std::to_string(expectedOffsetX) + ")");
-            check(std::fabs(t.offset.y - expectedOffsetY) < 1e-4f,
-                  "offset.y converted for the V flip (" + std::to_string(t.offset.y) +
-                      " vs " + std::to_string(expectedOffsetY) + ")");
+            check(std::fabs(t.offset.x - expectedOffsetX) < 1e-4f, "offset.x converted for the V flip (" +
+                                                                       std::to_string(t.offset.x) + " vs " +
+                                                                       std::to_string(expectedOffsetX) + ")");
+            check(std::fabs(t.offset.y - expectedOffsetY) < 1e-4f, "offset.y converted for the V flip (" +
+                                                                       std::to_string(t.offset.y) + " vs " +
+                                                                       std::to_string(expectedOffsetY) + ")");
 
             // A transform on one slot must not leak into another.
             const auto& other =
@@ -2478,16 +2502,15 @@ int main()
         // Encode positions: 6 vertices x 3 floats.
         const std::size_t posBound = meshopt_encodeVertexBufferBound(kVertexCount, 3 * sizeof(float));
         std::vector<unsigned char> posCompressed(posBound);
-        const std::size_t posSize =
-            meshopt_encodeVertexBuffer(posCompressed.data(), posBound, quadPositions.data(), kVertexCount,
-                                       3 * sizeof(float));
+        const std::size_t posSize = meshopt_encodeVertexBuffer(posCompressed.data(), posBound, quadPositions.data(),
+                                                               kVertexCount, 3 * sizeof(float));
         posCompressed.resize(posSize);
 
         // Encode indices: u32 triangles.
         const std::size_t idxBound = meshopt_encodeIndexBufferBound(kIndexCount, kVertexCount);
         std::vector<unsigned char> idxCompressed(idxBound);
-        const std::size_t idxSize = meshopt_encodeIndexBuffer(idxCompressed.data(), idxBound, quadIndices.data(),
-                                                              kIndexCount);
+        const std::size_t idxSize =
+            meshopt_encodeIndexBuffer(idxCompressed.data(), idxBound, quadIndices.data(), kIndexCount);
         idxCompressed.resize(idxSize);
 
         std::string bin;
@@ -2504,7 +2527,13 @@ int main()
         j.key("extensionsRequired").beginArray().value("EXT_meshopt_compression").endArray();
         j.key("extensionsUsed").beginArray().value("EXT_meshopt_compression").endArray();
 
-        j.key("buffers").beginArray().beginObject().field("uri", binName).field("byteLength", bin.size()).endObject().endArray();
+        j.key("buffers")
+            .beginArray()
+            .beginObject()
+            .field("uri", binName)
+            .field("byteLength", bin.size())
+            .endObject()
+            .endArray();
 
         // bufferView.byteLength is the DECODED size; the compressed size lives
         // in the extension object. Mixing the two up truncates the stream.
@@ -2572,7 +2601,15 @@ int main()
         j.endObject().endArray().endObject().endArray();
 
         j.key("nodes").beginArray().beginObject().field("name", "node_0").field("mesh", 0).endObject().endArray();
-        j.key("scenes").beginArray().beginObject().key("nodes").beginArray().value(std::size_t{0}).endArray().endObject().endArray();
+        j.key("scenes")
+            .beginArray()
+            .beginObject()
+            .key("nodes")
+            .beginArray()
+            .value(std::size_t{0})
+            .endArray()
+            .endObject()
+            .endArray();
         j.endObject();
 
         const fs::path path = dir.write("meshopt.gltf", j.str());
@@ -2603,14 +2640,12 @@ int main()
                 std::vector<glm::vec3> got;
                 for (const auto& v : prim.vertices)
                     got.push_back(v.position);
-                std::sort(got.begin(), got.end(),
-                          [](const glm::vec3& a, const glm::vec3& b) { return a.x < b.x; });
+                std::sort(got.begin(), got.end(), [](const glm::vec3& a, const glm::vec3& b) { return a.x < b.x; });
 
                 std::vector<glm::vec3> want;
                 for (std::size_t v = 0; v < kVertexCount; ++v)
                     want.emplace_back(quadPositions[v * 3 + 0], quadPositions[v * 3 + 1], quadPositions[v * 3 + 2]);
-                std::sort(want.begin(), want.end(),
-                          [](const glm::vec3& a, const glm::vec3& b) { return a.x < b.x; });
+                std::sort(want.begin(), want.end(), [](const glm::vec3& a, const glm::vec3& b) { return a.x < b.x; });
 
                 bool positionsMatch = got.size() == want.size();
                 for (std::size_t v = 0; positionsMatch && v < want.size(); ++v)
@@ -2710,8 +2745,7 @@ int main()
         check(gpu.flags.x == 2, "alphaMode Blend packed");
         check(gpu.flags.y == 1, "unlit flag packed");
         check((gpu.flags.z & UHE::RD3d::kFeatureClearcoat) != 0, "clearcoat feature bit set");
-        check((gpu.flags.z & UHE::RD3d::kFeatureVolume) != 0,
-              "volume bit set (transmission + non-zero thickness)");
+        check((gpu.flags.z & UHE::RD3d::kFeatureVolume) != 0, "volume bit set (transmission + non-zero thickness)");
         check((gpu.flags.z & UHE::RD3d::kFeatureDiffuseTransmission) != 0, "diffuse transmission bit set");
         check((gpu.flags.z & UHE::RD3d::kFeatureSheen) == 0, "undeclared extensions keep their bits off");
 
@@ -2728,8 +2762,7 @@ int main()
         // untouched UVs, which is what keeps every pre-transform asset intact.
         UHE::RD3d::Material plain;
         const auto plainGpu = UHE::RD3d::FillMaterialGPU(plain);
-        check(plainGpu.slots[UHE::RD3d::kSlotAlbedo].rotationScale ==
-                  glm::vec4(1.0f, 0.0f, 1.0f, 1.0f),
+        check(plainGpu.slots[UHE::RD3d::kSlotAlbedo].rotationScale == glm::vec4(1.0f, 0.0f, 1.0f, 1.0f),
               "default slot transform is identity (cos 1, sin 0, scale 1)");
         check(plainGpu.slots[UHE::RD3d::kSlotAlbedo].offset == glm::vec4(0.0f), "default slot offset is zero");
 
@@ -2893,8 +2926,8 @@ int main()
         // truncate to 0 and the encoder would encode a black image.
         for (u32 y = 0; y < kH; ++y)
             for (u32 x = 0; x < kW; ++x)
-                source(x, y).set(src[(y * kW + x) * 4 + 0], src[(y * kW + x) * 4 + 1],
-                                 src[(y * kW + x) * 4 + 2], src[(y * kW + x) * 4 + 3]);
+                source(x, y).set(src[(y * kW + x) * 4 + 0], src[(y * kW + x) * 4 + 1], src[(y * kW + x) * 4 + 2],
+                                 src[(y * kW + x) * 4 + 3]);
         params.m_source_images.push_back(source);
         params.m_uastc = true;
         params.m_create_ktx2_file = true;
@@ -2979,9 +3012,134 @@ int main()
                 check(UHE::StubLastMemorySize() == ktx2.size(),
                       "the KTX2 bytes (not a fallback) reached the texture factory");
                 const auto& head = UHE::StubLastMemoryData();
-                check(head[0] == 0xAB && head[1] == 0x4B && head[2] == 0x54,
-                      "factory received KTX2 magic bytes");
+                check(head[0] == 0xAB && head[1] == 0x4B && head[2] == 0x54, "factory received KTX2 magic bytes");
             }
+        }
+    }
+
+    section("CPU mipmap downsampling is a correct 2x2 box filter");
+    {
+        // Four solid quadrants: each level-1 texel must be exactly the average
+        // of its quadrant. A wrong stride, a wrong offset or a dropped channel
+        // all fail this with obvious colours.
+        const u32 kW = 4, kH = 4;
+        std::vector<u8> src(kW * kH * 4);
+        const u8 quads[2][2][4] = {{{200, 0, 0, 255}, {0, 200, 0, 255}}, {{0, 0, 200, 255}, {200, 200, 200, 255}}};
+        for (u32 y = 0; y < kH; ++y)
+            for (u32 x = 0; x < kW; ++x)
+                for (u32 c = 0; c < 4; ++c)
+                    src[(y * kW + x) * 4 + c] = quads[y / 2][x / 2][c];
+
+        const auto down = UHE::DownsampleRGBA8(src, kW, kH);
+        check(down.width == 2 && down.height == 2, "level 1 is half size");
+        check(down.rgba.size() == UHE::RGBA8Size(2, 2), "level 1 bytes match its dimensions");
+        check(down.rgba[0] == 200 && down.rgba[1] == 0 && down.rgba[2] == 0 && down.rgba[3] == 255,
+              "quadrant average is the quadrant colour (solid colours are fixpoints)");
+
+        const auto chain = UHE::GenerateMipmapChainRGBA8(src, kW, kH);
+        check(chain.size() == 3, "4x4 chain is 3 levels (4x4, 2x2, 1x1)");
+        check(chain.back().width == 1 && chain.back().height == 1, "chain ends at 1x1");
+        // The 1x1 level averages everything: (200+0+0+200)/4 = 100 etc.
+        check(std::abs(int(chain.back().rgba[0]) - 100) <= 1 && std::abs(int(chain.back().rgba[1]) - 100) <= 1 &&
+                  std::abs(int(chain.back().rgba[2]) - 100) <= 1 && chain.back().rgba[3] == 255,
+              "1x1 level is the whole-image average");
+
+        // Odd dimensions follow the FLOOR convention - max(w/2, 1) - the same
+        // one the GPU blit path and the KTX2 container spec use, so the CPU
+        // chain and a GPU-generated chain of the same image agree level for
+        // level. 3x2 therefore halves straight to 1x1.
+        std::vector<u8> odd(UHE::RGBA8Size(3, 2), 0);
+        const auto oddChain = UHE::GenerateMipmapChainRGBA8(odd, 3, 2);
+        check(oddChain.size() == 2, "3x2 chain is 2 levels (3x2, 1x1) under floor halving");
+        check(oddChain[1].width == 1 && oddChain[1].height == 1, "3x2 halves to 1x1");
+
+        // 1x1 source: the chain is exactly one level, no infinite loop.
+        const auto single = UHE::GenerateMipmapChainRGBA8(std::vector<u8>{1, 2, 3, 4}, 1, 1);
+        check(single.size() == 1, "1x1 source yields one level");
+    }
+
+    section("KTX2 mip chain decodes level by level");
+    {
+        // The compressor generates the chain by default, so this file arrives
+        // with levels 32x32..1x1 and the decode must preserve ALL of them -
+        // dropping the chain would silently fall back to GPU generation and
+        // discard the author's filter quality.
+        basisu::basisu_encoder_init();
+
+        basisu::job_pool jobs(1);
+        basisu::basis_compressor_params params;
+        params.m_pJob_pool = &jobs;
+        basisu::image source;
+        source.resize(32, 32);
+        for (u32 y = 0; y < 32; ++y)
+            for (u32 x = 0; x < 32; ++x)
+                source(x, y).set(128, 64, 32, 255);
+        params.m_source_images.push_back(source);
+        params.m_uastc = true;
+        params.m_create_ktx2_file = true;
+        params.m_mip_gen = true; // the whole point: a file WITH its chain
+        params.m_ktx2_and_basis_srgb_transfer_function = false;
+        params.m_quality_level = -1;
+        params.m_pack_uastc_ldr_4x4_flags = basisu::cPackUASTCLevelFastest;
+
+        basisu::basis_compressor compressor;
+        compressor.init(params);
+        const auto result = compressor.process();
+        check(result == basisu::basis_compressor::cECSuccess, "mipped ktx2 encoded");
+        if (result == basisu::basis_compressor::cECSuccess)
+        {
+            const auto& ktx2 = compressor.get_output_ktx2_file();
+
+            UHE::KTX2Image decoded;
+            if (check(UHE::LoadKTX2(ktx2.data(), ktx2.size(), decoded), "mipped ktx2 decodes"))
+            {
+                check(decoded.width == 32 && decoded.height == 32, "level 0 dimensions");
+                check(decoded.mips.size() == 6, "full chain decoded (32,16,8,4,2,1)");
+                if (decoded.mips.size() == 6)
+                {
+                    u32 w = 32, h = 32;
+                    bool dimsOk = true;
+                    for (const auto& mip : decoded.mips)
+                    {
+                        dimsOk = dimsOk && mip.width == w && mip.height == h && mip.rgba.size() == UHE::RGBA8Size(w, h);
+                        w /= 2;
+                        h /= 2;
+                    }
+                    check(dimsOk, "every level's dimensions and byte count match");
+
+                    // The chain levels must be real decodes of real levels, not
+                    // copies of level 0: on a solid image the COLOUR is equal
+                    // everywhere, but a copy would still show as 32x32-sized
+                    // data in a 1x1 slot - the size check above already caught
+                    // that. Assert alpha stayed opaque on the last level too.
+                    check(decoded.mips.back().rgba[3] == 255, "last level is intact");
+                }
+            }
+        }
+    }
+
+    section("shared glTF images decode and upload once (texture dedup)");
+    {
+        // Two materials binding the SAME image used to decode and upload it
+        // twice - identical GPU pixels resident N times. The stub counts
+        // texture factory calls, so the cache must collapse this to one.
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 2;
+        MaterialSpec ms;
+        ms.baseColorTexture = true;
+        ms.baseColorTextureOnAllMaterials = true;
+        spec.material = ms;
+
+        const fs::path path = writeAsset(dir, "shared_tex.gltf", spec);
+
+        UHE::StubReset();
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "model with shared textures loads"))
+        {
+            check(model.GetMaterials().size() == 2, "both materials present");
+            check(UHE::StubTextureCreateCallCount() == 1, "one image, two references, exactly one texture created (" +
+                                                              std::to_string(UHE::StubTextureCreateCallCount()) + ")");
         }
     }
 

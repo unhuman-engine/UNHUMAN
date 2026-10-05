@@ -14,8 +14,8 @@
 
 #include <cstddef>
 #include <vector>
-
 #include "UHE/Core/Core.h"
+#include "UHE/Renderer/Mipmap.h"
 
 namespace UHE
 {
@@ -24,9 +24,15 @@ struct KTX2Image
 {
     u32 width = 0;
     u32 height = 0;
-    // 4 bytes per pixel, RGBA8, raster order - the layout VulkanTexture2D
-    // already uploads for stb-decoded images.
+    // Level 0, RGBA8 raster order - the layout VulkanTexture2D already uploads
+    // for stb-decoded images. Kept separate from the chain so a caller that
+    // only wants mip 0 never pays for the rest.
     std::vector<u8> rgba;
+    // Every level of the file's chain (level 0 included) when the container
+    // ships mipmaps; empty when the file is a single level. A file-authored
+    // chain uploads directly and the GPU generator stays idle - recomputing a
+    // chain the author shipped would both waste time and discard their filter.
+    std::vector<MipLevel> mips;
 };
 
 // KTX2 container magic. Checking it before handing bytes to the transcoder
@@ -34,10 +40,10 @@ struct KTX2Image
 // far away from the caller who chose the wrong source.
 bool IsKTX2(const void* data, size_t size);
 
-// Decodes the FIRST face of mip level 0 to RGBA8. Arrays, videos (layers),
-// cubemaps and mip chains are parsed structures the engine cannot upload yet;
-// transcoding mip 0 / face 0 is what matches the single-2D-texture path every
-// other image format takes here.
+// Decodes the first face/layer of EVERY mip level the container carries to
+// RGBA8. Cubemaps, texture arrays and videos (multi-face/layer) are parsed
+// structures the engine cannot upload yet and are rejected loudly; a plain
+// 2D texture transcodes fully, chain included.
 bool UHE_API LoadKTX2(const void* data, size_t size, KTX2Image& out);
 
 } // namespace UHE
