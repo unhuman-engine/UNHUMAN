@@ -266,7 +266,7 @@ VertexOutput vertexMain(VertexInput input) {
 }
 
 [shader("fragment")]
-FragmentOutput fragmentMain(VertexOutput input) {
+FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFace) {
     FragmentOutput output;
 
     MaterialGPU m = u_MaterialBuffers[pc.materialBufferIndex][pc.materialIndex];
@@ -313,6 +313,13 @@ FragmentOutput fragmentMain(VertexOutput input) {
     if (pc.enableLighting == 1)
     {
         float3 normal = normalize(input.v_Normal);
+        if (!isFrontFace)
+        {
+            normal = -normal;
+            input.v_Tangent = -input.v_Tangent;
+            input.v_Bitangent = -input.v_Bitangent;
+        }
+
 
         // Normal mapping in tangent space. glTF stores normals in [-1,1] and
         // samples them from a texture, hence the *2-1 on read.

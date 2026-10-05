@@ -92,8 +92,8 @@ void Renderer3D::Init()
     pipeDesc.fragmentShader = s_Data3D.FragmentShader;
     // Location 5 (a_Tangent) must match VertexInput in Basic3D.slang.
     pipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"}, {RHI::ShaderDataType::Float3, "a_Normal"},
-                             {RHI::ShaderDataType::Float2, "a_TexCoord"}, {RHI::ShaderDataType::Int4, "a_Joints"},
-                             {RHI::ShaderDataType::Float4, "a_Weights"},  {RHI::ShaderDataType::Float4, "a_Tangent"},
+                             {RHI::ShaderDataType::Float2, "a_TexCoord"}, {RHI::ShaderDataType::Float4, "a_Tangent"},
+                             {RHI::ShaderDataType::Int4, "a_Joints"},     {RHI::ShaderDataType::Float4, "a_Weights"},
                              {RHI::ShaderDataType::Float4, "a_Color"}};
 
     // Push constants only carry where things live (camera, bones, lights, and
