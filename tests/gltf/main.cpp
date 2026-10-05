@@ -33,6 +33,8 @@
 #include "UHE/Core/Log.h"
 #include "UHE/Renderer3D/LoadModel.h"
 
+#include <meshoptimizer.h>
+
 // Defined in gpu_stub.cpp: records every sampler the loader asked for, so a test
 // can assert glTF's declared sampler state and colour space actually reached the
 // factory. A stub that ignored the argument would make this path untestable, and
@@ -406,11 +408,20 @@ struct MaterialSpec
     std::optional<ExtSpec> volume;
     std::optional<ExtSpec> iridescence;
     std::optional<ExtSpec> anisotropy;
+    std::optional<ExtSpec> diffuseTransmission;
     bool unlit = false;
     bool hasEmissiveStrength = false;
     float emissiveStrength = 1.0f;
     bool hasIOR = false;
     float ior = 1.5f;
+
+    // KHR_texture_transform on the baseColorTexture slot. Emitted only when
+    // hasTextureTransform is set; every component is explicit because the test
+    // asserts the converted values, not the declared ones.
+    bool hasTextureTransform = false;
+    double transformRotation = 0.0;
+    double transformOffsetX = 0.0, transformOffsetY = 0.0;
+    double transformScaleX = 1.0, transformScaleY = 1.0;
 };
 
 struct AssetSpec
@@ -426,6 +437,23 @@ struct AssetSpec
     bool outOfRangeMaterial = false;
     // Nest node 1 under node 0 rather than listing both as scene roots.
     bool nested = false;
+    // KHR_lights_punctual: lights declared on the asset and the node -> light
+    // index assignment (empty = no lights block at all).
+    struct LightSpec
+    {
+        std::string type; // "directional", "point", "spot"
+        std::vector<double> color;
+        double intensity = 1.0;
+        bool hasRange = false;
+        double range = 0.0;
+        bool hasInnerCone = false;
+        double innerCone = 0.0;
+        bool hasOuterCone = false;
+        double outerCone = 0.0;
+    };
+    std::vector<LightSpec> lights;
+    // One entry per node; a negative value emits no light reference.
+    std::vector<int> nodeLightIndices;
     // Extensions to declare in extensionsUsed / extensionsRequired.
     std::vector<std::string> extensionsUsed;
     std::vector<std::string> extensionsRequired;
@@ -529,20 +557,28 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     const std::size_t skinBase = bin.size();
     if (spec.skinned)
     {
+        // Both blocks must carry what their accessors declare: JOINTS_0 is
+        // VEC4 x u8 and WEIGHTS_0 is VEC4 x f32 PER VERTEX. An earlier version
+        // wrote one u8 and one f32 per vertex while still declaring the full
+        // width, so every skin buffer view extended past the buffer - the
+        // loader read past the declared end and only passed because the
+        // overread happened to land inside the memory-mapped .bin page.
         for (std::size_t i = 0; i < spec.meshCount; ++i)
         {
             for (std::size_t v = 0; v < Quad::kVertexCount; ++v)
             {
-                const std::uint8_t joint = (v % 2 == 0) ? 0 : 1;
-                bin.append(reinterpret_cast<const char*>(&joint), sizeof(joint));
+                // Even vertices deform with bone 0, odd with bone 1; the three
+                // trailing joint slots are unused and carry zero weights below.
+                const std::uint8_t joints[4] = {static_cast<std::uint8_t>(v % 2 == 0 ? 0 : 1), 0, 0, 0};
+                bin.append(reinterpret_cast<const char*>(joints), sizeof(joints));
             }
             while (bin.size() % 4 != 0)
                 bin.push_back('\0');
 
             for (std::size_t v = 0; v < Quad::kVertexCount; ++v)
             {
-                const f32 w = (v % 2 == 0) ? 0.75f : 1.0f;
-                bin.append(reinterpret_cast<const char*>(&w), sizeof(f32));
+                const f32 weights[4] = {(v % 2 == 0) ? 0.75f : 1.0f, 0.0f, 0.0f, 0.0f};
+                bin.append(reinterpret_cast<const char*>(weights), sizeof(weights));
             }
         }
     }
@@ -869,7 +905,26 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
             // material level produces valid JSON that fastgltf silently ignores,
             // so the slots never load and the test asserts on nothing.
             if (i == 0 && spec.material && spec.material->baseColorTexture)
-                j.key("baseColorTexture").beginObject().field("index", 0).endObject();
+            {
+                j.key("baseColorTexture").beginObject().field("index", 0);
+                // KHR_texture_transform rides INSIDE the TextureInfo. Emitting it
+                // at material level is the mistake this fixture guards against.
+                if (spec.material->hasTextureTransform)
+                {
+                    j.key("extensions")
+                        .beginObject()
+                        .key("KHR_texture_transform")
+                        .beginObject()
+                        .field("offset", std::vector<double>{spec.material->transformOffsetX,
+                                                             spec.material->transformOffsetY})
+                        .field("scale", std::vector<double>{spec.material->transformScaleX,
+                                                            spec.material->transformScaleY})
+                        .field("rotation", spec.material->transformRotation)
+                        .endObject()
+                        .endObject();
+                }
+                j.endObject();
+            }
             if (i == 0 && spec.material && spec.material->metallicRoughnessTexture)
                 j.key("metallicRoughnessTexture").beginObject().field("index", 0).endObject();
             j.endObject();
@@ -911,6 +966,7 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                     {"KHR_materials_volume", &m.volume},
                     {"KHR_materials_iridescence", &m.iridescence},
                     {"KHR_materials_anisotropy", &m.anisotropy},
+                    {"KHR_materials_diffuse_transmission", &m.diffuseTransmission},
                 };
 
                 bool anyExt = m.unlit || m.hasEmissiveStrength || m.hasIOR;
@@ -941,12 +997,13 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
 
                 // Declaring an extension in extensionsUsed is what the loader's
                 // own report reads, so emit the ones in use here too.
-                if (anyExt)
+                if (anyExt || m.hasTextureTransform)
                 {
                     std::vector<std::string> used;
                     if (m.unlit) used.push_back("KHR_materials_unlit");
                     if (m.hasEmissiveStrength) used.push_back("KHR_materials_emissive_strength");
                     if (m.hasIOR) used.push_back("KHR_materials_ior");
+                    if (m.hasTextureTransform) used.push_back("KHR_texture_transform");
                     for (const auto& e : kExts)
                         if (e.spec->has_value()) used.push_back(e.name);
                     j.key("extensionsUsed").beginArray();
@@ -974,6 +1031,16 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
         j.numberArray("translation", {static_cast<double>(i) * 5.0, 0.0, 0.0});
         if (spec.nested && i == 0 && nodeTotal > 1)
             j.key("children").beginArray().value(static_cast<std::size_t>(1)).endArray();
+        if (i < spec.nodeLightIndices.size() && spec.nodeLightIndices[i] >= 0)
+        {
+            j.key("extensions")
+                .beginObject()
+                .key("KHR_lights_punctual")
+                .beginObject()
+                .field("light", static_cast<std::size_t>(spec.nodeLightIndices[i]))
+                .endObject()
+                .endObject();
+        }
         j.endObject();
     }
     j.endArray();
@@ -990,6 +1057,44 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
             j.value(i);
     }
     j.endArray().endObject().endArray();
+
+    // KHR_lights_punctual lights live in an asset-root extension block.
+    if (!spec.lights.empty())
+    {
+        j.key("extensions").beginObject().key("KHR_lights_punctual").beginObject();
+        j.key("lights").beginArray();
+        for (const auto& light : spec.lights)
+        {
+            j.beginObject();
+            if (!light.type.empty())
+                j.field("type", light.type);
+            j.field("color", light.color);
+            j.field("intensity", light.intensity);
+            if (light.hasRange)
+                j.field("range", light.range);
+            // The spec nests a spot light's cone angles under a "spot" object;
+            // a top-level innerConeAngle is not read by the parser at all, so
+            // emitting one would quietly produce a cone-less spot.
+            if (light.type == "spot")
+            {
+                j.key("spot").beginObject();
+                j.field("innerConeAngle", light.innerCone);
+                j.field("outerConeAngle", light.outerCone);
+                j.endObject();
+            }
+            j.endObject();
+        }
+        j.endArray().endObject().endObject();
+
+        // The generic extensionsUsed emission above only runs when the spec
+        // asked for one; a duplicate root-level key would silently shadow it.
+        if (spec.extensionsUsed.empty())
+        {
+            j.key("extensionsUsed").beginArray();
+            j.value("KHR_lights_punctual");
+            j.endArray();
+        }
+    }
 
     j.endObject();
 
@@ -1279,6 +1384,9 @@ int main()
             "KHR_materials_volume",
             "KHR_materials_iridescence",
             "KHR_materials_anisotropy",
+            "KHR_materials_diffuse_transmission",
+            "KHR_lights_punctual",
+            "EXT_meshopt_compression",
         };
 
         for (const char* ext : kImplemented)
@@ -2132,6 +2240,344 @@ int main()
             check(std::isinf(e.AttenuationDistance) && e.AttenuationDistance > 0.0f,
                   "AttenuationDistance defaults to +infinity, not 0");
         }
+    }
+
+    // =====================================================================
+    // Tier 3 additions: diffuse transmission, texture transforms, punctual
+    // lights, and EXT_meshopt_compression. Same contract as Tier 2: the VALUE
+    // must arrive, not merely the file.
+    // =====================================================================
+
+    section("KHR_materials_diffuse_transmission values are read");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        ms.diffuseTransmission = Ext({{"diffuseTransmissionFactor", 0.65}});
+        WithArray(ms.diffuseTransmission.value(), "diffuseTransmissionColorFactor", {0.2, 0.4, 0.9});
+        spec.material = ms;
+
+        const fs::path path = writeAsset(dir, "diftrans.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "diffuse transmission model loads"))
+        {
+            const auto& e = model.GetMaterials()[0].Extensions;
+            check(e.HasDiffuseTransmission, "HasDiffuseTransmission set");
+            check(std::fabs(e.DiffuseTransmissionFactor - 0.65f) < 1e-5f, "diffuseTransmissionFactor parsed");
+            check(std::fabs(e.DiffuseTransmissionColor.g - 0.4f) < 1e-5f, "diffuseTransmissionColorFactor.g parsed");
+            check(std::fabs(e.DiffuseTransmissionColor.z - 0.9f) < 1e-5f,
+                  "diffuseTransmissionColorFactor is a 3-array, not a scalar (z parsed)");
+            // The leaf-translucency extension is NOT see-through glass: it must
+            // not flag the material for the blended path the way
+            // KHR_materials_transmission does.
+            check(!model.HasTransparentMaterials(),
+                  "diffuse transmission alone does not mark the model transparent");
+        }
+    }
+
+    section("KHR_texture_transform converts to engine UV space");
+    {
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        MaterialSpec ms;
+        ms.baseColorTexture = true;
+        ms.hasTextureTransform = true;
+        ms.transformRotation = 0.25; // radians CCW, glTF space
+        ms.transformOffsetX = 0.1;
+        ms.transformOffsetY = 0.2;
+        ms.transformScaleX = 2.0;
+        ms.transformScaleY = 3.0;
+        spec.material = ms;
+
+        const fs::path path = writeAsset(dir, "textransform.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "texture transform model loads"))
+        {
+            const auto& t = model.GetMaterials()[0].UVTransforms[static_cast<size_t>(
+                UHE::RD3d::MaterialTextureSlot::Albedo)];
+            check(t.HasTransform, "albedo slot transform recorded");
+
+            // The loader flips V while importing TEXCOORD_0 (engine convention),
+            // so the raw glTF values cannot be copied: applying them over the
+            // flipped coordinates would mirror the rotation and land the offset
+            // on 1 - offset. LoadModel.cpp converts (see EngineUVTransform):
+            //   uv' = R(-theta) * (uv * scale) + (offset.x - sin*scale.y,
+            //                                     1 - cos*scale.y - offset.y)
+            const double c = std::cos(0.25);
+            const double s = std::sin(0.25);
+            check(std::fabs(t.cosRotation - static_cast<float>(c)) < 1e-5f, "cos(rotation) carried");
+            check(std::fabs(t.sinRotation - static_cast<float>(s)) < 1e-5f, "sin(rotation) carried");
+            check(std::fabs(t.scale.x - 2.0f) < 1e-5f, "scale.x carried");
+            check(std::fabs(t.scale.y - 3.0f) < 1e-5f, "scale.y carried");
+            const float expectedOffsetX = static_cast<float>(0.1 - s * 3.0);
+            const float expectedOffsetY = static_cast<float>(1.0 - c * 3.0 - 0.2);
+            check(std::fabs(t.offset.x - expectedOffsetX) < 1e-4f,
+                  "offset.x converted for the V flip (" + std::to_string(t.offset.x) +
+                      " vs " + std::to_string(expectedOffsetX) + ")");
+            check(std::fabs(t.offset.y - expectedOffsetY) < 1e-4f,
+                  "offset.y converted for the V flip (" + std::to_string(t.offset.y) +
+                      " vs " + std::to_string(expectedOffsetY) + ")");
+
+            // A transform on one slot must not leak into another.
+            const auto& other =
+                model.GetMaterials()[0].UVTransforms[static_cast<size_t>(UHE::RD3d::MaterialTextureSlot::Normal)];
+            check(!other.HasTransform, "transform stays on its own slot");
+        }
+    }
+
+    section("KHR_lights_punctual lights are parsed and placed by nodes");
+    {
+        AssetSpec spec;
+        spec.meshCount = 2;
+        spec.materialCount = 1;
+        AssetSpec::LightSpec point;
+        point.type = "point";
+        point.color = {1.0, 0.5, 0.25};
+        point.intensity = 3.0;
+        point.hasRange = true;
+        point.range = 10.0;
+        AssetSpec::LightSpec spot;
+        spot.type = "spot";
+        spot.color = {1.0, 1.0, 1.0};
+        spot.intensity = 5.0;
+        // No range: the spec default is "infinite".
+        spot.hasInnerCone = true;
+        spot.innerCone = 0.2;
+        spot.hasOuterCone = true;
+        spot.outerCone = 0.9;
+        spec.lights = {point, spot};
+        spec.nodeLightIndices = {0, 1};
+
+        const fs::path path = writeAsset(dir, "lights.gltf", spec);
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "punctual-light model loads"))
+        {
+            const auto& lights = model.GetPunctualLights();
+            check(lights.size() == 2, "two lights parsed");
+            if (lights.size() == 2)
+            {
+                check(lights[0].type == UHE::RD3d::PunctualLight::Type::Point, "light 0 is a point light");
+                check(std::fabs(lights[0].Color.g - 0.5f) < 1e-5f, "light 0 colour parsed");
+                check(std::fabs(lights[0].Intensity - 3.0f) < 1e-5f, "light 0 intensity parsed");
+                check(std::fabs(lights[0].Range - 10.0f) < 1e-4f, "light 0 range parsed");
+
+                check(lights[1].type == UHE::RD3d::PunctualLight::Type::Spot, "light 1 is a spot light");
+                check(std::fabs(lights[1].InnerConeAngle - 0.2f) < 1e-5f, "inner cone parsed");
+                check(std::fabs(lights[1].OuterConeAngle - 0.9f) < 1e-5f, "outer cone parsed");
+                // An omitted range means unlimited reach - INFINITY, not 0,
+                // which would clamp the light to zero range.
+                check(std::isinf(lights[1].Range) && lights[1].Range > 0.0f, "omitted range defaults to infinity");
+            }
+
+            const auto& nodes = model.GetNodes();
+            check(nodes.size() == 2, "two nodes walked");
+            if (nodes.size() == 2)
+            {
+                check(nodes[0].LightIndex == 0, "node 0 references light 0");
+                check(nodes[1].LightIndex == 1, "node 1 references light 1");
+                // The accumulated transform matters: light 1 sits on a node
+                // translated 5 units along x, and a light placed at the origin
+                // would illuminate nothing it is supposed to.
+                check(std::fabs(translationOf(nodes[1].WorldTransform).x - 5.0f) < 1e-4f,
+                      "node 1 world transform carries the authored placement");
+            }
+        }
+    }
+
+    section("EXT_meshopt_compression geometry decodes");
+    {
+        // Hand-built (not through writeAsset): the fixture's quad, with its
+        // position and index buffer views compressed through the meshoptimizer
+        // encoder. The decode must be exact - the loader then runs its usual
+        // passes on the recovered vertices.
+        const std::vector<float> quadPositions = Quad::positions();
+        const std::vector<u32> quadIndices = Quad::indices();
+        const std::size_t kVertexCount = Quad::kVertexCount;
+        const std::size_t kIndexCount = Quad::kIndexCount;
+
+        // Encode positions: 6 vertices x 3 floats.
+        const std::size_t posBound = meshopt_encodeVertexBufferBound(kVertexCount, 3 * sizeof(float));
+        std::vector<unsigned char> posCompressed(posBound);
+        const std::size_t posSize =
+            meshopt_encodeVertexBuffer(posCompressed.data(), posBound, quadPositions.data(), kVertexCount,
+                                       3 * sizeof(float));
+        posCompressed.resize(posSize);
+
+        // Encode indices: u32 triangles.
+        const std::size_t idxBound = meshopt_encodeIndexBufferBound(kIndexCount, kVertexCount);
+        std::vector<unsigned char> idxCompressed(idxBound);
+        const std::size_t idxSize = meshopt_encodeIndexBuffer(idxCompressed.data(), idxBound, quadIndices.data(),
+                                                              kIndexCount);
+        idxCompressed.resize(idxSize);
+
+        std::string bin;
+        bin.append(reinterpret_cast<const char*>(posCompressed.data()), posSize);
+        bin.append(reinterpret_cast<const char*>(idxCompressed.data()), idxSize);
+
+        const std::string binName = "meshopt.bin";
+        dir.write(binName, bin);
+
+        Json j;
+        j.beginObject();
+        j.key("asset").beginObject().field("version", "2.0").endObject();
+        j.field("scene", 0);
+        j.key("extensionsRequired").beginArray().value("EXT_meshopt_compression").endArray();
+        j.key("extensionsUsed").beginArray().value("EXT_meshopt_compression").endArray();
+
+        j.key("buffers").beginArray().beginObject().field("uri", binName).field("byteLength", bin.size()).endObject().endArray();
+
+        // bufferView.byteLength is the DECODED size; the compressed size lives
+        // in the extension object. Mixing the two up truncates the stream.
+        j.key("bufferViews").beginArray();
+        j.beginObject()
+            .field("buffer", 0)
+            .field("byteOffset", 0)
+            .field("byteLength", kVertexCount * 3 * sizeof(float))
+            .key("extensions")
+            .beginObject()
+            .key("EXT_meshopt_compression")
+            .beginObject()
+            .field("buffer", 0)
+            .field("byteOffset", 0)
+            .field("byteLength", posSize)
+            .field("mode", "ATTRIBUTES")
+            .field("filter", "NONE")
+            .field("count", kVertexCount)
+            .field("byteStride", 12)
+            .endObject()
+            .endObject()
+            .endObject();
+        j.beginObject()
+            .field("buffer", 0)
+            .field("byteOffset", 0)
+            .field("byteLength", kIndexCount * sizeof(u32))
+            .key("extensions")
+            .beginObject()
+            .key("EXT_meshopt_compression")
+            .beginObject()
+            .field("buffer", 0)
+            .field("byteOffset", posSize)
+            .field("byteLength", idxSize)
+            .field("mode", "TRIANGLES")
+            .field("filter", "NONE")
+            .field("count", kIndexCount)
+            .field("byteStride", 4)
+            .endObject()
+            .endObject()
+            .endObject();
+        j.endArray();
+
+        j.key("accessors")
+            .beginArray()
+            .beginObject()
+            .field("bufferView", 0)
+            .field("componentType", 5126)
+            .field("count", kVertexCount)
+            .field("type", "VEC3")
+            .endObject()
+            .beginObject()
+            .field("bufferView", 1)
+            .field("componentType", 5125)
+            .field("count", kIndexCount)
+            .field("type", "SCALAR")
+            .endObject()
+            .endArray();
+
+        j.key("materials").beginArray().beginObject().field("name", "m").endObject().endArray();
+
+        j.key("meshes").beginArray().beginObject().key("primitives").beginArray().beginObject();
+        j.key("attributes").beginObject().field("POSITION", 0).endObject();
+        j.field("indices", 1);
+        j.field("material", 0);
+        j.endObject().endArray().endObject().endArray();
+
+        j.key("nodes").beginArray().beginObject().field("name", "node_0").field("mesh", 0).endObject().endArray();
+        j.key("scenes").beginArray().beginObject().key("nodes").beginArray().value(std::size_t{0}).endArray().endObject().endArray();
+        j.endObject();
+
+        const fs::path path = dir.write("meshopt.gltf", j.str());
+
+        UHE::RD3d::Model model;
+        // Optimizer passes off so the assertion sees EXACTLY what the decoder
+        // produced: with them on, cache/fetch optimization reorders indices,
+        // and vertex merging legally collapses the fixture's duplicate
+        // corners - both would mask a wrong decode with a legitimate reorder.
+        UHE::RD3d::ModelLoadOptions options;
+        options.optimizeMesh = false;
+        options.mergeVertices = false;
+        options.generateTangents = false;
+        if (check(model.loadModel(path, options), "meshopt-compressed model loads"))
+        {
+            check(!model.GetGeometry().empty() && !model.GetGeometry()[0].primitive.empty(),
+                  "compressed primitive was extracted");
+            if (!model.GetGeometry().empty() && !model.GetGeometry()[0].primitive.empty())
+            {
+                const auto& prim = model.GetGeometry()[0].primitive[0];
+                check(prim.indices.size() == kIndexCount, "index count preserved by decode");
+
+                // The decode must be EXACT: meshopt attribute encoding is
+                // lossless, and the loader's vertex-merge can only collapse
+                // byte-identical vertices, so the sorted position set is
+                // preserved. A wrong decode (raw compressed bytes, truncated
+                // stream) produces garbage here instead of an error.
+                std::vector<glm::vec3> got;
+                for (const auto& v : prim.vertices)
+                    got.push_back(v.position);
+                std::sort(got.begin(), got.end(),
+                          [](const glm::vec3& a, const glm::vec3& b) { return a.x < b.x; });
+
+                std::vector<glm::vec3> want;
+                for (std::size_t v = 0; v < kVertexCount; ++v)
+                    want.emplace_back(quadPositions[v * 3 + 0], quadPositions[v * 3 + 1], quadPositions[v * 3 + 2]);
+                std::sort(want.begin(), want.end(),
+                          [](const glm::vec3& a, const glm::vec3& b) { return a.x < b.x; });
+
+                bool positionsMatch = got.size() == want.size();
+                for (std::size_t v = 0; positionsMatch && v < want.size(); ++v)
+                    positionsMatch = glm::all(glm::lessThanEqual(glm::abs(got[v] - want[v]), glm::vec3(1e-5f)));
+                check(positionsMatch, "decoded positions match the source quad exactly");
+
+                bool indicesMatch = prim.indices.size() == kIndexCount;
+                for (std::size_t i = 0; indicesMatch && i < kIndexCount; ++i)
+                    indicesMatch = prim.indices[i] == quadIndices[i];
+                check(indicesMatch, "decoded indices match the source quad exactly");
+            }
+        }
+    }
+
+    section("draco and basisu stay flagged unsupported");
+    {
+        // Neither extension can actually be served by this loader (no Draco
+        // decoder, no KTX2 transcoder), so they must NOT be listed as
+        // supported - that list is what keeps the load-time warning honest.
+        // KHR_draco_mesh_compression is REQUIRED here: a real draco file has
+        // no readable POSITION, so every primitive draws nothing and the
+        // warning is the only signal the author gets.
+        AssetSpec spec;
+        spec.meshCount = 1;
+        spec.materialCount = 1;
+        spec.extensionsUsed.push_back("KHR_texture_basisu");
+        spec.extensionsRequired.push_back("KHR_draco_mesh_compression");
+
+        const fs::path path = writeAsset(dir, "compressed_exts.gltf", spec);
+
+        UHE::RD3d::Model model;
+        check(model.loadModel(path), "file with unsupported compression extensions still opens");
+        check(model.HasUnsupportedExtensions(), "unsupported extensions are reported");
+        bool sawDraco = false;
+        bool sawBasisu = false;
+        for (const auto& name : model.GetUnsupportedExtensionNames())
+        {
+            sawDraco = sawDraco || name == "KHR_draco_mesh_compression";
+            sawBasisu = sawBasisu || name == "KHR_texture_basisu";
+        }
+        check(sawDraco, "KHR_draco_mesh_compression reported as unsupported");
+        check(sawBasisu, "KHR_texture_basisu reported as unsupported");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

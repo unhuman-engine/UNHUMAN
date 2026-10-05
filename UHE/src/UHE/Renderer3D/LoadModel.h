@@ -40,6 +40,51 @@ enum class AlphaMode : u32
     Blend = 2,   // alpha blended (needs sorted transparent pass - not implemented)
 };
 
+// KHR_texture_transform, already converted to the engine's UV convention.
+//
+// The loader flips V when importing TEXCOORD_0 (see LoadModelGeometry.cpp), so
+// the raw glTF offset/rotation cannot be applied in the shader on top of
+// flipped coordinates. LoadMaterials stores the ENGINE-SPACE parameters: the
+// shader computes  uv' = R(rot) * (uv * scale) + offset  in that same space.
+// rot carries cos/sin of the adjusted angle; identity is (1, 0, 1, 1, 0, 0).
+struct UVTransform
+{
+    float cosRotation = 1.0f;
+    float sinRotation = 0.0f;
+    glm::vec2 scale = glm::vec2(1.0f);
+    glm::vec2 offset = glm::vec2(0.0f);
+    // glTF texCoordIndex the map applies to. Only TEXCOORD_0 is extracted, so
+    // any other value cannot be honoured; the loader warns and stays on UV0.
+    u32 texCoordSet = 0;
+    bool HasTransform = false;
+};
+
+// The per-material texture slots a transform can ride on, in the order the
+// renderer's per-material GPU buffer stores them (MaterialGPU.h mirrors this).
+enum class MaterialTextureSlot : int
+{
+    Albedo = 0,
+    MetallicRoughness,
+    Normal,
+    Occlusion,
+    Emissive,
+    Clearcoat,
+    ClearcoatRoughness,
+    ClearcoatNormal,
+    Specular,
+    SpecularColor,
+    SheenColor,
+    SheenRoughness,
+    Transmission,
+    Thickness,
+    Iridescence,
+    IridescenceThickness,
+    Anisotropy,
+    DiffuseTransmission,
+    DiffuseTransmissionColor,
+    Count
+};
+
 struct Material
 {
     Ref<Texture2D> AlbedoTexture = nullptr;
@@ -72,6 +117,12 @@ struct Material
     // Controls pipeline cull mode. Cull mode is baked into the pipeline, so this
     // selects between two pre-built pipeline variants rather than a dynamic state.
     bool DoubleSided = false;
+
+    // KHR_texture_transform, per texture slot. Most files carry at most one
+    // transform (usually on baseColor), so the array costs little and keeps the
+    // shader's slot addressing uniform: every slot is sampled through its own
+    // transform, and a slot without one reads identity.
+    UVTransform UVTransforms[static_cast<size_t>(MaterialTextureSlot::Count)] = {};
 
     // Optional PBR extensions (issue #29 Tier 2 and Tier 3). Kept in one aggregate
     // rather than spread across Material so "which extensions did this material
@@ -192,6 +243,43 @@ struct ModelNode
     glm::vec3 Translation{0.0f};
     glm::quat Rotation{1.0f, 0.0f, 0.0f, 0.0f};
     glm::vec3 Scale{1.0f};
+
+    // KHR_lights_punctual: index into Model::GetPunctualLights(), -1 when the
+    // node carries no light.
+    int LightIndex = -1;
+
+    // The loader's accumulated model-space transform (every ancestor composed).
+    // Used to place node-carried lights without re-walking the tree; the editor
+    // hierarchy derives transforms from the TRS fields above instead.
+    glm::mat4 WorldTransform{1.0f};
+};
+
+// One KHR_lights_punctual light, as declared in asset.extensions - the scene
+// placement lives on the nodes, this is only the light's own definition.
+struct PunctualLight
+{
+    enum class Type : u8
+    {
+        Directional = 0,
+        Spot = 1,
+        Point = 2,
+    };
+
+    Type type = Type::Point;
+    // Linear-space colour and the unit the spec assigns per type: candela for
+    // point/spot, lux for directional.
+    glm::vec3 Color = glm::vec3(1.0f);
+    float Intensity = 1.0f;
+    // Point/spot only. INFINITY per spec when the file omitted it - the loader
+    // resolves that to the engine's "no range limit" rather than storing a
+    // value that would clamp every light to zero reach.
+    float Range = std::numeric_limits<float>::infinity();
+    // Spot only, radians. innerConeAngle defaults to 0, outerConeAngle to
+    // PI/4 per spec.
+    float InnerConeAngle = 0.0f;
+    float OuterConeAngle = glm::pi<float>() / 4.0f;
+
+    std::string Name;
 };
 
 class UHE_API Model
@@ -223,6 +311,10 @@ public:
     const std::vector<ModelNode>& GetNodes() const { return m_Nodes; }
     const std::vector<int>& GetRootNodes() const { return m_RootNodes; }
 
+    // KHR_lights_punctual (issue #29 Tier 3). Empty for files that declare no
+    // lights; nodes reference entries by ModelNode::LightIndex.
+    const std::vector<PunctualLight>& GetPunctualLights() const { return m_PunctualLights; }
+
 
 private:
     void LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::path& filepath);
@@ -242,6 +334,10 @@ private:
     // Implemented in LoadModelAnimation.cpp.
     void ParseSkins(const fastgltf::Asset& asset);
     void ParseAnimations(const fastgltf::Asset& asset);
+
+    // KHR_lights_punctual: the light definitions of asset.extensions. Node
+    // placement (node.lightIndex) is resolved later, in ProcessNode.
+    void ParsePunctualLights(const fastgltf::Asset& asset);
 
     static glm::mat4 NodeLocalTransform(const fastgltf::Node& node);
 
@@ -264,6 +360,7 @@ private:
     std::vector<ModelNode> m_Nodes;
     std::vector<int> m_RootNodes;
     std::unordered_map<int, int> m_NodeToMesh; // glTF node -> m_LoadedMeshes index
+    std::vector<PunctualLight> m_PunctualLights;
 
 
     Skeleton m_Skeleton;

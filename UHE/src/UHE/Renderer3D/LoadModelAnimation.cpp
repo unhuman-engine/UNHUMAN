@@ -6,12 +6,32 @@
 
 #include "uhepch.h"
 #include "LoadModel.h"
+#include "MeshoptDecode.h"
 #include "fastgltf/math.hpp"
 #include "fastgltf/tools.hpp"
 #include "fastgltf/types.hpp"
 
 namespace UHE::RD3d
 {
+
+namespace
+{
+
+// Same rationale as LoadModelGeometry.cpp: meshopt-compressed buffer views
+// need on-the-fly decoding, and animations are commonly compressed in meshopt
+// exports because their keyframe streams dominate file size.
+struct MeshoptBufferDataAdapter
+{
+    const fastgltf::Asset* asset = nullptr;
+    std::shared_ptr<std::vector<std::byte>> scratch = std::make_shared<std::vector<std::byte>>();
+
+    std::span<const std::byte> operator()(const fastgltf::Asset& a, std::size_t bufferViewIndex) const
+    {
+        return GetBufferViewBytes(a, bufferViewIndex, *scratch);
+    }
+};
+
+} // namespace
 
 void Model::ParseSkins(const fastgltf::Asset& asset)
 {
@@ -53,7 +73,7 @@ void Model::ParseSkins(const fastgltf::Asset& asset)
                 std::memcpy(&m_Skeleton.Bones[nodeIdx].InverseBindMatrix, matrix.data(), sizeof(glm::mat4));
             }
             jointIdx++;
-        });
+        }, MeshoptBufferDataAdapter{&asset});
     }
 }
 
@@ -83,7 +103,7 @@ void Model::ParseAnimations(const fastgltf::Asset& asset)
             fastgltf::iterateAccessor<float>(asset, timeAccessor, [&](float t) {
                 times.push_back(t);
                 clip.Duration = std::max(clip.Duration, t);
-            });
+            }, MeshoptBufferDataAdapter{&asset});
 
             // Extract values
             auto& valueAccessor = asset.accessors[sampler.outputAccessor];
@@ -98,7 +118,7 @@ void Model::ParseAnimations(const fastgltf::Asset& asset)
                     // past `times`; clamp rather than overrun.
                     if (idx >= times.size()) return;
                     track.Keyframes.push_back({times[idx++], glm::vec3(v.x(), v.y(), v.z())});
-                });
+                }, MeshoptBufferDataAdapter{&asset});
                 clip.PositionTracks.push_back(track);
             }
             else if (channel.path == fastgltf::AnimationPath::Rotation)
@@ -110,7 +130,7 @@ void Model::ParseAnimations(const fastgltf::Asset& asset)
                     if (idx >= times.size()) return;
                     // glTF rotation is x,y,z,w. GLM quat constructor takes w,x,y,z.
                     track.Keyframes.push_back({times[idx++], glm::normalize(glm::quat(v.w(), v.x(), v.y(), v.z()))});
-                });
+                }, MeshoptBufferDataAdapter{&asset});
                 clip.RotationTracks.push_back(track);
             }
             else if (channel.path == fastgltf::AnimationPath::Scale)
@@ -121,7 +141,7 @@ void Model::ParseAnimations(const fastgltf::Asset& asset)
                 fastgltf::iterateAccessor<fastgltf::math::fvec3>(asset, valueAccessor, [&](fastgltf::math::fvec3 v) {
                     if (idx >= times.size()) return;
                     track.Keyframes.push_back({times[idx++], glm::vec3(v.x(), v.y(), v.z())});
-                });
+                }, MeshoptBufferDataAdapter{&asset});
                 clip.ScaleTracks.push_back(track);
             }
         }

@@ -11,6 +11,7 @@
 
 #include "uhepch.h"
 #include "LoadModel.h"
+#include "MeshoptDecode.h"
 #include <algorithm>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
@@ -40,7 +41,7 @@ namespace
 bool IsExtensionSupported(std::string_view name)
 {
     return name == "KHR_materials_pbrSpecularGlossiness" || // SpecularGlossiness path
-           name == "KHR_texture_transform" ||              // UV transform (see note)
+           name == "KHR_texture_transform" ||               // per-slot UV transform
            name == "KHR_materials_unlit" ||                 // bypasses shading
            name == "KHR_materials_emissive_strength" ||     // emissive multiplier
            name == "KHR_materials_ior" ||                   // dielectric F0
@@ -50,7 +51,16 @@ bool IsExtensionSupported(std::string_view name)
            name == "KHR_materials_transmission" ||          // see-through
            name == "KHR_materials_volume" ||                // medium attenuation
            name == "KHR_materials_iridescence" ||           // thin-film
-           name == "KHR_materials_anisotropy";              // brushed metal
+           name == "KHR_materials_anisotropy" ||            // brushed metal
+           name == "KHR_materials_diffuse_transmission" ||  // thin-surface translucency
+           name == "KHR_lights_punctual" ||                 // asset-defined lights
+           name == "EXT_meshopt_compression";               // compressed buffers
+    // Deliberately absent: KHR_texture_basisu and KHR_draco_mesh_compression.
+    // fastgltf parses their metadata but a file using them still cannot be
+    // drawn - KTX2 needs a basis transcoder, Draco needs the Draco decoder -
+    // and listing them here would silence exactly the warning that is supposed
+    // to explain why such an asset looks broken. Draco-declared primitives
+    // additionally carry no readable POSITION, so they draw nothing.
 }
 
 } // namespace
@@ -81,6 +91,7 @@ void Model::Destroy()
     m_Nodes.clear();
     m_RootNodes.clear();
     m_NodeToMesh.clear();
+    m_PunctualLights.clear();
 }
 
 glm::mat4 Model::NodeLocalTransform(const fastgltf::Node& node)
@@ -163,6 +174,7 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
 
     ParseSkins(asset);
     ParseAnimations(asset);
+    ParsePunctualLights(asset);
 
     size_t activeSceneIndex = asset.defaultScene.value_or(0);
     if (!asset.scenes.empty() && activeSceneIndex < asset.scenes.size())
@@ -274,6 +286,38 @@ RHI::SamplerDesc SamplerDescForTexture(const fastgltf::Asset& asset, size_t text
     return desc;
 }
 
+// Converts a glTF KHR_texture_transform into engine-space parameters.
+//
+// LoadModelGeometry flips V while importing TEXCOORD_0 (glTF measures v from
+// the top of the image, the engine from the bottom), so the transform declared
+// in the file is NOT valid over the imported coordinates: applying it naively
+// mirrors the rotation direction and lands the offset on 1 - offset. Working
+// the flip through  uv' = R(theta) * (uv * scale) + offset  in glTF space gives
+// the equivalent engine-space transform:
+//
+//   uv' = R(-theta) * (uv * scale) + (offset.x - sin(theta)*scale.y,
+//                                     1 - cos(theta)*scale.y - offset.y)
+//
+// where R is the 2D rotation matrix. The shader consumes this as
+//   uv'.x = cos * scale.x * u + sin * scale.y * v + offset.x
+//   uv'.y = -sin * scale.x * u + cos * scale.y * v + offset.y
+// with cos/sin of the ORIGINAL angle (R(-theta) spelled out). With no transform
+// declared the struct's default (identity) reproduces untouched sampling.
+UVTransform EngineUVTransform(const fastgltf::TextureTransform& t)
+{
+    UVTransform out;
+    const float c = std::cos(t.rotation);
+    const float s = std::sin(t.rotation);
+    out.cosRotation = c;
+    out.sinRotation = s;
+    out.scale = glm::vec2(t.uvScale.x(), t.uvScale.y());
+    out.offset = glm::vec2(t.uvOffset.x() - s * t.uvScale.y(),
+                           1.0f - c * t.uvScale.y() - t.uvOffset.y());
+    out.texCoordSet = static_cast<u32>(t.texCoordIndex.value_or(0));
+    out.HasTransform = true;
+    return out;
+}
+
 } // namespace
 
 void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::path& filepath)
@@ -343,38 +387,18 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
                                   },
                                   [&](const fastgltf::sources::BufferView& view)
                                   {
-                                      if (view.bufferViewIndex >= asset.bufferViews.size() ||
-                                          asset.bufferViews[view.bufferViewIndex].bufferIndex >= asset.buffers.size())
+                                      // The view may be EXT_meshopt_compression-compressed
+                                      // (meshopt exports compress atlas pages with the
+                                      // geometry); GetBufferViewBytes handles both cases.
+                                      std::vector<std::byte> scratch;
+                                      auto bytes = GetBufferViewBytes(asset, view.bufferViewIndex, scratch);
+                                      if (bytes.empty())
                                       {
-                                          UHE_CORE_ERROR("BufferView for material {0} is out of range", matIdx);
+                                          UHE_CORE_ERROR("BufferView for material {0} has no readable data", matIdx);
                                           return;
                                       }
-                                      auto& bufferView = asset.bufferViews[view.bufferViewIndex];
-                                      auto& buffer = asset.buffers[bufferView.bufferIndex];
-                                      std::visit(
-                                          fastgltf::visitor{
-                                              [&](const fastgltf::sources::Array& array)
-                                              {
-                                                  const void* data = array.bytes.data() + bufferView.byteOffset;
-                                                  result = Texture2D::CreateFromMemory(data, bufferView.byteLength, sampler);
-                                                  UHE_CORE_INFO("Loaded texture for material {0} from BufferView (Array), size: {1}", matIdx, bufferView.byteLength);
-                                              },
-                                              [&](const fastgltf::sources::ByteView& byteView)
-                                              {
-                                                  const void* data = byteView.bytes.data() + bufferView.byteOffset;
-                                                  result = Texture2D::CreateFromMemory(data, bufferView.byteLength, sampler);
-                                                  UHE_CORE_INFO("Loaded texture for material {0} from BufferView (ByteView), size: {1}", matIdx, bufferView.byteLength);
-                                              },
-                                              [&](const fastgltf::sources::Vector& vector)
-                                              {
-                                                  const void* data = vector.bytes.data() + bufferView.byteOffset;
-                                                  result = Texture2D::CreateFromMemory(data, bufferView.byteLength, sampler);
-                                                  UHE_CORE_INFO("Loaded texture for material {0} from BufferView (Vector), size: {1}", matIdx, bufferView.byteLength);
-                                              },
-                                              [&](const auto&) {
-                                                  UHE_CORE_ERROR("Unhandled buffer data type in glTF! Variant index: {0}", buffer.data.index());
-                                              }},
-                                          buffer.data);
+                                      result = Texture2D::CreateFromMemory(bytes.data(), bytes.size(), sampler);
+                                      UHE_CORE_INFO("Loaded texture for material {0} from BufferView, size: {1}", matIdx, bytes.size());
                                   },
                                   [&](const auto&) {
                                       UHE_CORE_ERROR("Unhandled image data type in glTF! Variant index: {0}", image.data.index());
@@ -383,9 +407,39 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             return result;
         };
 
+        // Loads a texture into its slot AND records the slot's KHR_texture_transform.
+        // Both come off the same TextureInfo, so pairing them here is what keeps a
+        // transform from silently diverging from the map it belongs to.
+        auto assignSlot = [&](Ref<Texture2D>& target, int slotIndex,
+                              const fastgltf::TextureInfo* texInfo,
+                              RHI::SamplerDesc::ColorSpace colorSpace = RHI::SamplerDesc::ColorSpace::SRGB) {
+            if (!texInfo) return;
+            target = loadTexture(texInfo, i, colorSpace);
+            if (texInfo->transform)
+            {
+                auto& dst = m_LoadedMaterials[i].UVTransforms[slotIndex];
+                dst = EngineUVTransform(*texInfo->transform);
+                if (dst.texCoordSet != 0)
+                {
+                    // Only TEXCOORD_0 is extracted (LoadModelGeometry.cpp). Applying
+                    // the transform over UV0 is closer to the file's intent than
+                    // dropping it, but the author should know the map wanted a
+                    // second UV set the engine does not carry.
+                    UHE_CORE_WARN("Material {0}: texture transform targets TEXCOORD_{1}; only TEXCOORD_0 exists, applying it to TEXCOORD_0",
+                                  i, dst.texCoordSet);
+                }
+            }
+        };
+
+        const int albedoSlot = static_cast<int>(MaterialTextureSlot::Albedo);
+        const int mrSlot = static_cast<int>(MaterialTextureSlot::MetallicRoughness);
+        const int normalSlot = static_cast<int>(MaterialTextureSlot::Normal);
+        const int occlusionSlotIdx = static_cast<int>(MaterialTextureSlot::Occlusion);
+        const int emissiveSlotIdx = static_cast<int>(MaterialTextureSlot::Emissive);
+
         if (albedoTextureInfo)
         {
-            m_LoadedMaterials[i].AlbedoTexture = loadTexture(albedoTextureInfo, i);
+            assignSlot(m_LoadedMaterials[i].AlbedoTexture, albedoSlot, albedoTextureInfo);
         }
 
         m_LoadedMaterials[i].MetallicFactor = gltfMaterial.pbrData.metallicFactor;
@@ -404,8 +458,8 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         {
             // LINEAR data: metallic (B) and roughness (G) are scalar quantities,
             // not colour. Gamma-decoding them shifts both.
-            m_LoadedMaterials[i].MetallicRoughnessTexture = loadTexture(
-                &gltfMaterial.pbrData.metallicRoughnessTexture.value(), i, RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlot(m_LoadedMaterials[i].MetallicRoughnessTexture, mrSlot,
+                       &gltfMaterial.pbrData.metallicRoughnessTexture.value(), RHI::SamplerDesc::ColorSpace::Linear);
         }
 
         // Normal / occlusion / emissive. fastgltf exposes each as a TextureInfo
@@ -414,7 +468,7 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         if (gltfMaterial.normalTexture.has_value())
         {
             const auto& n = gltfMaterial.normalTexture.value();
-            m_LoadedMaterials[i].NormalTexture = loadTexture(&n, i, RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlot(m_LoadedMaterials[i].NormalTexture, normalSlot, &n, RHI::SamplerDesc::ColorSpace::Linear);
             m_LoadedMaterials[i].NormalScale = n.scale;
         }
 
@@ -422,14 +476,15 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         {
             const auto& o = gltfMaterial.occlusionTexture.value();
             // Occlusion is a scalar cavity term in the R channel - LINEAR.
-            m_LoadedMaterials[i].OcclusionTexture = loadTexture(&o, i, RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlot(m_LoadedMaterials[i].OcclusionTexture, occlusionSlotIdx, &o,
+                       RHI::SamplerDesc::ColorSpace::Linear);
             m_LoadedMaterials[i].OcclusionStrength = o.strength;
         }
 
         if (gltfMaterial.emissiveTexture.has_value())
         {
             // Emissive is colour, so sRGB - the default the lambda already applies.
-            m_LoadedMaterials[i].EmissiveTexture = loadTexture(&gltfMaterial.emissiveTexture.value(), i);
+            assignSlot(m_LoadedMaterials[i].EmissiveTexture, emissiveSlotIdx, &gltfMaterial.emissiveTexture.value());
         }
 
         // emissiveFactor defaults to BLACK per spec, which fastgltf applies for
@@ -480,6 +535,16 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         // own, so it rides along here rather than needing a separate pass.
         ext.Unlit = gltfMaterial.unlit;
 
+        // Optional-carrying variant for the extension maps, which fastgltf
+        // stores as Optional<TextureInfo>. Dereferencing an empty optional to
+        // get a pointer would be UB before assignSlot's null check could run,
+        // so the has_value test has to happen on THIS side of the call.
+        auto assignSlotOpt = [&](Ref<Texture2D>& target, int slotIndex, const auto& texInfo,
+                                 RHI::SamplerDesc::ColorSpace colorSpace = RHI::SamplerDesc::ColorSpace::SRGB) {
+            if (!texInfo.has_value()) return;
+            assignSlot(target, slotIndex, &texInfo.value(), colorSpace);
+        };
+
         if (gltfMaterial.clearcoat)
         {
             const auto& cc = *gltfMaterial.clearcoat;
@@ -489,17 +554,14 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             if (cc.clearcoatNormalTexture)
                 ext.ClearcoatNormalScale = cc.clearcoatNormalTexture->scale;
             // The clearcoat maps are loaded so their textures exist and get a
-            // descriptor slot, but the shader reads them from the per-material
-            // buffer rather than a push-constant int - the push-constant block
-            // has no room left.
-            if (cc.clearcoatTexture)
-                ext.ClearcoatTexture = loadTexture(&*cc.clearcoatTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
-            if (cc.clearcoatRoughnessTexture)
-                ext.ClearcoatRoughnessTexture =
-                    loadTexture(&*cc.clearcoatRoughnessTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
-            if (cc.clearcoatNormalTexture)
-                ext.ClearcoatNormalTexture =
-                    loadTexture(&*cc.clearcoatNormalTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            // descriptor slot; the shader reads them through the per-material
+            // texture slot table.
+            assignSlotOpt(ext.ClearcoatTexture, static_cast<int>(MaterialTextureSlot::Clearcoat), cc.clearcoatTexture,
+                          RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlotOpt(ext.ClearcoatRoughnessTexture, static_cast<int>(MaterialTextureSlot::ClearcoatRoughness),
+                          cc.clearcoatRoughnessTexture, RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlotOpt(ext.ClearcoatNormalTexture, static_cast<int>(MaterialTextureSlot::ClearcoatNormal),
+                          cc.clearcoatNormalTexture, RHI::SamplerDesc::ColorSpace::Linear);
         }
 
         if (gltfMaterial.specular)
@@ -509,10 +571,10 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             ext.SpecularFactor = sp.specularFactor;
             ext.SpecularColorFactor = glm::vec3(sp.specularColorFactor[0], sp.specularColorFactor[1],
                                                  sp.specularColorFactor[2]);
-            if (sp.specularTexture)
-                ext.SpecularTexture = loadTexture(&*sp.specularTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
-            if (sp.specularColorTexture)
-                ext.SpecularColorTexture = loadTexture(&*sp.specularColorTexture, i);
+            assignSlotOpt(ext.SpecularTexture, static_cast<int>(MaterialTextureSlot::Specular), sp.specularTexture,
+                          RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlotOpt(ext.SpecularColorTexture, static_cast<int>(MaterialTextureSlot::SpecularColor),
+                          sp.specularColorTexture);
         }
 
         if (gltfMaterial.sheen)
@@ -521,10 +583,9 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             ext.HasSheen = true;
             ext.SheenColorFactor = glm::vec3(sh.sheenColorFactor[0], sh.sheenColorFactor[1], sh.sheenColorFactor[2]);
             ext.SheenRoughnessFactor = sh.sheenRoughnessFactor;
-            if (sh.sheenColorTexture)
-                ext.SheenColorTexture = loadTexture(&*sh.sheenColorTexture, i);
-            if (sh.sheenRoughnessTexture)
-                ext.SheenRoughnessTexture = loadTexture(&*sh.sheenRoughnessTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlotOpt(ext.SheenColorTexture, static_cast<int>(MaterialTextureSlot::SheenColor), sh.sheenColorTexture);
+            assignSlotOpt(ext.SheenRoughnessTexture, static_cast<int>(MaterialTextureSlot::SheenRoughness),
+                          sh.sheenRoughnessTexture, RHI::SamplerDesc::ColorSpace::Linear);
         }
 
         // Transmission and volume are separate extensions but only meaningful
@@ -537,9 +598,8 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             {
                 const auto& tr = *gltfMaterial.transmission;
                 ext.TransmissionFactor = tr.transmissionFactor;
-                if (tr.transmissionTexture)
-                    ext.TransmissionTexture =
-                        loadTexture(&*tr.transmissionTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+                assignSlotOpt(ext.TransmissionTexture, static_cast<int>(MaterialTextureSlot::Transmission),
+                              tr.transmissionTexture, RHI::SamplerDesc::ColorSpace::Linear);
             }
             if (gltfMaterial.volume)
             {
@@ -548,8 +608,8 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
                 ext.AttenuationDistance = vo.attenuationDistance;
                 ext.AttenuationColor =
                     glm::vec3(vo.attenuationColor[0], vo.attenuationColor[1], vo.attenuationColor[2]);
-                if (vo.thicknessTexture)
-                    ext.ThicknessTexture = loadTexture(&*vo.thicknessTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+                assignSlotOpt(ext.ThicknessTexture, static_cast<int>(MaterialTextureSlot::Thickness),
+                              vo.thicknessTexture, RHI::SamplerDesc::ColorSpace::Linear);
             }
         }
 
@@ -561,11 +621,10 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             ext.IridescenceIOR = ir.iridescenceIor;
             ext.IridescenceThicknessMinimum = ir.iridescenceThicknessMinimum;
             ext.IridescenceThicknessMaximum = ir.iridescenceThicknessMaximum;
-            if (ir.iridescenceTexture)
-                ext.IridescenceTexture = loadTexture(&*ir.iridescenceTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
-            if (ir.iridescenceThicknessTexture)
-                ext.IridescenceThicknessTexture =
-                    loadTexture(&*ir.iridescenceThicknessTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlotOpt(ext.IridescenceTexture, static_cast<int>(MaterialTextureSlot::Iridescence),
+                          ir.iridescenceTexture, RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlotOpt(ext.IridescenceThicknessTexture, static_cast<int>(MaterialTextureSlot::IridescenceThickness),
+                          ir.iridescenceThicknessTexture, RHI::SamplerDesc::ColorSpace::Linear);
         }
 
         if (gltfMaterial.anisotropy)
@@ -574,8 +633,28 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             ext.HasAnisotropy = true;
             ext.AnisotropyStrength = an.anisotropyStrength;
             ext.AnisotropyRotation = an.anisotropyRotation;
-            if (an.anisotropyTexture)
-                ext.AnisotropyTexture = loadTexture(&*an.anisotropyTexture, i, RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlotOpt(ext.AnisotropyTexture, static_cast<int>(MaterialTextureSlot::Anisotropy),
+                          an.anisotropyTexture, RHI::SamplerDesc::ColorSpace::Linear);
+        }
+
+        // KHR_materials_diffuse_transmission (Tier 3): light diffused through a
+        // thin surface - the term that keeps backlit leaves translucent instead
+        // of black. Independent of KHR_materials_transmission, which models
+        // SPECULAR see-through (glass); a leaf typically declares only this one.
+        if (gltfMaterial.diffuseTransmission)
+        {
+            const auto& dt = *gltfMaterial.diffuseTransmission;
+            ext.HasDiffuseTransmission = true;
+            ext.DiffuseTransmissionFactor = dt.diffuseTransmissionFactor;
+            ext.DiffuseTransmissionColor = glm::vec3(dt.diffuseTransmissionColorFactor[0],
+                                                     dt.diffuseTransmissionColorFactor[1],
+                                                     dt.diffuseTransmissionColorFactor[2]);
+            assignSlotOpt(ext.DiffuseTransmissionTexture,
+                          static_cast<int>(MaterialTextureSlot::DiffuseTransmission), dt.diffuseTransmissionTexture,
+                          RHI::SamplerDesc::ColorSpace::Linear);
+            assignSlotOpt(ext.DiffuseTransmissionColorTexture,
+                          static_cast<int>(MaterialTextureSlot::DiffuseTransmissionColor),
+                          dt.diffuseTransmissionColorTexture);
         }
 
         // How to draw a transmission surface. Chosen once here rather than
@@ -600,6 +679,43 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
         UHE_CORE_WARN("glTF uses alphaMode BLEND - transparent materials draw in submission order until a "
                       "sorted transparent pass exists (roadmap M3 step 4)");
     }
+}
+
+void Model::ParsePunctualLights(const fastgltf::Asset& asset)
+{
+    m_PunctualLights.clear();
+    m_PunctualLights.reserve(asset.lights.size());
+
+    for (const auto& light : asset.lights)
+    {
+        PunctualLight out;
+        switch (light.type)
+        {
+            case fastgltf::LightType::Directional:
+                out.type = PunctualLight::Type::Directional;
+                break;
+            case fastgltf::LightType::Spot:
+                out.type = PunctualLight::Type::Spot;
+                break;
+            case fastgltf::LightType::Point:
+            default:
+                out.type = PunctualLight::Type::Point;
+                break;
+        }
+
+        out.Color = glm::vec3(light.color.x(), light.color.y(), light.color.z());
+        out.Intensity = static_cast<float>(light.intensity);
+        out.Range = light.range.has_value() ? static_cast<float>(*light.range)
+                                            : std::numeric_limits<float>::infinity();
+        out.InnerConeAngle = static_cast<float>(light.innerConeAngle.value_or(0.0));
+        out.OuterConeAngle = static_cast<float>(light.outerConeAngle.value_or(glm::pi<double>() / 4.0));
+        out.Name = std::string(light.name);
+
+        m_PunctualLights.push_back(std::move(out));
+    }
+
+    if (!m_PunctualLights.empty())
+        UHE_CORE_INFO("glTF carries {0} punctual light(s) in asset.extensions", m_PunctualLights.size());
 }
 
 void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const glm::mat4& parentTransform)
@@ -642,6 +758,23 @@ void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const gl
     // every mesh in the file collapses onto the origin - the defect that made
     // multi-node assets (foliage especially) render wrong.
     const glm::mat4 worldTransform = parentTransform * NodeLocalTransform(node);
+
+    // KHR_lights_punctual: which of the asset's lights this node places. The
+    // index is validated here so the scene code that instantiates the light
+    // cannot read past the light list on a malformed file.
+    if (node.lightIndex.has_value())
+    {
+        if (*node.lightIndex < m_PunctualLights.size())
+            out.LightIndex = static_cast<int>(*node.lightIndex);
+        else
+            UHE_CORE_WARN("Node {0} references light {1} but the file declares {2} lights; ignoring",
+                          nodeIndex, *node.lightIndex, m_PunctualLights.size());
+    }
+
+    // Authoritative accumulated placement for node-carried lights. Written
+    // AFTER children recurse can't touch it - `out` would dangle (see the note
+    // at the bottom of this function), so set it before recursing.
+    out.WorldTransform = worldTransform;
 
     if (node.meshIndex.has_value())
     {

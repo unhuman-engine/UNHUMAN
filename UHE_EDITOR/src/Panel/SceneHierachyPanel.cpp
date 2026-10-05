@@ -59,6 +59,8 @@ static ImTextureID GetEntityIcon(Entity entity) {
     return LoadOutlinerIcon("directionLight.png");
   if (entity.HasComponent<PointLightComponent>())
     return LoadOutlinerIcon("pointLight.png");
+  if (entity.HasComponent<SpotLightComponent>())
+    return LoadOutlinerIcon("directionLight.png");
   if (entity.HasComponent<SpriteRendererComponent>() ||
       entity.HasComponent<SpriteAnimationComponent>())
     return LoadOutlinerIcon("image.png");
@@ -557,6 +559,10 @@ void SceneHierarchyPanel::DrawComponents(Entity entity) {
       m_SelectionContext.AddComponent<PointLightComponent>();
       ImGui::CloseCurrentPopup();
     }
+    if (ImGui::MenuItem("  Spot Light")) {
+      m_SelectionContext.AddComponent<SpotLightComponent>();
+      ImGui::CloseCurrentPopup();
+    }
     ImGui::EndPopup();
   }
   ImGui::Spacing();
@@ -950,6 +956,22 @@ void SceneHierarchyPanel::DrawComponents(Entity entity) {
         ImGui::ColorEdit3("Color", glm::value_ptr(light.Color));
         ImGui::DragFloat("Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
         ImGui::DragFloat("Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
+      });
+
+  ::UHE::DrawComponents<SpotLightComponent>(
+      "Spot Light", entity, [](SpotLightComponent &light) {
+        ImGui::ColorEdit3("Color", glm::value_ptr(light.Color));
+        ImGui::DragFloat("Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
+        ImGui::DragFloat("Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
+        // The component stores radians (glTF KHR_lights_punctual parity); the
+        // panel edits degrees like every other angle in the editor.
+        float innerDeg = glm::degrees(light.InnerConeAngle);
+        float outerDeg = glm::degrees(light.OuterConeAngle);
+        if (ImGui::DragFloat("Inner Cone (deg)", &innerDeg, 0.5f, 0.0f, 89.0f))
+            light.InnerConeAngle = glm::radians(glm::clamp(innerDeg, 0.0f, outerDeg));
+        if (ImGui::DragFloat("Outer Cone (deg)", &outerDeg, 0.5f, 0.0f, 89.0f))
+            light.OuterConeAngle = glm::radians(glm::max(outerDeg, glm::degrees(light.InnerConeAngle)));
+        ImGui::TextDisabled("Rotate the entity's Transform to aim the cone.");
       });
 
   ::UHE::DrawComponents<AnimatorComponent>(

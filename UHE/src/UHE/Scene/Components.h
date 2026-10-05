@@ -185,6 +185,23 @@ struct UHE_API PointLightComponent
     PointLightComponent(const PointLightComponent&) = default;
 };
 
+// Cone light. Angles are RADIANS here, matching the KHR_lights_punctual values
+// the glTF loader hands over; the editor UI converts to degrees. The light
+// points down the entity's local -Z, the same convention DirectionalLight-
+// Component and glTF lights use. Intensity is full inside InnerConeAngle and
+// fades to zero at OuterConeAngle.
+struct UHE_API SpotLightComponent
+{
+    glm::vec3 Color{1.0f, 1.0f, 1.0f};
+    float Intensity = 1.0f;
+    float Radius = 10.0f;
+    float InnerConeAngle = 0.2617994f; // ~15 degrees
+    float OuterConeAngle = 0.5235988f; // ~30 degrees
+
+    SpotLightComponent() = default;
+    SpotLightComponent(const SpotLightComponent&) = default;
+};
+
 struct UHE_API BoxColliderComponent
 {
     glm::vec2 Offset{0.0f, 0.0f};

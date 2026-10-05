@@ -10,6 +10,7 @@ set(GLTF_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LoadModel.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LoadModelGeometry.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LoadModelAnimation.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/MeshoptDecode.cpp
 )
 
 # The loader reports failures through UHE::Log macros, which the test does not

@@ -122,6 +122,19 @@ struct MaterialExtensions
     // Scales a scalar strength - linear.
     Ref<Texture2D> AnisotropyTexture = nullptr;
 
+    // ── KHR_materials_diffuse_transmission ───────────────────────────────
+    // The leaf-translucency extension (issue #29 Tier 3): light that passes
+    // THROUGH a thin surface and re-emerges from the back face, diffused.
+    // factor 0 means fully opaque, the spec default. The colour defaults to
+    // WHITE per spec - it tints the transmitted light, it does not gate it.
+    float DiffuseTransmissionFactor = 0.0f;
+    glm::vec3 DiffuseTransmissionColor = glm::vec3(1.0f);
+    bool HasDiffuseTransmission = false;
+    // Both colour-ish data. The factor map is a scalar (linear); the colour map
+    // is a colour (sRGB, the loader's default).
+    Ref<Texture2D> DiffuseTransmissionTexture = nullptr;
+    Ref<Texture2D> DiffuseTransmissionColorTexture = nullptr;
+
     // ── KHR_materials_unlit ──────────────────────────────────────────────
     // Bypass shading entirely and output the base colour. Tier 3 in the issue,
     // but it is a material flag with no data of its own, so it is carried here

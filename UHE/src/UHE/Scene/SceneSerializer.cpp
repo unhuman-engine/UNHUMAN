@@ -236,6 +236,19 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::EndMap;
     }
 
+    // SpotLight (KHR_lights_punctual parity; cone angles in radians)
+    if (entity.HasComponent<SpotLightComponent>())
+    {
+        auto& slc = entity.GetComponent<SpotLightComponent>();
+        out << YAML::Key << "SpotLightComponent" << YAML::BeginMap;
+        out << YAML::Key << "Color" << YAML::Value << slc.Color;
+        out << YAML::Key << "Intensity" << YAML::Value << slc.Intensity;
+        out << YAML::Key << "Radius" << YAML::Value << slc.Radius;
+        out << YAML::Key << "InnerConeAngle" << YAML::Value << slc.InnerConeAngle;
+        out << YAML::Key << "OuterConeAngle" << YAML::Value << slc.OuterConeAngle;
+        out << YAML::EndMap;
+    }
+
     // Issue #17: entity hierarchy (parent/children by UUID)
     if (entity.HasComponent<RelationshipComponent>())
     {
@@ -622,6 +635,18 @@ bool SceneSerializer::Deserialize(const std::string& filepath)
             plc.Color = plcNode["Color"].as<glm::vec3>();
             plc.Intensity = plcNode["Intensity"].as<float>();
             plc.Radius = plcNode["Radius"].as<float>();
+        }
+
+        // SpotLight
+        auto slcNode = entityNode["SpotLightComponent"];
+        if (slcNode)
+        {
+            auto& slc = entity.AddComponent<SpotLightComponent>();
+            slc.Color = slcNode["Color"].as<glm::vec3>();
+            slc.Intensity = slcNode["Intensity"].as<float>();
+            slc.Radius = slcNode["Radius"].as<float>();
+            slc.InnerConeAngle = slcNode["InnerConeAngle"].as<float>();
+            slc.OuterConeAngle = slcNode["OuterConeAngle"].as<float>();
         }
 
         // Issue #17: glTF node entity marker

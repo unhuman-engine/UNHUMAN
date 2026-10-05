@@ -43,14 +43,17 @@ void Renderer2D::NextBatch() {}
 void Renderer3D::Init() {}
 void Renderer3D::Shutdown() {}
 Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator*) { return {}; }
+Renderer3D::MaterialBinding Renderer3D::PrepareMaterialBinding(const RD3d::Model&) { return {}; }
 void Renderer3D::BeginScene(const EditorCamera&, const std::vector<RD3d::LightData>&) {}
 void Renderer3D::BeginScene(const Camera&, const glm::mat4&, const std::vector<RD3d::LightData>&) {}
 void Renderer3D::EndScene() {}
 void Renderer3D::SubmitModel(const RD3d::Model&, const glm::mat4&, int, const RD3d::Animator*) {}
-void Renderer3D::SubmitMesh(const RD3d::Mesh&, const glm::mat4&, int, const std::vector<RD3d::Material>&, int, int) {}
+void Renderer3D::SubmitMesh(const RD3d::Mesh&, const glm::mat4&, int, const RD3d::Model&,
+                            const MaterialBinding&, int, int) {}
 void Renderer3D::DrawGrid() {}
 bool Renderer3D::IsLightingEnabled() { return false; }
 void Renderer3D::SetLightingEnabled(bool) {}
+void Renderer3D::RestartMaterialRegion() {}
 
 // ---- Texture2D: pure factory in the real engine; the harness never creates
 // GPU textures, so every factory returns null (callers null-check already). ----

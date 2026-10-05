@@ -6,9 +6,107 @@
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/SlangCompiler.h"
+#include "UHE/Renderer3D/MaterialGPU.h"
 
 namespace UHE
 {
+
+namespace
+{
+
+// Capacity of the per-frame material region. Every model uploaded this frame
+// takes GetMaterials().size() slots; a scene that exceeds this draws its
+// overflow with the default material rather than reading out of bounds. Slot 0
+// is reserved for that default and is never handed to a model.
+constexpr uint32_t kMaxMaterialsPerFrame = 2048;
+
+// Fills the GPU struct from a loaded material. The mapping is deliberately
+// dumb: the loader owns glTF semantics (including the engine-space UV
+// transform conversion), the renderer only packs.
+RD3d::MaterialGPU FillMaterialGPU(const RD3d::Material& material)
+{
+    RD3d::MaterialGPU gpu{};
+    const auto& ext = material.Extensions;
+
+    gpu.baseColorFactor = material.BaseColorFactor;
+    gpu.emissiveFactorStrength = glm::vec4(material.EmissiveFactor, ext.EmissiveStrength);
+    gpu.specularColorFactor = glm::vec4(ext.SpecularColorFactor, 1.0f);
+    gpu.sheenColorFactor = glm::vec4(ext.SheenColorFactor, 1.0f);
+    gpu.attenuationColor = glm::vec4(ext.AttenuationColor, 1.0f);
+    gpu.diffuseTransmissionColor = glm::vec4(ext.DiffuseTransmissionColor, 1.0f);
+
+    gpu.metallicFactor = material.MetallicFactor;
+    gpu.roughnessFactor = material.RoughnessFactor;
+    gpu.normalScale = material.NormalScale;
+    gpu.occlusionStrength = material.OcclusionStrength;
+    gpu.alphaCutoff = material.AlphaCutoff;
+    gpu.ior = ext.IOR;
+    gpu.specularFactor = ext.SpecularFactor;
+    gpu.clearcoatFactor = ext.ClearcoatFactor;
+    gpu.clearcoatRoughnessFactor = ext.ClearcoatRoughnessFactor;
+    gpu.clearcoatNormalScale = ext.ClearcoatNormalScale;
+    gpu.sheenRoughnessFactor = ext.SheenRoughnessFactor;
+    gpu.transmissionFactor = ext.TransmissionFactor;
+    gpu.thicknessFactor = ext.ThicknessFactor;
+    gpu.attenuationDistance = ext.AttenuationDistance;
+    gpu.diffuseTransmissionFactor = ext.DiffuseTransmissionFactor;
+    gpu.iridescenceFactor = ext.IridescenceFactor;
+    gpu.iridescenceIor = ext.IridescenceIOR;
+    gpu.iridescenceThicknessMinimum = ext.IridescenceThicknessMinimum;
+    gpu.iridescenceThicknessMaximum = ext.IridescenceThicknessMaximum;
+    gpu.anisotropyStrength = ext.AnisotropyStrength;
+    gpu.anisotropyRotation = ext.AnisotropyRotation;
+
+    uint32_t features = 0;
+    if (ext.HasClearcoat) features |= RD3d::kFeatureClearcoat;
+    if (ext.HasSpecular) features |= RD3d::kFeatureSpecular;
+    if (ext.HasSheen) features |= RD3d::kFeatureSheen;
+    if (ext.HasTransmission) features |= RD3d::kFeatureTransmission;
+    if (ext.HasTransmission && ext.ThicknessFactor > 0.0f) features |= RD3d::kFeatureVolume;
+    if (ext.HasIridescence) features |= RD3d::kFeatureIridescence;
+    if (ext.HasAnisotropy) features |= RD3d::kFeatureAnisotropy;
+    if (ext.HasDiffuseTransmission) features |= RD3d::kFeatureDiffuseTransmission;
+
+    gpu.flags = glm::ivec4(static_cast<int>(material.Alpha), ext.Unlit ? 1 : 0,
+                           static_cast<int>(features), 0);
+
+    // Texture slots. Each carries its own (already engine-space) UV transform,
+    // so KHR_texture_transform applies per map, not per material.
+    const Ref<Texture2D> slotTextures[] = {
+        material.AlbedoTexture,             material.MetallicRoughnessTexture,
+        material.NormalTexture,             material.OcclusionTexture,
+        material.EmissiveTexture,           ext.ClearcoatTexture,
+        ext.ClearcoatRoughnessTexture,      ext.ClearcoatNormalTexture,
+        ext.SpecularTexture,                ext.SpecularColorTexture,
+        ext.SheenColorTexture,              ext.SheenRoughnessTexture,
+        ext.TransmissionTexture,            ext.ThicknessTexture,
+        ext.IridescenceTexture,             ext.IridescenceThicknessTexture,
+        ext.AnisotropyTexture,              ext.DiffuseTransmissionTexture,
+        ext.DiffuseTransmissionColorTexture,
+    };
+    static_assert(std::size(slotTextures) == RD3d::kSlotCount, "slot table must cover every GPU slot");
+
+    for (int slot = 0; slot < RD3d::kSlotCount; ++slot)
+    {
+        auto& out = gpu.slots[slot];
+        const auto& transform = material.UVTransforms[slot];
+        if (slotTextures[slot])
+        {
+            out.index = glm::ivec4(static_cast<int>(slotTextures[slot]->GetTextureIndex()), 0, 0, 0);
+        }
+        else
+        {
+            out.index = glm::ivec4(-1, 0, 0, 0);
+        }
+        out.rotationScale =
+            glm::vec4(transform.cosRotation, transform.sinRotation, transform.scale.x, transform.scale.y);
+        out.offset = glm::vec4(transform.offset, 0.0f, 0.0f);
+    }
+
+    return gpu;
+}
+
+} // namespace
 
 struct Renderer3DData
 {
@@ -35,6 +133,15 @@ struct Renderer3DData
     RHI::BufferHandle BoneStorageBufferHandle = nullptr;
     uint32_t BoneStorageBufferIndex = 0;
     uint32_t BoneBufferOffset = 0; // In number of matrices
+
+    // Per-material parameters (MaterialGPU.h), indexed bindlessly from push
+    // constants. Like the bone buffer this is a per-frame region: the cursor
+    // restarts each BeginScene and every visible model re-uploads its
+    // materials. A persistent residency cache would avoid the re-upload, but
+    // needs lifetime hooks on Model destruction that do not exist yet.
+    RHI::BufferHandle MaterialStorageBufferHandle = nullptr;
+    uint32_t MaterialStorageBufferIndex = 0;
+    uint32_t MaterialBufferOffset = 0;
 
     bool EnableLighting = true;
 };
@@ -78,11 +185,11 @@ void Renderer3D::Init()
                              {RHI::ShaderDataType::Float4, "a_Tangent"},
                              {RHI::ShaderDataType::Float4, "a_Color"}};
 
-    // 256 bytes, which is EXACTLY maxPushConstantsSize on this device (vulkaninfo,
-    // GFX9). There is no headroom left: a fourth texture map or any new material
-    // field now requires moving material parameters into a per-material descriptor
-    // rather than another push-constant slot.
-    pipeDesc.pushConstantSize = 256;
+    // Push constants only carry where things live (camera, bones, lights, and
+    // the material's buffer location); the material's VALUES moved to the
+    // per-material storage buffer because this block was at the 256-byte
+    // device limit with no room for one more field.
+    pipeDesc.pushConstantSize = 192;
     pipeDesc.blendMode = RHI::BlendMode::Alpha;
     pipeDesc.depthTest = true;
     pipeDesc.depthWrite = true;
@@ -152,6 +259,14 @@ void Renderer3D::Init()
     boneBufferDesc.hostVisible = true;
     s_Data3D.BoneStorageBufferHandle = device.CreateBuffer(boneBufferDesc);
     s_Data3D.BoneStorageBufferIndex = device.GetBufferBindlessIndex(s_Data3D.BoneStorageBufferHandle);
+
+    RHI::BufferDesc materialBufferDesc{};
+    materialBufferDesc.size = sizeof(RD3d::MaterialGPU) * kMaxMaterialsPerFrame;
+    materialBufferDesc.usage = RHI::BufferUsage::Storage;
+    materialBufferDesc.hostVisible = true;
+    s_Data3D.MaterialStorageBufferHandle = device.CreateBuffer(materialBufferDesc);
+    s_Data3D.MaterialStorageBufferIndex = device.GetBufferBindlessIndex(s_Data3D.MaterialStorageBufferHandle);
+    s_Data3D.MaterialBufferOffset = 1; // Slot 0 is the default material, written each BeginScene.
 }
 
 void Renderer3D::Shutdown()
@@ -168,6 +283,7 @@ void Renderer3D::Shutdown()
 
     device.DestroyBuffer(s_Data3D.LightStorageBufferHandle);
     device.DestroyBuffer(s_Data3D.BoneStorageBufferHandle);
+    device.DestroyBuffer(s_Data3D.MaterialStorageBufferHandle);
 
     s_Data3D.WhiteTexture.reset();
 }
@@ -183,6 +299,8 @@ void Renderer3D::BeginScene(const EditorCamera& camera, const std::vector<RD3d::
                                                                      lights.size() * sizeof(RD3d::LightData));
     }
     s_Data3D.BoneBufferOffset = 0;
+
+    RestartMaterialRegion();
 }
 
 void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform,
@@ -197,6 +315,22 @@ void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform,
                                                                      lights.size() * sizeof(RD3d::LightData));
     }
     s_Data3D.BoneBufferOffset = 0;
+
+    RestartMaterialRegion();
+}
+
+void Renderer3D::RestartMaterialRegion()
+{
+    // Slot 0: the default material (glTF's "no material" white PBR surface).
+    // Rewritten every frame so the host-visible buffer never has to be
+    // initialised outside a command buffer.
+    auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
+
+    RD3d::Material defaultMaterial;
+    RD3d::MaterialGPU defaultGPU = FillMaterialGPU(defaultMaterial);
+    cmd.UpdateBuffer(s_Data3D.MaterialStorageBufferHandle, &defaultGPU, sizeof(defaultGPU), 0);
+
+    s_Data3D.MaterialBufferOffset = 1;
 }
 
 void Renderer3D::EndScene() {}
@@ -241,96 +375,98 @@ Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator* ani
     return binding;
 }
 
+Renderer3D::MaterialBinding Renderer3D::PrepareMaterialBinding(const RD3d::Model& model)
+{
+    MaterialBinding binding;
+    const auto& materials = model.GetMaterials();
+    if (materials.empty())
+        return binding; // draws fall back to the default material
+
+    auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
+
+    const uint32_t available = kMaxMaterialsPerFrame - s_Data3D.MaterialBufferOffset;
+    if (materials.size() > available)
+    {
+        // Draw the clamped tail with the default material instead of pointing
+        // push constants at memory that was never written this frame.
+        UHE_CORE_WARN("Material buffer exhausted: model needs {0} slots, {1} left this frame; "
+                      "trailing primitives draw with the default material",
+                      materials.size(), available);
+    }
+
+    const uint32_t count = std::min<uint32_t>(static_cast<uint32_t>(materials.size()), available);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        RD3d::MaterialGPU gpu = FillMaterialGPU(materials[i]);
+        cmd.UpdateBuffer(s_Data3D.MaterialStorageBufferHandle, &gpu, sizeof(gpu),
+                         (s_Data3D.MaterialBufferOffset + i) * sizeof(RD3d::MaterialGPU));
+    }
+
+    binding.BufferIndex = s_Data3D.MaterialStorageBufferIndex;
+    binding.BaseIndex = s_Data3D.MaterialBufferOffset;
+    binding.Count = count;
+    s_Data3D.MaterialBufferOffset += count;
+    return binding;
+}
+
 void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transform, int entityID,
                              const RD3d::Animator* animator)
 {
-    // Upload bone matrices once per model, then forward the buffer location to
-    // every sub-mesh.
+    // Upload bone matrices and material parameters once per model, then
+    // forward the buffer locations to every sub-mesh.
     BoneBinding bones = PrepareBoneBinding(animator);
+    MaterialBinding materials = PrepareMaterialBinding(model);
 
     for (const auto& mesh : model.GetMesh())
     {
-        SubmitMesh(mesh, transform, entityID, model.GetMaterials(), bones.BufferIndex, bones.Offset);
+        SubmitMesh(mesh, transform, entityID, model, materials, bones.BufferIndex, bones.Offset);
     }
 }
 
 // Issue #17: submit a single mesh (one glTF node) with its model's materials.
 void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, int entityID,
-                            const std::vector<RD3d::Material>& materials, int boneBufferIndex,
-                            int boneOffset)
+                            const RD3d::Model& model, const MaterialBinding& materialBinding,
+                            int boneBufferIndex, int boneOffset)
 {
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
-    // MUST stay byte-identical to PushConstants in Basic3D.slang. Slang and C++
-    // have different default alignments for a trailing float3, so the explicit
-    // padding is what keeps emissiveFactor at the same offset in both.
+    // MUST stay byte-identical to PushConstants in Basic3D.slang. Material
+    // values live in the per-material storage buffer; these 192 bytes only
+    // carry where everything lives.
     struct PushConstants
     {
         glm::mat4 viewProj;
         glm::mat4 model;
         glm::vec4 cameraPos;
         int entityID;
-        int textureSlot;
         int enableLighting;
         int lightBufferIndex;
         int numLights;
-        int mrTextureSlot;
-        float metallicFactor;
-        float roughnessFactor;
         int boneBufferIndex;
         int boneOffset;
-
-        int normalTextureSlot;
-        int occlusionTextureSlot;
-        int emissiveTextureSlot;
-        float normalScale;
-        float occlusionStrength;
-        int alphaCutoff;
-        int alphaMode;
-        // 12 bytes of explicit padding, NOT an assumption that the compiler will
-        // insert it. Slang lays this block out in std430: alphaMode ends at 212,
-        // and baseColorFactor must sit on a 16-byte boundary, so it starts at
-        // 224. C++ would pack it straight after alphaMode at 212 and disagree by
-        // 12 bytes - which reads as plausible garbage in every material field
-        // rather than as a validation error. The matching static_assert below
-        // pins both offsets against the compiled SPIR-V layout.
-        //
-        // One of those 12 spare bytes is spent here on useVertexColor. The struct
-        // is already at maxPushConstantsSize (256 on GFX9), so a new flag has to
-        // come out of existing padding - there is no room to append one.
+        int materialBufferIndex;
+        int materialIndex;
         int useVertexColor;
-        float padding[2];
-        glm::vec4 baseColorFactor;
-        glm::vec4 emissiveFactor;
+        glm::ivec3 padding;
     } pc;
 
-    static_assert(sizeof(PushConstants) == 256, "PushConstants must stay byte-identical to the Slang struct");
-    static_assert(offsetof(PushConstants, baseColorFactor) == 224, "baseColorFactor offset must match std430");
-    static_assert(offsetof(PushConstants, emissiveFactor) == 240, "emissiveFactor offset must match std430");
+    static_assert(sizeof(PushConstants) == 192, "PushConstants must stay byte-identical to the Slang struct");
+    static_assert(offsetof(PushConstants, materialBufferIndex) == 168,
+                  "materialBufferIndex offset must match the Slang layout");
     pc.viewProj = s_Data3D.ViewProjection;
     pc.model = transform;
     pc.cameraPos = glm::vec4(s_Data3D.CameraPosition, 1.0f);
     pc.entityID = entityID;
-    pc.textureSlot = 0; // Temp hardcode until material system is done
     pc.enableLighting = s_Data3D.EnableLighting ? 1 : 0;
     pc.lightBufferIndex = s_Data3D.LightStorageBufferIndex;
-    pc.numLights = static_cast<int>(s_Data3D.CurrentLights.size());
-    pc.mrTextureSlot = -1;
-    pc.metallicFactor = 1.0f;
-    pc.roughnessFactor = 1.0f;
+    pc.numLights = static_cast<int>(std::min<size_t>(s_Data3D.CurrentLights.size(), 1024));
     pc.boneBufferIndex = boneBufferIndex;
     pc.boneOffset = boneOffset;
-    pc.normalTextureSlot = -1;
-    pc.occlusionTextureSlot = -1;
-    pc.emissiveTextureSlot = -1;
-    pc.normalScale = 1.0f;
-    pc.occlusionStrength = 1.0f;
-    pc.alphaCutoff = 0.5f;
-    pc.alphaMode = 0;
+    pc.materialBufferIndex = materialBinding.BufferIndex;
     pc.useVertexColor = 0;
-    pc.baseColorFactor = glm::vec4(1.0f);
-    pc.emissiveFactor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
+    pc.padding = glm::ivec3(0);
 
+    const auto& materials = model.GetMaterials();
 
     pc.model = transform * mesh.LocalTransform;
 
@@ -340,70 +476,31 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
             continue;
 
         // glTF default material when the index is absent or out of range:
-        // white base, fully rough, non-metallic - the same values the loader
-        // uses as struct defaults.
-        int textureSlot = s_Data3D.WhiteTexture->GetTextureIndex();
-        int mrTextureSlot = -1;
-        int normalSlot = -1;
-        int occlusionSlot = -1;
-        int emissiveSlot = -1;
-        float metallicFactor = 1.0f;
-        float roughnessFactor = 1.0f;
-        float normalScale = 1.0f;
-        float occlusionStrength = 1.0f;
-        float alphaCutoff = 0.5f;
-        int alphaMode = 0;
-        glm::vec4 baseColorFactor(1.0f);
-        glm::vec4 emissiveFactor(0.0f, 0.0f, 0.0f, 0.0f);
-        bool doubleSided = false;
+        // white base, fully rough, non-metallic. Slot 0 of the material buffer
+        // holds exactly that, so out-of-range primitives just point at it.
+        const RD3d::Material* material = nullptr;
+        int materialIndex = 0; // default slot
+        if (prim.materialIndex < materials.size())
+        {
+            material = &materials[prim.materialIndex];
+            const int localIndex = static_cast<int>(prim.materialIndex);
+            if (materialBinding.BaseIndex >= 0 && localIndex < static_cast<int>(materialBinding.Count))
+                materialIndex = materialBinding.BaseIndex + localIndex;
+            else
+                material = nullptr; // buffer exhausted: draw with the default
+        }
+
+        pc.materialIndex = materialIndex;
         // COLOR_0 is a per-PRIMITIVE attribute in glTF, so the flag lives on
         // the primitive rather than the material: two materials in one mesh
         // can have vertex colours on different primitives.
-        int useVertexColor = prim.hasVertexColor ? 1 : 0;
-
-        if (prim.materialIndex < materials.size())
-        {
-            const auto& material = materials[prim.materialIndex];
-            if (material.AlbedoTexture)
-                textureSlot = material.AlbedoTexture->GetTextureIndex();
-            if (material.MetallicRoughnessTexture)
-                mrTextureSlot = material.MetallicRoughnessTexture->GetTextureIndex();
-            if (material.NormalTexture)
-                normalSlot = material.NormalTexture->GetTextureIndex();
-            if (material.OcclusionTexture)
-                occlusionSlot = material.OcclusionTexture->GetTextureIndex();
-            if (material.EmissiveTexture)
-                emissiveSlot = material.EmissiveTexture->GetTextureIndex();
-
-            metallicFactor = material.MetallicFactor;
-            roughnessFactor = material.RoughnessFactor;
-            normalScale = material.NormalScale;
-            occlusionStrength = material.OcclusionStrength;
-            alphaCutoff = material.AlphaCutoff;
-            alphaMode = static_cast<int>(material.Alpha);
-            baseColorFactor = material.BaseColorFactor;
-            emissiveFactor = glm::vec4(material.EmissiveFactor, 0.0f);
-            doubleSided = material.DoubleSided;
-        }
+        pc.useVertexColor = prim.hasVertexColor ? 1 : 0;
 
         // Cull mode lives in the pipeline, so a doubleSided material needs the
         // variant bound rather than a state change.
+        const bool doubleSided = material && material->DoubleSided;
         cmd.BindPipeline(doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline);
 
-        pc.textureSlot = textureSlot;
-        pc.mrTextureSlot = mrTextureSlot;
-        pc.metallicFactor = metallicFactor;
-        pc.roughnessFactor = roughnessFactor;
-        pc.normalTextureSlot = normalSlot;
-        pc.occlusionTextureSlot = occlusionSlot;
-        pc.emissiveTextureSlot = emissiveSlot;
-        pc.normalScale = normalScale;
-        pc.occlusionStrength = occlusionStrength;
-        pc.alphaCutoff = alphaCutoff;
-        pc.alphaMode = alphaMode;
-        pc.useVertexColor = useVertexColor;
-        pc.baseColorFactor = baseColorFactor;
-        pc.emissiveFactor = emissiveFactor;
         cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
 
         cmd.BindVertexBuffer(prim.VertexBuffer);

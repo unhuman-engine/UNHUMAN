@@ -7,6 +7,7 @@
 
 #include "uhepch.h"
 #include "LoadModel.h"
+#include "MeshoptDecode.h"
 #include <fastgltf/glm_element_traits.hpp>
 #include "fastgltf/math.hpp"
 #include "fastgltf/types.hpp"
@@ -17,6 +18,25 @@ namespace UHE::RD3d
 
 namespace
 {
+
+// Buffer data adapter that decodes EXT_meshopt_compression views on the fly.
+//
+// fastgltf's DefaultBufferDataAdapter hands out raw buffer bytes, which for a
+// meshopt-compressed view is the COMPRESSED stream - iterating an accessor of
+// such a view without this adapter reads garbage geometry, silently. The
+// adapter is value-copied into fastgltf's iteration helpers, so the scratch
+// that holds decoded bytes lives behind a shared_ptr shared by all copies of
+// one call.
+struct MeshoptBufferDataAdapter
+{
+    const fastgltf::Asset* asset = nullptr;
+    std::shared_ptr<std::vector<std::byte>> scratch = std::make_shared<std::vector<std::byte>>();
+
+    std::span<const std::byte> operator()(const fastgltf::Asset& a, std::size_t bufferViewIndex) const
+    {
+        return GetBufferViewBytes(a, bufferViewIndex, *scratch);
+    }
+};
 
 bool IsSkinned(const fastgltf::Primitive& primitive)
 {
@@ -129,7 +149,8 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
                                                                       outPrim.vertices[idx].normal =
                                                                           glm::vec3(0.0f, 1.0f, 0.0f); // Default
                                                                       outPrim.vertices[idx].uv = glm::vec2(0.0f);
-                                                                  });
+                                                                  },
+                                                                  MeshoptBufferDataAdapter{&asset});
 
         const auto* normalAttribute = primitive.findAttribute("NORMAL");
         if (normalAttribute != primitive.attributes.end())
@@ -137,7 +158,8 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
             auto& normalAccessor = asset.accessors[normalAttribute->accessorIndex];
             fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
                 asset, normalAccessor, [&](fastgltf::math::fvec3 norm, size_t idx)
-                { outPrim.vertices[idx].normal = glm::vec3(norm.x(), norm.y(), norm.z()); });
+                { outPrim.vertices[idx].normal = glm::vec3(norm.x(), norm.y(), norm.z()); },
+                MeshoptBufferDataAdapter{&asset});
         }
 
         const auto* uvAttribute = primitive.findAttribute("TEXCOORD_0");
@@ -151,7 +173,8 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
             // material work lands.
             fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec2>(
                 asset, uvAccessor,
-                [&](fastgltf::math::fvec2 uv, size_t idx) { outPrim.vertices[idx].uv = glm::vec2(uv.x(), 1.0f - uv.y()); });
+                [&](fastgltf::math::fvec2 uv, size_t idx) { outPrim.vertices[idx].uv = glm::vec2(uv.x(), 1.0f - uv.y()); },
+                MeshoptBufferDataAdapter{&asset});
         }
 
         // COLOR_0. The spec allows VEC3 or VEC4, and an unnormalized unsigned
@@ -177,7 +200,8 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
                 fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(
                     asset, colorAccessor,
                     [&](fastgltf::math::fvec3 c, size_t idx)
-                    { outPrim.vertices[idx].color = glm::vec4(c.x(), c.y(), c.z(), 1.0f); });
+                    { outPrim.vertices[idx].color = glm::vec4(c.x(), c.y(), c.z(), 1.0f); },
+                    MeshoptBufferDataAdapter{&asset});
                 outPrim.hasVertexColor = true;
             }
             else
@@ -185,7 +209,8 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
                 fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
                     asset, colorAccessor,
                     [&](fastgltf::math::fvec4 c, size_t idx)
-                    { outPrim.vertices[idx].color = glm::vec4(c.x(), c.y(), c.z(), c.w()); });
+                    { outPrim.vertices[idx].color = glm::vec4(c.x(), c.y(), c.z(), c.w()); },
+                    MeshoptBufferDataAdapter{&asset});
                 outPrim.hasVertexColor = true;
             }
         }
@@ -196,7 +221,8 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
             auto& jointsAccessor = asset.accessors[jointsAttribute->accessorIndex];
             fastgltf::iterateAccessorWithIndex<fastgltf::math::uvec4>(
                 asset, jointsAccessor,
-                [&](fastgltf::math::uvec4 joints, size_t idx) { outPrim.vertices[idx].jointIndices = glm::ivec4(joints.x(), joints.y(), joints.z(), joints.w()); });
+                [&](fastgltf::math::uvec4 joints, size_t idx) { outPrim.vertices[idx].jointIndices = glm::ivec4(joints.x(), joints.y(), joints.z(), joints.w()); },
+                MeshoptBufferDataAdapter{&asset});
         }
 
         const auto* weightsAttribute = primitive.findAttribute("WEIGHTS_0");
@@ -205,7 +231,8 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
             auto& weightsAccessor = asset.accessors[weightsAttribute->accessorIndex];
             fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
                 asset, weightsAccessor,
-                [&](fastgltf::math::fvec4 weights, size_t idx) { outPrim.vertices[idx].jointWeights = glm::vec4(weights.x(), weights.y(), weights.z(), weights.w()); });
+                [&](fastgltf::math::fvec4 weights, size_t idx) { outPrim.vertices[idx].jointWeights = glm::vec4(weights.x(), weights.y(), weights.z(), weights.w()); },
+                MeshoptBufferDataAdapter{&asset});
         }
 
         if (primitive.indicesAccessor.has_value())
@@ -214,7 +241,8 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
             outPrim.indices.reserve(indicesAccessor.count);
 
             fastgltf::iterateAccessor<u32>(asset, indicesAccessor,
-                                           [&](u32 indexValue) { outPrim.indices.push_back(indexValue); });
+                                           [&](u32 indexValue) { outPrim.indices.push_back(indexValue); },
+                                           MeshoptBufferDataAdapter{&asset});
         }
         else
         {
@@ -248,7 +276,8 @@ void Model::ExtractGeometry(const fastgltf::Asset& asset, size_t meshIndex, cons
             {
                 fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(
                     asset, tangentAccessor, [&](fastgltf::math::fvec4 t, size_t idx)
-                    { outPrim.vertices[idx].tangent = glm::vec4(t.x(), t.y(), t.z(), t.w()); });
+                    { outPrim.vertices[idx].tangent = glm::vec4(t.x(), t.y(), t.z(), t.w()); },
+                    MeshoptBufferDataAdapter{&asset});
             }
             else
             {

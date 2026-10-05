@@ -243,6 +243,18 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
             dst.Radius = src.Radius;
         }
 
+        // Copy SpotLightComponent
+        if (srcRegistry.all_of<SpotLightComponent>(srcEntity))
+        {
+            auto& src = srcRegistry.get<SpotLightComponent>(srcEntity);
+            auto& dst = newEntity.AddComponent<SpotLightComponent>();
+            dst.Color = src.Color;
+            dst.Intensity = src.Intensity;
+            dst.Radius = src.Radius;
+            dst.InnerConeAngle = src.InnerConeAngle;
+            dst.OuterConeAngle = src.OuterConeAngle;
+        }
+
         // Copy RigidBody3DComponent
         if (srcRegistry.all_of<RigidBody3DComponent>(srcEntity))
         {
@@ -1091,6 +1103,10 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
     auto nodeView = m_registry.view<ModelNodeComponent>();
 
     std::unordered_map<u64, Renderer3D::BoneBinding> boneCache;
+    // Same one-upload-per-model contract for material parameters: the whole
+    // model's material list goes to the GPU buffer once, and every node mesh
+    // references it by index.
+    std::unordered_map<u64, Renderer3D::MaterialBinding> materialCache;
 
     for (auto entity : nodeView)
     {
@@ -1130,8 +1146,16 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
             cacheIt = boneCache.find(nodeComp.ModelEntity);
         }
 
+        auto materialIt = materialCache.find(nodeComp.ModelEntity);
+        if (materialIt == materialCache.end())
+        {
+            materialIt = materialCache.emplace(nodeComp.ModelEntity,
+                                               Renderer3D::PrepareMaterialBinding(*mc.ModelData)).first;
+        }
+
         Renderer3D::SubmitMesh(meshes[meshIndex], GetWorldFromCache(worldTransforms, entity), (int)entity,
-                               mc.ModelData->GetMaterials(), cacheIt->second.BufferIndex, cacheIt->second.Offset);
+                               *mc.ModelData, materialIt->second, cacheIt->second.BufferIndex,
+                               cacheIt->second.Offset);
     }
 }
 
@@ -1447,6 +1471,7 @@ template <> void Scene::OnComponentAdded<IDComponent>(Entity entity, IDComponent
 template <> void Scene::OnComponentAdded<Model3DComponent>(Entity entity, Model3DComponent& component) {};
 template <> void Scene::OnComponentAdded<DirectionalLightComponent>(Entity entity, DirectionalLightComponent& component) {};
 template <> void Scene::OnComponentAdded<PointLightComponent>(Entity entity, PointLightComponent& component) {};
+template <> void Scene::OnComponentAdded<SpotLightComponent>(Entity entity, SpotLightComponent& component) {};
 template <> void Scene::OnComponentAdded<AnimatorComponent>(Entity entity, AnimatorComponent& component) {};
 template <> void Scene::OnComponentAdded<ModelNodeComponent>(Entity entity, ModelNodeComponent& component) {};
 template <> void Scene::OnComponentAdded<RelationshipComponent>(Entity entity, RelationshipComponent& component) {};
