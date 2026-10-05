@@ -199,6 +199,9 @@ void Renderer3D::Shutdown()
     device.DestroyBuffer(s_Data3D.MaterialStorageBufferHandle);
 
     s_Data3D.WhiteTexture.reset();
+    s_Data3D.PointLightTexture.reset();
+    s_Data3D.SpotLightTexture.reset();
+    s_Data3D.DirectionalLightTexture.reset();
 }
 
 void Renderer3D::BeginScene(const EditorCamera& camera, const std::vector<RD3d::LightData>& lights)

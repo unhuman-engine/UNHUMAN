@@ -29,11 +29,11 @@ struct VertexInput {
     [[vk::location(0)]] float3 a_Position : POSITION;
     [[vk::location(1)]] float3 a_Normal : NORMAL;
     [[vk::location(2)]] float2 a_TexCoord : TEXCOORD;
-    [[vk::location(3)]] int4 a_Joints : JOINTS;
-    [[vk::location(4)]] float4 a_Weights : WEIGHTS;
     // xyz = tangent, w = handedness sign. Added for normal mapping; the loader
     // generates this per-corner and splits seam vertices so w is meaningful.
-    [[vk::location(5)]] float4 a_Tangent : TANGENT;
+    [[vk::location(3)]] float4 a_Tangent : TANGENT;
+    [[vk::location(4)]] int4 a_Joints : JOINTS;
+    [[vk::location(5)]] float4 a_Weights : WEIGHTS;
     // COLOR_0. Location 6. glTF allows vec3 or vec4; the loader normalises both
     // to vec4 on the CPU so the vertex layout needs only one format.
     [[vk::location(6)]] float4 a_Color : COLOR;
