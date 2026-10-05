@@ -219,7 +219,13 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
             dst.CurrentAnimationName = src.CurrentAnimationName;
             dst.PlaybackSpeed = src.PlaybackSpeed;
             dst.IsPlaying = src.IsPlaying;
-            // Note: Animator itself needs to be recreated since it depends on the ModelData instance, 
+            // Issue #41 playback/blending controls.
+            dst.LoopMode = src.LoopMode;
+            dst.Reverse = src.Reverse;
+            dst.RootMotion = src.RootMotion;
+            dst.CrossFadeDuration = src.CrossFadeDuration;
+            dst.SkinIndex = src.SkinIndex;
+            // Note: Animator itself needs to be recreated since it depends on the ModelData instance,
             // but we can just share it or let it re-initialize in OnUpdate. We'll copy the ref.
             dst.Animator = src.Animator;
         }
@@ -839,9 +845,23 @@ void Scene::OnUpdateEditor(Timestep ts, EditorCamera& camera)
         for (auto entity : view)
         {
             auto& anim = view.get<AnimatorComponent>(entity);
-            if (anim.IsPlaying && anim.Animator)
+            if (anim.Animator)
             {
-                anim.Animator->UpdateAnimation(ts * anim.PlaybackSpeed);
+                // Issue #41: mirror the component's playback settings onto
+                // the runtime so editor/serializer changes apply immediately.
+                anim.Animator->SetLoopMode(anim.LoopMode);
+                anim.Animator->SetReversed(anim.Reverse);
+                anim.Animator->SetRootMotionEnabled(anim.RootMotion);
+                if (anim.RootMotion && m_registry.all_of<TransformComponent>(entity))
+                {
+                    // Root motion: hand the extracted delta to the entity.
+                    auto& tc = m_registry.get<TransformComponent>(entity);
+                    tc.Translation += anim.Animator->GetRootMotionDelta();
+                }
+                if (anim.IsPlaying)
+                {
+                    anim.Animator->UpdateAnimation(ts * anim.PlaybackSpeed);
+                }
             }
         }
     }
@@ -1148,9 +1168,23 @@ void Scene::OnUpdateRuntime(Timestep ts)
         for (auto entity : view)
         {
             auto& anim = view.get<AnimatorComponent>(entity);
-            if (anim.IsPlaying && anim.Animator)
+            if (anim.Animator)
             {
-                anim.Animator->UpdateAnimation(ts * anim.PlaybackSpeed);
+                // Issue #41: mirror the component's playback settings onto
+                // the runtime so editor/serializer changes apply immediately.
+                anim.Animator->SetLoopMode(anim.LoopMode);
+                anim.Animator->SetReversed(anim.Reverse);
+                anim.Animator->SetRootMotionEnabled(anim.RootMotion);
+                if (anim.RootMotion && m_registry.all_of<TransformComponent>(entity))
+                {
+                    // Root motion: hand the extracted delta to the entity.
+                    auto& tc = m_registry.get<TransformComponent>(entity);
+                    tc.Translation += anim.Animator->GetRootMotionDelta();
+                }
+                if (anim.IsPlaying)
+                {
+                    anim.Animator->UpdateAnimation(ts * anim.PlaybackSpeed);
+                }
             }
         }
     }

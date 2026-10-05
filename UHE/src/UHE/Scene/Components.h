@@ -162,6 +162,13 @@ struct UHE_API AnimatorComponent
     float PlaybackSpeed = 1.0f;
     std::string CurrentAnimationName = "";
 
+    // Issue #41: playback and blending controls mirrored onto the Animator.
+    RD3d::LoopMode LoopMode = RD3d::LoopMode::Loop;
+    bool Reverse = false;
+    bool RootMotion = false;
+    float CrossFadeDuration = 0.25f; // used when switching clips
+    int SkinIndex = 0;
+
     AnimatorComponent() = default;
     AnimatorComponent(const AnimatorComponent&) = default;
 };

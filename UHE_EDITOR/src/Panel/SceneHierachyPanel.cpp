@@ -997,14 +997,42 @@ void SceneHierarchyPanel::DrawComponents(Entity entity) {
                 if (ImGui::Button(anim.IsPlaying ? "Pause" : "Play")) {
                     anim.IsPlaying = !anim.IsPlaying;
                 }
-                
+
                 ImGui::SameLine();
                 if (ImGui::Button("Restart")) {
                     anim.Animator->PlayAnimation(anim.CurrentAnimationName);
                     anim.IsPlaying = true;
                 }
-                
+
                 ImGui::DragFloat("Playback Speed", &anim.PlaybackSpeed, 0.1f, 0.0f, 5.0f);
+
+                // Issue #41: loop mode, direction, blending and skin selection.
+                int loopMode = static_cast<int>(anim.LoopMode);
+                const char* loopNames[] = { "None", "Loop", "PingPong" };
+                if (ImGui::Combo("Loop Mode", &loopMode, loopNames, 3)) {
+                    anim.LoopMode = static_cast<RD3d::LoopMode>(loopMode);
+                }
+                ImGui::Checkbox("Reverse", &anim.Reverse);
+                ImGui::Checkbox("Root Motion", &anim.RootMotion);
+                ImGui::DragFloat("Cross Fade", &anim.CrossFadeDuration, 0.05f, 0.05f, 5.0f, "%.2fs");
+
+                if (model->GetSkinCount() > 0) {
+                    int skin = anim.SkinIndex;
+                    if (ImGui::SliderInt("Skin", &skin, 0, static_cast<int>(model->GetSkinCount()) - 1)) {
+                        anim.SkinIndex = skin;
+                        anim.Animator->SetSkin(skin);
+                    }
+                }
+
+                // Timeline scrubbing: drag through the current clip.
+                float duration = anim.Animator->GetDuration();
+                if (duration > 0.0f) {
+                    float t = anim.Animator->GetCurrentTime();
+                    ImGui::SliderFloat("Timeline", &t, 0.0f, duration, "%.2fs");
+                    if (ImGui::IsItemEdited()) {
+                        anim.Animator->Seek(t);
+                    }
+                }
             } else {
                 ImGui::TextDisabled("Model has no animations.");
             }
