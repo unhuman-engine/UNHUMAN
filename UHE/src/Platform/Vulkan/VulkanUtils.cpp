@@ -213,9 +213,15 @@ vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter, vk::
 // because the existing signature applied one mode to all of them.
 vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter, vk::SamplerMipmapMode mipmapMode,
                                 vk::SamplerAddressMode addressModeU, vk::SamplerAddressMode addressModeV,
-                                vk::SamplerAddressMode addressModeW, f32 maxLod)
+                                vk::SamplerAddressMode addressModeW, f32 maxLod, f32 maxAnisotropy)
 {
     auto& ctx = GetVulkanContext();
+
+    // Anisotropy needs the feature enabled AND the value clamped to what the
+    // device actually supports; requesting more than the limit is a hard
+    // validation error, not a silent clamp.
+    f32 deviceMax = ctx.physicalDeviceHandle->getProperties().limits.maxSamplerAnisotropy;
+    f32 anisotropy = std::clamp(maxAnisotropy, 1.0f, deviceMax);
 
     vk::SamplerCreateInfo samplerInfo{.flags = {},
                                       .magFilter = magFilter,
@@ -225,8 +231,8 @@ vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter, vk::
                                       .addressModeV = addressModeV,
                                       .addressModeW = addressModeW,
                                       .mipLodBias = 0.0f,
-                                      .anisotropyEnable = VK_FALSE,
-                                      .maxAnisotropy = 1.0f,
+                                      .anisotropyEnable = anisotropy > 1.0f ? vk::Bool32{VK_TRUE} : vk::Bool32{VK_FALSE},
+                                      .maxAnisotropy = anisotropy,
                                       .compareEnable = VK_FALSE,
                                       .compareOp = vk::CompareOp::eAlways,
                                       .minLod = 0.0f,

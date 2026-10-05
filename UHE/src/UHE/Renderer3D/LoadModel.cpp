@@ -54,13 +54,14 @@ bool IsExtensionSupported(std::string_view name)
            name == "KHR_materials_anisotropy" ||            // brushed metal
            name == "KHR_materials_diffuse_transmission" ||  // thin-surface translucency
            name == "KHR_lights_punctual" ||                 // asset-defined lights
-           name == "EXT_meshopt_compression";               // compressed buffers
-    // Deliberately absent: KHR_texture_basisu and KHR_draco_mesh_compression.
-    // fastgltf parses their metadata but a file using them still cannot be
-    // drawn - KTX2 needs a basis transcoder, Draco needs the Draco decoder -
-    // and listing them here would silence exactly the warning that is supposed
-    // to explain why such an asset looks broken. Draco-declared primitives
-    // additionally carry no readable POSITION, so they draw nothing.
+           name == "EXT_meshopt_compression" ||             // compressed buffers
+           name == "KHR_texture_basisu";                    // KTX2/Basis textures
+    // Deliberately absent: KHR_draco_mesh_compression. fastgltf parses its
+    // metadata but the mesh cannot be drawn - decoding needs the Draco
+    // decoder, which is not vendored - and listing it here would silence
+    // exactly the warning that is supposed to explain why such an asset looks
+    // broken. Draco-declared primitives additionally carry no readable
+    // POSITION, so they draw nothing.
 }
 
 } // namespace
@@ -348,7 +349,16 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             if (!texInfo) return nullptr;
             auto textureIndex = texInfo->textureIndex;
             if (textureIndex >= asset.textures.size()) return nullptr;
-            auto imageIndex = asset.textures[textureIndex].imageIndex;
+
+            // KHR_texture_basisu (issue #29 Tier 4, #42): when the file ships a
+            // KTX2 image it is the PRIMARY representation and imageIndex is the
+            // fallback for loaders without basis support. We transcode KTX2, so
+            // the basis image wins when present; the fallback still loads when
+            // the file carries one, which also keeps GLB-with-PNG-fallback
+            // assets rendering if the KTX2 itself fails to decode.
+            const auto& gltfTexture = asset.textures[textureIndex];
+            auto imageIndex = gltfTexture.basisuImageIndex.has_value() ? gltfTexture.basisuImageIndex
+                                                                       : gltfTexture.imageIndex;
             if (!imageIndex.has_value()) return nullptr;
 
             auto& image = asset.images[imageIndex.value()];

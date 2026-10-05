@@ -40,3 +40,6 @@
 [submodule "UHE/vendor/meshoptimizer"]
 	path = UHE/vendor/meshoptimizer
 	url = https://github.com/zeux/meshoptimizer.git
+[submodule "UHE/vendor/basis_universal"]
+	path = UHE/vendor/basis_universal
+	url = https://github.com/BinomialLLC/basis_universal.git

@@ -32,6 +32,15 @@ struct SamplerDesc
     Wrap wrapS = Wrap::Repeat;
     Wrap wrapT = Wrap::Repeat;
 
+    // Anisotropic filtering level, 1 = off (spec default). glTF has no
+    // anisotropy field, so this is a renderer-quality knob the sampler setup
+    // clamps to the device's maxAnisotropy; 0 is treated as 1.
+    u8 maxAnisotropy = 1;
+
+    // Largest mip the sampler will pick. Default leaves the whole chain
+    // addressable; a loader that knows the chain is shorter can clamp it.
+    f32 maxLod = 1000.0f;
+
     // Whether the image is authored in sRGB and must be linearised by the
     // sampler. This is an IMAGE property, not sampler state: Vulkan encodes it
     // in the image format (eR8G8B8A8Srgb vs eR8G8B8A8Unorm), so it cannot be a

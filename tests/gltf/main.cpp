@@ -38,6 +38,12 @@
 
 #include <meshoptimizer.h>
 
+// Basis Universal: the encoder generates real KTX2 fixtures at run time, the
+// transcoder is what the engine (and KTX2.h) use to decode them.
+#include "basisu_comp.h"
+#include "basisu_transcoder.h"
+#include "UHE/Renderer/KTX2.h" 
+
 // Defined in gpu_stub.cpp: records every sampler the loader asked for, so a test
 // can assert glTF's declared sampler state and colour space actually reached the
 // factory. A stub that ignored the argument would make this path untestable, and
@@ -47,6 +53,8 @@ namespace UHE
 RHI::SamplerDesc StubLastRequestedSampler();
 const std::vector<RHI::SamplerDesc>& StubRequestedSamplers();
 int StubTextureCreateCallCount();
+const std::vector<u8>& StubLastMemoryData();
+size_t StubLastMemorySize();
 void StubReset();
 } // namespace UHE
 
@@ -423,6 +431,10 @@ struct MaterialSpec
     // which is what makes per-slot colour space observable: baseColor and
     // emissive are sRGB, the other three are linear data.
     bool baseColorTexture = false;
+    // baseColorTexture delivered through KHR_texture_basisu (a .ktx2 image).
+    // Mutually exclusive with baseColorTexture; the texture entry carries the
+    // extension instead of a plain source.
+    bool baseColorBasisTexture = false;
     bool metallicRoughnessTexture = false;
     bool emissiveTexture = false;
     std::optional<SamplerSpec> sampler;
@@ -880,12 +892,23 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
     const bool needsTexture = spec.material && (spec.material->normalScale >= 0.0f ||
                                                 spec.material->occlusionStrength >= 0.0f ||
                                                 spec.material->baseColorTexture ||
+                                                spec.material->baseColorBasisTexture ||
                                                 spec.material->metallicRoughnessTexture ||
                                                 spec.material->emissiveTexture ||
                                                 spec.material->sampler.has_value());
     if (needsTexture)
     {
-        j.key("images").beginArray().beginObject().field("uri", "tex.png").field("mimeType", "image/png").endObject().endArray();
+        // The basisu fixture's image 0 is the .ktx2 written by the test; PNG
+        // fixtures keep the hardcoded name. mimeType is omitted for ktx2 (the
+        // extension carries it, and glTF makes the field optional).
+        if (spec.material && spec.material->baseColorBasisTexture)
+        {
+            j.key("images").beginArray().beginObject().field("uri", "tex.ktx2").endObject().endArray();
+        }
+        else
+        {
+            j.key("images").beginArray().beginObject().field("uri", "tex.png").field("mimeType", "image/png").endObject().endArray();
+        }
 
         // Samplers and textures are emitted exactly once each. A second
         // j.key("textures") would silently lose the sampler reference: JSON takes
@@ -905,6 +928,25 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
                 j.field("wrapT", sp.wrapT);
             j.endObject().endArray();
             j.key("textures").beginArray().beginObject().field("source", 0).field("sampler", 0).endObject().endArray();
+        }
+        else if (spec.material && spec.material->baseColorBasisTexture)
+        {
+            // KHR_texture_basisu lives on the TEXTURE object and REPLACES the
+            // source; "source" alongside it would be the PNG fallback, which
+            // this fixture deliberately omits so the test proves the basisu
+            // path is actually taken.
+            j.key("textures")
+                .beginArray()
+                .beginObject()
+                .key("extensions")
+                .beginObject()
+                .key("KHR_texture_basisu")
+                .beginObject()
+                .field("source", std::size_t{0})
+                .endObject()
+                .endObject()
+                .endObject()
+                .endArray();
         }
         else
         {
@@ -933,8 +975,11 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
             // pbrMetallicRoughness, not of the material. Emitting them at
             // material level produces valid JSON that fastgltf silently ignores,
             // so the slots never load and the test asserts on nothing.
-            if (i == 0 && spec.material && spec.material->baseColorTexture)
+            if (i == 0 && spec.material && (spec.material->baseColorTexture || spec.material->baseColorBasisTexture))
             {
+                // The basisu variant emits the SAME TextureInfo here: the
+                // extension object lives on the texture entry, not on the
+                // material's reference to it.
                 j.key("baseColorTexture").beginObject().field("index", 0);
                 // KHR_texture_transform rides INSIDE the TextureInfo. Emitting it
                 // at material level is the mistake this fixture guards against.
@@ -1416,6 +1461,7 @@ int main()
             "KHR_materials_diffuse_transmission",
             "KHR_lights_punctual",
             "EXT_meshopt_compression",
+            "KHR_texture_basisu",
         };
 
         for (const char* ext : kImplemented)
@@ -2579,34 +2625,28 @@ int main()
         }
     }
 
-    section("draco and basisu stay flagged unsupported");
+    section("KHR_draco_mesh_compression stays flagged unsupported");
     {
-        // Neither extension can actually be served by this loader (no Draco
-        // decoder, no KTX2 transcoder), so they must NOT be listed as
-        // supported - that list is what keeps the load-time warning honest.
-        // KHR_draco_mesh_compression is REQUIRED here: a real draco file has
-        // no readable POSITION, so every primitive draws nothing and the
-        // warning is the only signal the author gets.
+        // The mesh cannot actually be served (no Draco decoder vendored), so
+        // it must NOT be listed as supported - that list is what keeps the
+        // load-time warning honest. It is REQUIRED here: a real draco file
+        // has no readable POSITION, so every primitive draws nothing and the
+        // warning is the only signal the author gets. (KHR_texture_basisu
+        // left this list when the KTX2 transcoder landed.)
         AssetSpec spec;
         spec.meshCount = 1;
         spec.materialCount = 1;
-        spec.extensionsUsed.push_back("KHR_texture_basisu");
         spec.extensionsRequired.push_back("KHR_draco_mesh_compression");
 
         const fs::path path = writeAsset(dir, "compressed_exts.gltf", spec);
 
         UHE::RD3d::Model model;
-        check(model.loadModel(path), "file with unsupported compression extensions still opens");
+        check(model.loadModel(path), "file with an unsupported compression extension still opens");
         check(model.HasUnsupportedExtensions(), "unsupported extensions are reported");
         bool sawDraco = false;
-        bool sawBasisu = false;
         for (const auto& name : model.GetUnsupportedExtensionNames())
-        {
             sawDraco = sawDraco || name == "KHR_draco_mesh_compression";
-            sawBasisu = sawBasisu || name == "KHR_texture_basisu";
-        }
         check(sawDraco, "KHR_draco_mesh_compression reported as unsupported");
-        check(sawBasisu, "KHR_texture_basisu reported as unsupported");
     }
 
     // =====================================================================
@@ -2816,6 +2856,143 @@ int main()
         check(lights.size() == 1, "fallback light emitted");
         if (!lights.empty())
             check(int(lights[0].Type_Radius_Pad.x) == 0, "fallback is directional");
+    }
+
+    // =====================================================================
+    // KTX2 / KHR_texture_basisu (issue #42). The round-trip test encodes a
+    // REAL .ktx2 with the vendored basis_universal encoder and decodes it
+    // through the same LoadKTX2 the texture factory calls, so both a broken
+    // transcode and a broken container check fail here, not in the editor.
+    // =====================================================================
+
+    section("KTX2 round-trips through the transcoder");
+    {
+        // Solid colour with distinct channels: UASTC on a flat image decodes
+        // near-exactly, so a tight tolerance is meaningful (a broken decode
+        // produces garbage, not slight noise).
+        const u32 kW = 32, kH = 32;
+        std::vector<u8> src(kW * kH * 4);
+        for (u32 y = 0; y < kH; ++y)
+            for (u32 x = 0; x < kW; ++x)
+            {
+                src[(y * kW + x) * 4 + 0] = 200;
+                src[(y * kW + x) * 4 + 1] = 80;
+                src[(y * kW + x) * 4 + 2] = 40;
+                src[(y * kW + x) * 4 + 3] = 255;
+            }
+
+        basisu::basisu_encoder_init();
+
+        basisu::basis_compressor_params params;
+        // This build requires an explicit (single-threaded) job pool.
+        basisu::job_pool jobs(1);
+        params.m_pJob_pool = &jobs;
+        basisu::image source;
+        source.resize(kW, kH);
+        // basisu::image stores BYTE components - normalised floats would
+        // truncate to 0 and the encoder would encode a black image.
+        for (u32 y = 0; y < kH; ++y)
+            for (u32 x = 0; x < kW; ++x)
+                source(x, y).set(src[(y * kW + x) * 4 + 0], src[(y * kW + x) * 4 + 1],
+                                 src[(y * kW + x) * 4 + 2], src[(y * kW + x) * 4 + 3]);
+        params.m_source_images.push_back(source);
+        params.m_uastc = true;
+        params.m_create_ktx2_file = true;
+        // LINEAR data in, so the file carries no sRGB transfer function.
+        params.m_ktx2_and_basis_srgb_transfer_function = false;
+        params.m_quality_level = -1;
+        params.m_pack_uastc_ldr_4x4_flags = basisu::cPackUASTCLevelFastest;
+
+        basisu::basis_compressor compressor;
+        compressor.init(params);
+        const auto result = compressor.process();
+        check(result == basisu::basis_compressor::cECSuccess, "basis encoder produced a file");
+        if (result == basisu::basis_compressor::cECSuccess)
+        {
+            const auto& ktx2 = compressor.get_output_ktx2_file();
+            check(ktx2.size() > 12, "ktx2 output is non-trivial");
+
+            check(UHE::IsKTX2(ktx2.data(), ktx2.size()), "IsKTX2 recognises the container");
+            check(!UHE::IsKTX2("not a ktx2", 10), "IsKTX2 rejects non-KTX2 bytes");
+
+            UHE::KTX2Image decoded;
+            if (check(UHE::LoadKTX2(ktx2.data(), ktx2.size(), decoded), "LoadKTX2 decodes the file"))
+            {
+                check(decoded.width == kW && decoded.height == kH, "dimensions survive the round trip");
+                // Every pixel should be close to the source colour.
+                u32 bad = 0;
+                for (size_t i = 0; i < decoded.rgba.size(); ++i)
+                    if (std::abs(int(decoded.rgba[i]) - int(src[i])) > 12)
+                        ++bad;
+                check(bad == 0, "every decoded channel is within tolerance (" + std::to_string(bad) + " bad)");
+            }
+        }
+    }
+
+    section("KHR_texture_basisu textures load through the basis path");
+    {
+        // A 4x4 flat white ktx2 as the image source; the fixture references it
+        // via the extension, with NO png fallback. The loader must pick the
+        // basisu image (the stub records what reached the factory) - silently
+        // loading nothing is exactly the failure this guards against.
+        basisu::basisu_encoder_init();
+
+        basisu::basis_compressor_params params;
+        basisu::job_pool jobs(1);
+        params.m_pJob_pool = &jobs;
+        basisu::image source;
+        source.resize(4, 4);
+        for (u32 y = 0; y < 4; ++y)
+            for (u32 x = 0; x < 4; ++x)
+                source(x, y).set(255, 255, 255, 255);
+        params.m_source_images.push_back(source);
+        params.m_uastc = true;
+        params.m_create_ktx2_file = true;
+        params.m_ktx2_and_basis_srgb_transfer_function = true; // a colour texture
+        params.m_quality_level = -1;
+        params.m_pack_uastc_ldr_4x4_flags = basisu::cPackUASTCLevelFastest;
+
+        basisu::basis_compressor compressor;
+        compressor.init(params);
+        const auto result = compressor.process();
+        check(result == basisu::basis_compressor::cECSuccess, "fixture ktx2 encoded");
+        if (result == basisu::basis_compressor::cECSuccess)
+        {
+            const auto& ktx2 = compressor.get_output_ktx2_file();
+            dir.writeBinary("tex.ktx2", ktx2.data(), ktx2.size());
+
+            AssetSpec spec;
+            spec.meshCount = 1;
+            spec.materialCount = 1;
+            MaterialSpec ms;
+            ms.baseColorBasisTexture = true;
+            spec.material = ms;
+            spec.extensionsUsed.push_back("KHR_texture_basisu");
+
+            const fs::path path = writeAsset(dir, "basisu_tex.gltf", spec);
+
+            UHE::StubReset();
+            UHE::RD3d::Model model;
+            if (check(model.loadModel(path), "basisu-textured model loads"))
+            {
+                check(UHE::StubTextureCreateCallCount() >= 1, "the loader requested the texture");
+                check(UHE::StubLastMemorySize() == ktx2.size(),
+                      "the KTX2 bytes (not a fallback) reached the texture factory");
+                const auto& head = UHE::StubLastMemoryData();
+                check(head[0] == 0xAB && head[1] == 0x4B && head[2] == 0x54,
+                      "factory received KTX2 magic bytes");
+            }
+        }
+    }
+
+    section("SamplerDesc defaults keep behaviour unchanged");
+    {
+        // Anisotropy/maxLod plumbing exists so the loader and future quality
+        // settings can opt in; the DEFAULTS must be the pre-plumbing values,
+        // or every existing texture's sampling changes silently.
+        const UHE::RHI::SamplerDesc desc;
+        check(desc.maxAnisotropy == 1, "anisotropy defaults to off (1)");
+        check(desc.maxLod == 1000.0f, "maxLod defaults to VK_LOD_CLAMP_NONE (whole chain)");
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

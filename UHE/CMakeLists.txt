@@ -106,6 +106,7 @@ PRIVATE
     Jolt
     msdf-atlas-gen
     meshoptimizer
+    basisu_transcoder
 )
 
 if(UNIX)

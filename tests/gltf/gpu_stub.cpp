@@ -30,6 +30,12 @@ namespace UHE
 std::vector<RHI::SamplerDesc> g_RequestedSamplers{};
 int g_TextureCreateCalls = 0;
 
+// The first bytes and size of the most recent CreateFromMemory payload, so a
+// test can assert WHICH image reached the factory (KTX2 magic vs PNG bytes)
+// without the stub ever creating a GPU texture.
+std::vector<u8> g_LastMemoryData(12, 0);
+size_t g_LastMemorySize = 0;
+
 namespace
 {
 void RecordSampler(const RHI::SamplerDesc& sampler)
@@ -56,6 +62,10 @@ Ref<Texture2D> Texture2D::Create(u32 width, u32 height, const RHI::SamplerDesc& 
 Ref<Texture2D> Texture2D::CreateFromMemory(const void* data, size_t size, const RHI::SamplerDesc& sampler)
 {
     RecordSampler(sampler);
+    g_LastMemorySize = size;
+    g_LastMemoryData.assign(12, 0);
+    if (data != nullptr && size > 0)
+        std::memcpy(g_LastMemoryData.data(), data, std::min<size_t>(size, 12));
     std::printf("STUB: Texture2D::CreateFromMemory(%zu bytes) called\n", size);
     return nullptr;
 }
@@ -114,10 +124,14 @@ namespace UHE
 RHI::SamplerDesc StubLastRequestedSampler() { return g_RequestedSamplers.empty() ? RHI::SamplerDesc{} : g_RequestedSamplers.back(); }
 const std::vector<RHI::SamplerDesc>& StubRequestedSamplers() { return g_RequestedSamplers; }
 int StubTextureCreateCallCount() { return g_TextureCreateCalls; }
+const std::vector<u8>& StubLastMemoryData() { return g_LastMemoryData; }
+size_t StubLastMemorySize() { return g_LastMemorySize; }
 void StubReset()
 {
     g_RequestedSamplers.clear();
     g_TextureCreateCalls = 0;
+    g_LastMemoryData.assign(12, 0);
+    g_LastMemorySize = 0;
 }
 
 } // namespace UHE

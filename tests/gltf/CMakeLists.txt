@@ -12,11 +12,12 @@ set(GLTF_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LoadModelAnimation.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/MeshoptDecode.cpp
     # Renderer-facing but GPU-free: material packing (what reaches the shader's
-    # per-material buffer) and light extraction (what reaches the frame's light
-    # list). Both are pure CPU code, so the KHR_lights_punctual and
-    # FillMaterialGPU assertions run in this same no-device harness.
+    # per-material buffer), light extraction (what reaches the frame's light
+    # list) and KTX2 decoding (what reaches the texture upload). All are pure
+    # CPU code, so the issue #42 assertions run in this same no-device harness.
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/MaterialGPU.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LightSystem.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer/KTX2.cpp
 )
 
 # The loader reports failures through UHE::Log macros, which the test does not
@@ -39,8 +40,10 @@ target_include_directories(gltf_test PRIVATE
 )
 
 # Same link set the loader's own TU needs, minus the RHI. fastgltf and
-# meshoptimizer are the only two the CPU path actually calls into.
-target_link_libraries(gltf_test PRIVATE fastgltf::fastgltf meshoptimizer)
+# meshoptimizer are the only two the CPU path actually calls into; the
+# transcoder decodes KTX2 (KTX2.cpp) and the test-only encoder generates the
+# round-trip fixtures.
+target_link_libraries(gltf_test PRIVATE fastgltf::fastgltf meshoptimizer basisu_transcoder basisu_encoder_testlib)
 
 target_compile_definitions(gltf_test PRIVATE
     GLM_FORCE_DEPTH_ZERO_TO_ONE

@@ -206,10 +206,13 @@ void VulkanTexture::CreateTexture(VulkanDevice& device, const void* pixelData, u
     // Sampler state comes from the loader when it supplied one (glTF declares
     // magFilter/minFilter/wrapS/wrapT per texture). Defaults reproduce exactly
     // what this call site hardcoded before, so untouched assets are unchanged.
+    // maxLod is clamped to the chain we actually built; the desc's 1000.0
+    // default means "whole chain" rather than a specific level count.
     textureSampler = CreateSampler(ToVkFilter(m_SamplerDesc.magFilter), ToVkFilter(m_SamplerDesc.minFilter),
                                     vk::SamplerMipmapMode::eLinear, ToVkAddressMode(m_SamplerDesc.wrapS),
                                     ToVkAddressMode(m_SamplerDesc.wrapT), ToVkAddressMode(m_SamplerDesc.wrapT),
-                                    static_cast<float>(m_MipLevels));
+                                    std::min(m_SamplerDesc.maxLod, static_cast<f32>(m_MipLevels)),
+                                    static_cast<f32>(m_SamplerDesc.maxAnisotropy));
 
     m_TextureIndex = device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle,
                                                                  *textureImageView, *textureSampler);

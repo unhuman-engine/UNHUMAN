@@ -72,11 +72,14 @@ void TransitionLayout(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLa
 // ── Sampler creation ─────────────────────────────────────────────────────────
 
 // Per-axis variant, for glTF textures that declare wrapS and wrapT differently.
+// maxAnisotropy is clamped to the device limit inside; 1.0 keeps anisotropy off
+// (and is what every caller before the SamplerDesc plumbing used).
 [[nodiscard]] vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter,
                                               vk::SamplerMipmapMode mipmapMode,
                                               vk::SamplerAddressMode addressModeU,
                                               vk::SamplerAddressMode addressModeV,
-                                              vk::SamplerAddressMode addressModeW, f32 maxLod);
+                                              vk::SamplerAddressMode addressModeW, f32 maxLod,
+                                              f32 maxAnisotropy = 1.0f);
 
 [[nodiscard]] vk::raii::Sampler CreateSampler(vk::Filter magFilter = vk::Filter::eLinear,
                                               vk::Filter minFilter = vk::Filter::eLinear,
