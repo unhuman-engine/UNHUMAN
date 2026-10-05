@@ -221,8 +221,43 @@ void Renderer3D::DrawGrid()
     cmd.Draw(6, 0);
 }
 
+Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator* animator)
+{
+    BoneBinding binding;
+    if (animator && animator->HasAnimation())
+    {
+        const auto& matrices = animator->GetFinalBoneMatrices();
+        if (!matrices.empty())
+        {
+            uint64_t size = matrices.size() * sizeof(glm::mat4);
+            auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
+            cmd.UpdateBuffer(s_Data3D.BoneStorageBufferHandle, matrices.data(), size,
+                             s_Data3D.BoneBufferOffset * sizeof(glm::mat4));
+            binding.BufferIndex = s_Data3D.BoneStorageBufferIndex;
+            binding.Offset = s_Data3D.BoneBufferOffset;
+            s_Data3D.BoneBufferOffset += matrices.size();
+        }
+    }
+    return binding;
+}
+
 void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transform, int entityID,
                              const RD3d::Animator* animator)
+{
+    // Upload bone matrices once per model, then forward the buffer location to
+    // every sub-mesh.
+    BoneBinding bones = PrepareBoneBinding(animator);
+
+    for (const auto& mesh : model.GetMesh())
+    {
+        SubmitMesh(mesh, transform, entityID, model.GetMaterials(), bones.BufferIndex, bones.Offset);
+    }
+}
+
+// Issue #17: submit a single mesh (one glTF node) with its model's materials.
+void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, int entityID,
+                            const std::vector<RD3d::Material>& materials, int boneBufferIndex,
+                            int boneOffset)
 {
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
@@ -283,8 +318,8 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
     pc.mrTextureSlot = -1;
     pc.metallicFactor = 1.0f;
     pc.roughnessFactor = 1.0f;
-    pc.boneBufferIndex = -1;
-    pc.boneOffset = -1;
+    pc.boneBufferIndex = boneBufferIndex;
+    pc.boneOffset = boneOffset;
     pc.normalTextureSlot = -1;
     pc.occlusionTextureSlot = -1;
     pc.emissiveTextureSlot = -1;
@@ -296,108 +331,84 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
     pc.baseColorFactor = glm::vec4(1.0f);
     pc.emissiveFactor = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
 
-    if (animator && animator->HasAnimation())
+
+    pc.model = transform * mesh.LocalTransform;
+
+    for (const auto& prim : mesh.primitive)
     {
-        const auto& matrices = animator->GetFinalBoneMatrices();
-        if (!matrices.empty())
+        if (!prim.VertexBuffer || !prim.IndexBuffer)
+            continue;
+
+        // glTF default material when the index is absent or out of range:
+        // white base, fully rough, non-metallic - the same values the loader
+        // uses as struct defaults.
+        int textureSlot = s_Data3D.WhiteTexture->GetTextureIndex();
+        int mrTextureSlot = -1;
+        int normalSlot = -1;
+        int occlusionSlot = -1;
+        int emissiveSlot = -1;
+        float metallicFactor = 1.0f;
+        float roughnessFactor = 1.0f;
+        float normalScale = 1.0f;
+        float occlusionStrength = 1.0f;
+        float alphaCutoff = 0.5f;
+        int alphaMode = 0;
+        glm::vec4 baseColorFactor(1.0f);
+        glm::vec4 emissiveFactor(0.0f, 0.0f, 0.0f, 0.0f);
+        bool doubleSided = false;
+        // COLOR_0 is a per-PRIMITIVE attribute in glTF, so the flag lives on
+        // the primitive rather than the material: two materials in one mesh
+        // can have vertex colours on different primitives.
+        int useVertexColor = prim.hasVertexColor ? 1 : 0;
+
+        if (prim.materialIndex < materials.size())
         {
-            uint64_t size = matrices.size() * sizeof(glm::mat4);
-            cmd.UpdateBuffer(s_Data3D.BoneStorageBufferHandle, matrices.data(), size,
-                             s_Data3D.BoneBufferOffset * sizeof(glm::mat4));
-            pc.boneBufferIndex = s_Data3D.BoneStorageBufferIndex;
-            pc.boneOffset = s_Data3D.BoneBufferOffset;
-            s_Data3D.BoneBufferOffset += matrices.size();
+            const auto& material = materials[prim.materialIndex];
+            if (material.AlbedoTexture)
+                textureSlot = material.AlbedoTexture->GetTextureIndex();
+            if (material.MetallicRoughnessTexture)
+                mrTextureSlot = material.MetallicRoughnessTexture->GetTextureIndex();
+            if (material.NormalTexture)
+                normalSlot = material.NormalTexture->GetTextureIndex();
+            if (material.OcclusionTexture)
+                occlusionSlot = material.OcclusionTexture->GetTextureIndex();
+            if (material.EmissiveTexture)
+                emissiveSlot = material.EmissiveTexture->GetTextureIndex();
+
+            metallicFactor = material.MetallicFactor;
+            roughnessFactor = material.RoughnessFactor;
+            normalScale = material.NormalScale;
+            occlusionStrength = material.OcclusionStrength;
+            alphaCutoff = material.AlphaCutoff;
+            alphaMode = static_cast<int>(material.Alpha);
+            baseColorFactor = material.BaseColorFactor;
+            emissiveFactor = glm::vec4(material.EmissiveFactor, 0.0f);
+            doubleSided = material.DoubleSided;
         }
-    }
 
-    // We will push constants per primitive now since textureSlot can change.
-    // cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
+        // Cull mode lives in the pipeline, so a doubleSided material needs the
+        // variant bound rather than a state change.
+        cmd.BindPipeline(doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline);
 
-    for (const auto& mesh : model.GetMesh())
-    {
-        // The glTF node hierarchy is applied here, not baked into vertices: the
-        // entity transform places the model in the world, and mesh.LocalTransform
-        // places this node within it. Keeping it out of the vertices means
-        // skinning still works (bone matrices multiply on top) and the loader
-        // never has to rewrite a buffer for a transform change.
-        pc.model = transform * mesh.LocalTransform;
+        pc.textureSlot = textureSlot;
+        pc.mrTextureSlot = mrTextureSlot;
+        pc.metallicFactor = metallicFactor;
+        pc.roughnessFactor = roughnessFactor;
+        pc.normalTextureSlot = normalSlot;
+        pc.occlusionTextureSlot = occlusionSlot;
+        pc.emissiveTextureSlot = emissiveSlot;
+        pc.normalScale = normalScale;
+        pc.occlusionStrength = occlusionStrength;
+        pc.alphaCutoff = alphaCutoff;
+        pc.alphaMode = alphaMode;
+        pc.useVertexColor = useVertexColor;
+        pc.baseColorFactor = baseColorFactor;
+        pc.emissiveFactor = emissiveFactor;
+        cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
 
-        for (const auto& prim : mesh.primitive)
-        {
-            if (!prim.VertexBuffer || !prim.IndexBuffer)
-                continue;
-
-            // glTF default material when the index is absent or out of range:
-            // white base, fully rough, non-metallic - the same values the loader
-            // uses as struct defaults.
-            int textureSlot = s_Data3D.WhiteTexture->GetTextureIndex();
-            int mrTextureSlot = -1;
-            int normalSlot = -1;
-            int occlusionSlot = -1;
-            int emissiveSlot = -1;
-            float metallicFactor = 1.0f;
-            float roughnessFactor = 1.0f;
-            float normalScale = 1.0f;
-            float occlusionStrength = 1.0f;
-            float alphaCutoff = 0.5f;
-            int alphaMode = 0;
-            glm::vec4 baseColorFactor(1.0f);
-            glm::vec4 emissiveFactor(0.0f, 0.0f, 0.0f, 0.0f);
-            bool doubleSided = false;
-            // COLOR_0 is a per-PRIMITIVE attribute in glTF, so the flag lives on
-            // the primitive rather than the material: two materials in one mesh
-            // can have vertex colours on different primitives.
-            int useVertexColor = prim.hasVertexColor ? 1 : 0;
-
-            if (prim.materialIndex < model.GetMaterials().size())
-            {
-                const auto& material = model.GetMaterials()[prim.materialIndex];
-                if (material.AlbedoTexture)
-                    textureSlot = material.AlbedoTexture->GetTextureIndex();
-                if (material.MetallicRoughnessTexture)
-                    mrTextureSlot = material.MetallicRoughnessTexture->GetTextureIndex();
-                if (material.NormalTexture)
-                    normalSlot = material.NormalTexture->GetTextureIndex();
-                if (material.OcclusionTexture)
-                    occlusionSlot = material.OcclusionTexture->GetTextureIndex();
-                if (material.EmissiveTexture)
-                    emissiveSlot = material.EmissiveTexture->GetTextureIndex();
-
-                metallicFactor = material.MetallicFactor;
-                roughnessFactor = material.RoughnessFactor;
-                normalScale = material.NormalScale;
-                occlusionStrength = material.OcclusionStrength;
-                alphaCutoff = material.AlphaCutoff;
-                alphaMode = static_cast<int>(material.Alpha);
-                baseColorFactor = material.BaseColorFactor;
-                emissiveFactor = glm::vec4(material.EmissiveFactor, 0.0f);
-                doubleSided = material.DoubleSided;
-            }
-
-            // Cull mode lives in the pipeline, so a doubleSided material needs the
-            // variant bound rather than a state change.
-            cmd.BindPipeline(doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline);
-
-            pc.textureSlot = textureSlot;
-            pc.mrTextureSlot = mrTextureSlot;
-            pc.metallicFactor = metallicFactor;
-            pc.roughnessFactor = roughnessFactor;
-            pc.normalTextureSlot = normalSlot;
-            pc.occlusionTextureSlot = occlusionSlot;
-            pc.emissiveTextureSlot = emissiveSlot;
-            pc.normalScale = normalScale;
-            pc.occlusionStrength = occlusionStrength;
-            pc.alphaCutoff = alphaCutoff;
-            pc.alphaMode = alphaMode;
-            pc.useVertexColor = useVertexColor;
-            pc.baseColorFactor = baseColorFactor;
-            pc.emissiveFactor = emissiveFactor;
-            cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
-
-            cmd.BindVertexBuffer(prim.VertexBuffer);
-            cmd.BindIndexBuffer(prim.IndexBuffer);
-            cmd.DrawIndexed(prim.IndexCount);
-        }
+        cmd.BindVertexBuffer(prim.VertexBuffer);
+        cmd.BindIndexBuffer(prim.IndexBuffer);
+        cmd.DrawIndexed(prim.IndexCount);
     }
 }
 

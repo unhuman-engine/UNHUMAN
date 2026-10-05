@@ -17,9 +17,10 @@ namespace UHE {
 			:m_EntityHandle(handle), m_Scene(scene) {};
 
 		Entity(const Entity&) = default;
-		~Entity() = default;
+		~Entity() = default;        UUID GetUUID() { return GetComponent<IDComponent>().ID; }
 
-		UUID GetUUID() { return GetComponent<IDComponent>().ID; }
+        // Scene this entity belongs to (null if invalid).
+        Scene* GetScene() const { return m_Scene; }
 
 		template<typename T>
 		bool HasComponent()

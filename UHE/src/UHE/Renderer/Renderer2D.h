@@ -32,7 +32,7 @@ namespace UHE {
 		static void DrawQuad(const glm::mat4& transform, const Ref<Texture2D>& texture, float tilingFactor = 1.0f, const glm::vec4& tintColor = glm::vec4(1.0f), int entityID = -1);
 		static void DrawQuad(const glm::mat4& transform, const Ref<SubTexture2D>& subtexture, float tilingFactor = 1.0f, const glm::vec4& tintColor = glm::vec4(1.0f), int entityID = -1);
 
-		static void DrawSprite(const glm::mat4& transform, class SpriteRendererComponent& src, int entityID);
+		static void DrawSprite(const glm::mat4& transform, struct SpriteRendererComponent& src, int entityID);
 
 		static void DrawString(const std::string& text, Ref<Font2D> font, const glm::mat4& transform, const glm::vec4& color, float kerning = 0.0f, float lineSpacing = 0.0f, int entityID = -1);
 

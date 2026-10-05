@@ -18,7 +18,7 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
 
     out << YAML::BeginMap;
 
-    out << YAML::Key << "Entity" << YAML::Value << entity.GetUUID(); // TODO enitity
+    out << YAML::Key << "Entity" << YAML::Value << entity.GetUUID();
 
     if (entity.HasComponent<TagComponent>())
     {
@@ -236,7 +236,58 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::EndMap;
     }
 
+    // Issue #17: entity hierarchy (parent/children by UUID)
+    if (entity.HasComponent<RelationshipComponent>())
+    {
+        auto& rel = entity.GetComponent<RelationshipComponent>();
+        out << YAML::Key << "RelationshipComponent" << YAML::BeginMap;
+        out << YAML::Key << "Parent" << YAML::Value << rel.Parent;
+        out << YAML::Key << "Children" << YAML::BeginSeq;
+        for (u64 childID : rel.Children)
+            out << childID;
+        out << YAML::EndSeq;
+        out << YAML::EndMap;
+    }
+
+    // Issue #17: glTF node entity marker
+    if (entity.HasComponent<ModelNodeComponent>())
+    {
+        auto& mnc = entity.GetComponent<ModelNodeComponent>();
+        out << YAML::Key << "ModelNodeComponent" << YAML::BeginMap;
+        out << YAML::Key << "ModelEntity" << YAML::Value << mnc.ModelEntity;
+        out << YAML::Key << "NodeIndex" << YAML::Value << mnc.NodeIndex;
+        out << YAML::Key << "NodeName" << YAML::Value << mnc.NodeName;
+        out << YAML::Key << "HasChildrenNodes" << YAML::Value << mnc.HasChildrenNodes;
+        out << YAML::EndMap;
+    }
+
     out << YAML::EndMap;
+}
+
+static void SerializeEntityRecursive(YAML::Emitter& out, Entity entity, std::unordered_set<u64>& written)
+{
+    // Exactly-once guard: a UUID reachable through two paths (e.g. listed in
+    // two Children lists) must serialize a single time.
+    if (!written.insert(entity.GetUUID()).second)
+        return;
+
+    SerializeEntity(out, entity);
+
+    // Issue #17 hardening: walk children explicitly instead of serializing
+    // every registry entity at top level. A child entry is followed only when
+    // the child's own Parent points back at us, so stale child-list entries
+    // (double-listed or re-parented elsewhere) cannot serialize twice.
+    if (entity.HasComponent<RelationshipComponent>())
+    {
+        auto childrenCopy = entity.GetComponent<RelationshipComponent>().Children;
+        for (u64 childID : childrenCopy)
+        {
+            Entity child = entity.GetScene()->GetEntityWithUUID(childID);
+            if (child && child.HasComponent<RelationshipComponent>() &&
+                child.GetComponent<RelationshipComponent>().Parent == entity.GetUUID())
+                SerializeEntityRecursive(out, child, written);
+        }
+    }
 }
 
 void SceneSerializer::Serialize(const std::string& filepath)
@@ -247,12 +298,20 @@ void SceneSerializer::Serialize(const std::string& filepath)
     out << YAML::Key << "Scene" << YAML::Value << "Untitled";
     out << YAML::Key << "Entities" << YAML::BeginSeq;
 
+    // Pass 1: hierarchy order — roots first, then each root's subtree.
+    std::unordered_set<u64> written;
+    for (Entity root : m_Scene->GetRootEntities())
+        SerializeEntityRecursive(out, root, written);
+
+    // Pass 2: fallback sweep — any live entity not reached through a parent's
+    // Children list (missing/stale parent entry) would silently vanish from
+    // the save. Emit it at top level so nothing is ever lost.
     auto view = m_Scene->m_registry.view<entt::entity>();
     for (auto entityID : view)
     {
         Entity entity{entityID, m_Scene.get()};
-        if (entity)
-            SerializeEntity(out, entity);
+        if (entity && !written.count(entity.GetUUID()))
+            SerializeEntityRecursive(out, entity, written);
     }
 
     out << YAML::EndSeq;
@@ -276,15 +335,71 @@ bool SceneSerializer::Deserialize(const std::string& filepath)
     if (!entities)
         return true;
 
+    // Issue #17 hardening: pass 1 creates every entity (restoring serialized
+    // UUIDs) and queues hierarchy links; pass 2 fills components. This way a
+    // child can resolve its parent even when it appears earlier in the file.
+    std::vector<YAML::Node> ordered;
     for (auto entityNode : entities)
+        ordered.push_back(entityNode);
+
+    std::unordered_set<u64> seenUUIDs;
+    for (auto entityNode : ordered)
+    {
+        if (entityNode["Entity"])
+        {
+            u64 serializedID = entityNode["Entity"].as<u64>();
+            if (serializedID != 0)
+            {
+                if (!seenUUIDs.insert(serializedID).second)
+                {
+                    UHE_CORE_ERROR("Duplicate UUID {0} found in serialized scene", serializedID);
+                    return false;
+                }
+            }
+        }
+    }
+
+    std::vector<Entity> created;
+    created.reserve(ordered.size());
+    for (auto entityNode : ordered)
     {
         std::string name = "Entity";
-
         auto tagNode = entityNode["TagComponent"];
         if (tagNode)
             name = tagNode["Tag"].as<std::string>();
 
         Entity entity = m_Scene->CreateEntity(name);
+        if (entityNode["Entity"])
+        {
+            u64 serializedID = entityNode["Entity"].as<u64>();
+            if (serializedID != 0) // 0 = legacy/pre-UUID file: keep fresh IDs
+            {
+                u64 generatedID = entity.GetUUID();
+                entity.GetComponent<IDComponent>().ID = serializedID;
+                m_Scene->UnindexEntity(generatedID); // drop the auto-generated key
+                m_Scene->IndexEntity(entity, entity.GetUUID()); // keep the O(1) UUID index in sync
+            }
+        }
+
+        if (auto relNode = entityNode["RelationshipComponent"])
+        {
+            auto& rel = entity.GetComponent<RelationshipComponent>();
+            if (relNode["Parent"])
+                rel.Parent = relNode["Parent"].as<u64>();
+            if (relNode["Children"] && relNode["Children"].IsSequence())
+            {
+                for (auto childID : relNode["Children"])
+                    rel.Children.push_back(childID.as<u64>());
+            }
+        }
+        created.push_back(entity);
+    }
+
+    // Pass 2: component data.
+    for (size_t i = 0; i < ordered.size(); i++)
+    {
+        auto& entityNode = ordered[i];
+        Entity entity = created[i];
 
         // Transform
         auto transformNode = entityNode["TransformComponent"];
@@ -507,6 +622,81 @@ bool SceneSerializer::Deserialize(const std::string& filepath)
             plc.Color = plcNode["Color"].as<glm::vec3>();
             plc.Intensity = plcNode["Intensity"].as<float>();
             plc.Radius = plcNode["Radius"].as<float>();
+        }
+
+        // Issue #17: glTF node entity marker
+        auto mncNode = entityNode["ModelNodeComponent"];
+        if (mncNode)
+        {
+            auto& mnc = entity.AddComponent<ModelNodeComponent>();
+            if (mncNode["ModelEntity"])
+                mnc.ModelEntity = mncNode["ModelEntity"].as<u64>();
+            if (mncNode["NodeIndex"])
+                mnc.NodeIndex = mncNode["NodeIndex"].as<int>();
+            if (mncNode["NodeName"])
+                mnc.NodeName = mncNode["NodeName"].as<std::string>();
+            if (mncNode["HasChildrenNodes"])
+                mnc.HasChildrenNodes = mncNode["HasChildrenNodes"].as<bool>();
+        }
+    }
+
+    // Issue #17 hardening: sanitize relationships after both passes. Stale or
+    // duplicated child entries (e.g. from an older save format or a corrupted
+    // file) previously caused ghost entities in the editor UI.
+    auto relView = m_Scene->m_registry.view<RelationshipComponent>();
+    for (auto handle : relView)
+    {
+        auto& rel = relView.get<RelationshipComponent>(handle);
+        if (rel.Parent != 0 && !m_Scene->GetEntityWithUUID(rel.Parent))
+            rel.Parent = 0;
+
+        std::unordered_set<u64> seen;
+        std::vector<u64> clean;
+        for (u64 childID : rel.Children)
+        {
+            if (childID == 0 || !seen.insert(childID).second)
+                continue; // drop nulls and duplicates
+            Entity child = m_Scene->GetEntityWithUUID(childID);
+            if (child)
+                clean.push_back(childID);
+        }
+        rel.Children = std::move(clean);
+    }
+
+    // Issue #17 hardening: detect and break cycles in parent links.
+    for (auto handle : relView)
+    {
+        u64 cursorID = m_Scene->m_registry.get<IDComponent>(handle).ID;
+        std::unordered_set<u64> path;
+        
+        while (cursorID != 0)
+        {
+            if (!path.insert(cursorID).second)
+            {
+                Entity entityToBreak = m_Scene->GetEntityWithUUID(cursorID);
+                if (entityToBreak && entityToBreak.HasComponent<RelationshipComponent>())
+                {
+                    auto& relToBreak = entityToBreak.GetComponent<RelationshipComponent>();
+                    u64 formerParentID = relToBreak.Parent;
+                    relToBreak.Parent = 0;
+                    
+                    Entity formerParent = m_Scene->GetEntityWithUUID(formerParentID);
+                    if (formerParent && formerParent.HasComponent<RelationshipComponent>())
+                    {
+                        auto& formerParentRel = formerParent.GetComponent<RelationshipComponent>();
+                        formerParentRel.Children.erase(
+                            std::remove(formerParentRel.Children.begin(), formerParentRel.Children.end(), cursorID),
+                            formerParentRel.Children.end());
+                    }
+                }
+                break;
+            }
+            
+            Entity cursor = m_Scene->GetEntityWithUUID(cursorID);
+            if (!cursor || !cursor.HasComponent<RelationshipComponent>())
+                break;
+                
+            cursorID = cursor.GetComponent<RelationshipComponent>().Parent;
         }
     }
 

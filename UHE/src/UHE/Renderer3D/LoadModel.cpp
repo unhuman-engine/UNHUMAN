@@ -21,6 +21,9 @@
 #include "fastgltf/types.hpp"
 #include "glm/ext/vector_float3.hpp"
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/matrix_decompose.hpp>
+
 namespace UHE::RD3d
 {
 
@@ -75,6 +78,9 @@ void Model::Destroy()
     m_Skeleton.Bones.clear();
     m_Skeleton.JointNodes.clear();
     m_Skeleton.RootBoneID = -1;
+    m_Nodes.clear();
+    m_RootNodes.clear();
+    m_NodeToMesh.clear();
 }
 
 glm::mat4 Model::NodeLocalTransform(const fastgltf::Node& node)
@@ -164,6 +170,7 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
         auto& scene = asset.scenes[activeSceneIndex];
         for (auto& rootNodeIndex : scene.nodeIndices)
         {
+            m_RootNodes.push_back(static_cast<int>(m_Nodes.size()));
             ProcessNode(asset, rootNodeIndex, glm::mat4{1.0f});
         }
     }
@@ -597,7 +604,39 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
 
 void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const glm::mat4& parentTransform)
 {
+    // Issue #17: record the full glTF node tree (flattened) so each node can
+    // later become an editable child entity in the scene hierarchy.
+    const int thisIndex = static_cast<int>(m_Nodes.size());
+    ModelNode& out = m_Nodes.emplace_back();
+
     const auto& node = asset.nodes[nodeIndex];
+    out.Name = node.name.empty() ? "Node_" + std::to_string(nodeIndex) : std::string(node.name);
+
+    // Local transform (glTF: TRS or matrix)
+    std::visit(fastgltf::visitor{
+                   [&](const fastgltf::math::fmat4x4& matrix)
+                   {
+                       glm::mat4 m{1.0f};
+                       memcpy(&m, matrix.data(), sizeof(glm::mat4));
+                       glm::vec3 translation, scale;
+                       glm::quat rotation;
+                       glm::vec3 skew;
+                       glm::vec4 perspective;
+                       if (glm::decompose(m, scale, rotation, translation, skew, perspective))
+                       {
+                           out.Translation = translation;
+                           out.Rotation = rotation;
+                           out.Scale = scale;
+                       }
+                   },
+                   [&](const fastgltf::TRS& trs)
+                   {
+                       out.Translation = glm::vec3(trs.translation[0], trs.translation[1], trs.translation[2]);
+                       out.Rotation =
+                           glm::quat(trs.rotation[3], trs.rotation[0], trs.rotation[1], trs.rotation[2]); // w,x,y,z
+                       out.Scale = glm::vec3(trs.scale[0], trs.scale[1], trs.scale[2]);
+                   }},
+               node.transform);
 
     // The transform contributed by every ancestor. Without accumulating this,
     // every mesh in the file collapses onto the origin - the defect that made
@@ -606,6 +645,9 @@ void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const gl
 
     if (node.meshIndex.has_value())
     {
+        out.MeshIndex = static_cast<int>(m_LoadedMeshes.size());
+        m_NodeToMesh[static_cast<int>(nodeIndex)] = out.MeshIndex;
+
         const size_t gltfMeshIndex = *node.meshIndex;
 
         // Extract a given glTF mesh at most once, however many nodes use it.
@@ -665,12 +707,16 @@ void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const gl
         m_LoadedMeshes.push_back(std::move(mesh));
     }
 
+    // NOTE: recurse first, then write through indices — `out` would dangle
+    // once ProcessNode appends more nodes to m_Nodes.
     for (auto& childIndex : node.children)
     {
+        const int childSlot = static_cast<int>(m_Nodes.size());
         ProcessNode(asset, childIndex, worldTransform);
+        m_Nodes[childSlot].Parent = thisIndex;
+        m_Nodes[thisIndex].Children.push_back(childSlot);
     }
 }
-
 void Model::ComputeBounds(Geometry& geometry)
 {
     glm::vec3 min(std::numeric_limits<f32>::max());

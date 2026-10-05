@@ -40,7 +40,13 @@ struct UHE_API TransformComponent
 struct UHE_API IDComponent
 {
     u64 ID = 0;
-    IDComponent() = default;
+    // Fresh entities get a real random UUID here: leaving it 0 made EVERY
+    // entity share identity 0, so GetEntityWithUUID returned the first
+    // registry entity and all UUID-based logic (deferred child creation,
+    // unparenting, serialization, dedup) silently operated on the wrong
+    // entities. Deserialization overwrites this with the stored value.
+    IDComponent() : ID(UUID()) {}
+    explicit IDComponent(u64 id) : ID(id) {}
     IDComponent(const IDComponent&) = default;
 };
 
@@ -255,6 +261,35 @@ struct UHE_API CapsuleCollider3DComponent
 
     CapsuleCollider3DComponent() = default;
     CapsuleCollider3DComponent(const CapsuleCollider3DComponent&) = default;
+};
+
+// Issue #17: entity hierarchy support. Attached to every entity created
+// through Scene::CreateEntity. An entity without a parent (Parent == 0) is a
+// root node; children are stored as UUIDs so the hierarchy survives
+// serialization and scene copies.
+struct UHE_API RelationshipComponent
+{
+    u64 Parent = 0;
+    std::vector<u64> Children;
+
+    RelationshipComponent() = default;
+    RelationshipComponent(const RelationshipComponent&) = default;
+};
+
+// Marks an entity as coming from a glTF node of a loaded 3D model. Entities
+// created by Scene::CollapseModelNodes carry this so the editor can show the
+// model's node tree and rendering can submit individual sub-meshes.
+struct UHE_API ModelNodeComponent
+{
+    u64 ModelEntity = 0; // UUID of the entity that owns the loaded model
+    int NodeIndex = -1;  // glTF node index inside RD3d::Model::GetNodes()
+    std::string NodeName;
+    // True when the model's node tree was expanded into child entities; the
+    // entity itself then acts as a pure group node and renders nothing.
+    bool HasChildrenNodes = false;
+
+    ModelNodeComponent() = default;
+    ModelNodeComponent(const ModelNodeComponent&) = default;
 };
 
 } // namespace UHE

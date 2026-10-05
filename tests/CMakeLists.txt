@@ -6,3 +6,4 @@
 add_subdirectory(rendergraph)
 add_subdirectory(meshopt)
 add_subdirectory(gltf)
+add_subdirectory(scene)

@@ -1,4 +1,5 @@
 #include "Editor.h"
+#include "EditorTheme.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui/imgui.h>
@@ -21,6 +22,8 @@ Editor::Editor()
 }
 void Editor::OnAttach()
 {
+    EditorTheme::LoadSelected(); // pick up the persisted theme before first frame
+
     FramebufferSpecification fbSpec;
     fbSpec.Attachments = {FramebufferTextureFormat::RGBA8, FramebufferTextureFormat::RED_INTEGER,
                           FramebufferTextureFormat::Depth};
@@ -242,19 +245,20 @@ void DrawConsolePanel()
     {
         ImVec4 color;
 
+        // Theme-aware console palette (readable on light themes too).
         switch (log.Level)
         {
             case spdlog::level::warn:
-                color = ImVec4(1, 1, 0, 1);
+                color = EditorTheme::ConsoleWarn();
                 break;
             case spdlog::level::err:
-                color = ImVec4(1, 0, 0, 1);
+                color = EditorTheme::ConsoleError();
                 break;
             case spdlog::level::critical:
-                color = ImVec4(1, 0, 1, 1);
+                color = EditorTheme::ConsoleCritical();
                 break;
             default:
-                color = ImVec4(1, 1, 1, 1);
+                color = EditorTheme::ConsoleInfo();
                 break;
         }
 
@@ -282,6 +286,7 @@ void Editor::SaveSceneAs()
 void Editor::OnImGuiRender()
 {
     UHE_PROFILE_FUNCTION();
+    EditorTheme::EnsureApplied();
 
     static bool dockspaceOpen = true;
     static bool opt_fullscreen = true;
@@ -352,6 +357,7 @@ void Editor::OnImGuiRender()
 
     // your setting
     m_SceneHireacyPanel.OnImGuiRender();
+    m_SceneHireacyPanel.ApplyQueuedMutations(); // Issue #17: apply tree edits outside registry iteration
     m_ContentBrowserPanel.OnImGuiRender();
     ImGui::Begin("Settings");
 
@@ -371,6 +377,49 @@ void Editor::OnImGuiRender()
     }
     
     ImGui::Checkbox("Show Light Icons", &Scene::GetShowLightIcons());
+
+    ImGui::Separator();
+    // Issue #17 UX: theme gallery + custom accent picker, persisted.
+    if (ImGui::TreeNodeEx("Appearance", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const char* themeLabel = EditorTheme::GetName(EditorTheme::GetSelected());
+        if (ImGui::BeginCombo("Theme", themeLabel))
+        {
+            int count = EditorTheme::GetThemeCount();
+            for (int i = 0; i < count; i++)
+            {
+                auto id = (EditorTheme::EditorThemeId)i;
+                bool selected = (EditorTheme::GetSelected() == id);
+                if (ImGui::Selectable(EditorTheme::GetName(id), selected) && !selected)
+                    EditorTheme::SetSelected(id);
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        // Custom accent picker: overrides the theme accent everywhere while
+        // keeping the theme's backgrounds and text.
+        bool customEnabled = EditorTheme::IsCustomAccentEnabled();
+        ImVec4 accent = customEnabled ? EditorTheme::GetCustomAccent() : EditorTheme::Accent();
+        ImGui::BeginDisabled(!customEnabled);
+        ImGuiColorEditFlags accentFlags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar |
+                                          ImGuiColorEditFlags_AlphaPreviewHalf;
+        if (ImGui::ColorEdit3("##AccentColor", &accent.x, accentFlags))
+            EditorTheme::SetCustomAccent(accent);
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Custom Accent", &customEnabled))
+            EditorTheme::SetCustomAccentEnabled(customEnabled);
+
+        if (customEnabled)
+        {
+            if (ImGui::Button("Reset to Theme Accent"))
+                EditorTheme::SetCustomAccentEnabled(false);
+        }
+        ImGui::TreePop();
+    }
 
     ImGui::End();
     DrawConsolePanel();
@@ -537,8 +586,9 @@ void Editor::OnImGuiRender()
             glm::mat4 transform = glm::mat4(1.0f);
             if (SelectedEntity.HasComponent<TransformComponent>())
             {
-                auto& tc = SelectedEntity.GetComponent<TransformComponent>();
-                transform = tc.GetTransform();
+                // Issue #17: gizmos operate on the world transform so entities
+                // nested under a parent still line up with what is on screen.
+                transform = m_ActiveScene->GetWorldSpaceTransformMatrix(SelectedEntity);
             }
 
             bool snap = Input::IsKeyPressed(Key::LeftControl);
@@ -555,12 +605,18 @@ void Editor::OnImGuiRender()
 
             if (ImGuizmo::IsUsing() && SelectedEntity.HasComponent<TransformComponent>())
             {
+                // Issue #17: convert the manipulated world transform back to
+                // local space relative to the entity's parent.
+                glm::mat4 local = transform;
+                Entity parent = m_ActiveScene->GetParentEntity(SelectedEntity);
+                if (parent)
+                    local = glm::inverse(m_ActiveScene->GetWorldSpaceTransformMatrix(parent)) * transform;
+
                 glm::vec3 translation, rotation, scale;
-                Math::DecomposeTransform(transform, translation, rotation, scale);
+                Math::DecomposeTransform(local, translation, rotation, scale);
                 auto& tc = SelectedEntity.GetComponent<TransformComponent>();
-                glm::vec3 deltaRotation = rotation - tc.Rotation;
                 tc.Translation = translation;
-                tc.Rotation += deltaRotation;
+                tc.Rotation = rotation;
                 tc.Scale = scale;
             }
         }
@@ -599,7 +655,9 @@ void Editor::UI_Toolbar()
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.32f, 0.22f, 0.55f, 0.85f));
+    ImVec4 toolbarBg = EditorTheme::ToolbarBg();
+    toolbarBg.w = 0.85f;
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, toolbarBg);
 
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     auto& colors = ImGui::GetStyle().Colors;
