@@ -1,6 +1,9 @@
 #pragma once
 
-#include <functional> //
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include "UHE/Core/Core.h"
 namespace UHE {
 class UHE_API UUID {
 public:
