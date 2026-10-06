@@ -37,3 +37,9 @@
 [submodule "UHE/vendor/msdf-atlas-gen"]
 	path = UHE/vendor/msdf-atlas-gen
 	url = https://github.com/Chlumsky/msdf-atlas-gen.git
+[submodule "UHE/vendor/meshoptimizer"]
+	path = UHE/vendor/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer.git
+[submodule "UHE/vendor/basis_universal"]
+	path = UHE/vendor/basis_universal
+	url = https://github.com/BinomialLLC/basis_universal.git

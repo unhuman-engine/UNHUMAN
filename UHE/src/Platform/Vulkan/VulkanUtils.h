@@ -31,6 +31,9 @@ struct StagingBuffer
 StagingBuffer CreateStagingBuffer(VkDeviceSize size);
 /// Copies \p size bytes into the staging buffer's mapped memory and flushes the range.
 void StagingBufferCopy(StagingBuffer& staging, const void* data, VkDeviceSize size);
+// Writes at `offset` into the staging buffer, for multi-mip uploads that pack
+// the whole chain into one allocation.
+void StagingBufferCopy(StagingBuffer& staging, const void* data, VkDeviceSize size, VkDeviceSize offset);
 /// Unmaps and frees a staging buffer. Safe to call on an already-destroyed buffer.
 void DestroyStagingBuffer(StagingBuffer& staging);
 
@@ -70,6 +73,14 @@ void TransitionLayout(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLa
                       u32 baseMipLevel = 0, u32 layerCount = 1, u32 baseArrayLayer = 0);
 
 // ── Sampler creation ─────────────────────────────────────────────────────────
+
+// Per-axis variant, for glTF textures that declare wrapS and wrapT differently.
+// maxAnisotropy is clamped to the device limit inside; 1.0 keeps anisotropy off
+// (and is what every caller before the SamplerDesc plumbing used).
+[[nodiscard]] vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter,
+                                              vk::SamplerMipmapMode mipmapMode, vk::SamplerAddressMode addressModeU,
+                                              vk::SamplerAddressMode addressModeV, vk::SamplerAddressMode addressModeW,
+                                              f32 maxLod, f32 maxAnisotropy = 1.0f);
 
 [[nodiscard]] vk::raii::Sampler CreateSampler(vk::Filter magFilter = vk::Filter::eLinear,
                                               vk::Filter minFilter = vk::Filter::eLinear,

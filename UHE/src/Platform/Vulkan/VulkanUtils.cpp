@@ -57,6 +57,15 @@ void StagingBufferCopy(StagingBuffer& staging, const void* data, VkDeviceSize si
     }
 }
 
+void StagingBufferCopy(StagingBuffer& staging, const void* data, VkDeviceSize size, VkDeviceSize offset)
+{
+    if (staging.mappedData && data && offset + size <= staging.size)
+    {
+        memcpy(static_cast<std::byte*>(staging.mappedData) + offset, data, size);
+        vmaFlushAllocation(GetVulkanContext().allocator, staging.allocation, offset, size);
+    }
+}
+
 void DestroyStagingBuffer(StagingBuffer& staging)
 {
     if (!staging.buffer || !staging.allocation)
@@ -204,18 +213,36 @@ void TransitionLayout(vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLa
 vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter, vk::SamplerMipmapMode mipmapMode,
                                 vk::SamplerAddressMode addressMode, f32 maxLod)
 {
+    return CreateSampler(magFilter, minFilter, mipmapMode, addressMode, addressMode, addressMode, maxLod);
+}
+
+// Per-axis addressing overload. glTF declares wrapS and wrapT independently, so
+// the single-addressMode form cannot express e.g. clamp-U / repeat-V, which is
+// common on atlas and foliage textures. All three axes are taken separately
+// because the existing signature applied one mode to all of them.
+vk::raii::Sampler CreateSampler(vk::Filter magFilter, vk::Filter minFilter, vk::SamplerMipmapMode mipmapMode,
+                                vk::SamplerAddressMode addressModeU, vk::SamplerAddressMode addressModeV,
+                                vk::SamplerAddressMode addressModeW, f32 maxLod, f32 maxAnisotropy)
+{
     auto& ctx = GetVulkanContext();
+
+    // Anisotropy needs the feature enabled AND the value clamped to what the
+    // device actually supports; requesting more than the limit is a hard
+    // validation error, not a silent clamp.
+    f32 deviceMax = ctx.physicalDeviceHandle->getProperties().limits.maxSamplerAnisotropy;
+    f32 anisotropy = std::clamp(maxAnisotropy, 1.0f, deviceMax);
 
     vk::SamplerCreateInfo samplerInfo{.flags = {},
                                       .magFilter = magFilter,
                                       .minFilter = minFilter,
                                       .mipmapMode = mipmapMode,
-                                      .addressModeU = addressMode,
-                                      .addressModeV = addressMode,
-                                      .addressModeW = addressMode,
+                                      .addressModeU = addressModeU,
+                                      .addressModeV = addressModeV,
+                                      .addressModeW = addressModeW,
                                       .mipLodBias = 0.0f,
-                                      .anisotropyEnable = VK_FALSE,
-                                      .maxAnisotropy = 1.0f,
+                                      .anisotropyEnable =
+                                          anisotropy > 1.0f ? vk::Bool32{VK_TRUE} : vk::Bool32{VK_FALSE},
+                                      .maxAnisotropy = anisotropy,
                                       .compareEnable = VK_FALSE,
                                       .compareOp = vk::CompareOp::eAlways,
                                       .minLod = 0.0f,

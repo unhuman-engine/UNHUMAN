@@ -439,7 +439,7 @@ void VulkanCommandBuffer::Dispatch(u32 groupCountX, u32 groupCountY, u32 groupCo
 void VulkanCommandBuffer::UpdateBuffer(BufferHandle handle, const void* data, u64 size, u64 offset)
 {
     auto* buffer = reinterpret_cast<VulkanBuffer*>(handle);
-    buffer->UploadData(data, size);
+    buffer->UploadData(data, size, offset);
 }
 
 void VulkanCommandBuffer::UpdateTexture(TextureHandle handle, std::span<const u8> data)

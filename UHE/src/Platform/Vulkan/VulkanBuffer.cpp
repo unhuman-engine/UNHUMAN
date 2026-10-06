@@ -47,14 +47,14 @@ void VulkanBuffer::init(VmaAllocator allocator, vk::DeviceSize size, vk::BufferU
     m_Buffer = vk::Buffer(vkBuffer);
 }
 
-void VulkanBuffer::UploadData(const void* data, vk::DeviceSize size)
+void VulkanBuffer::UploadData(const void* data, vk::DeviceSize size, vk::DeviceSize offset)
 {
-    UHE_CORE_ASSERT(size <= m_Size, "Upload size exceeds buffer size!");
+    UHE_CORE_ASSERT(offset + size <= m_Size, "Upload size and offset exceeds buffer size!");
 
     void* mappedData;
     vmaMapMemory(m_Allocator, m_Allocation, &mappedData);
-    memcpy(mappedData, data, size);
-    vmaFlushAllocation(m_Allocator, m_Allocation, 0, size);
+    memcpy(static_cast<uint8_t*>(mappedData) + offset, data, size);
+    vmaFlushAllocation(m_Allocator, m_Allocation, offset, size);
     vmaUnmapMemory(m_Allocator, m_Allocation);
 }
 

@@ -6,15 +6,31 @@
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/SlangCompiler.h"
+#include "UHE/Renderer3D/MaterialGPU.h"
 
 namespace UHE
 {
+
+namespace
+{
+
+// Capacity of the per-frame material region. Every model uploaded this frame
+// takes GetMaterials().size() slots; a scene that exceeds this draws its
+// overflow with the default material rather than reading out of bounds. Slot 0
+// is reserved for that default and is never handed to a model.
+constexpr uint32_t kMaxMaterialsPerFrame = 2048;
+
+} // namespace
 
 struct Renderer3DData
 {
     RHI::ShaderHandle VertexShader;
     RHI::ShaderHandle FragmentShader;
     RHI::PipelineHandle ModelPipeline;
+    // Same shaders and layout, cull mode None. Cull mode is baked into the
+    // pipeline, so a doubleSided material cannot be drawn with ModelPipeline -
+    // it needs this variant bound instead.
+    RHI::PipelineHandle ModelPipelineDoubleSided;
 
     RHI::ShaderHandle GridVertexShader;
     RHI::ShaderHandle GridFragmentShader;
@@ -31,6 +47,15 @@ struct Renderer3DData
     RHI::BufferHandle BoneStorageBufferHandle = nullptr;
     uint32_t BoneStorageBufferIndex = 0;
     uint32_t BoneBufferOffset = 0; // In number of matrices
+
+    // Per-material parameters (MaterialGPU.h), indexed bindlessly from push
+    // constants. Like the bone buffer this is a per-frame region: the cursor
+    // restarts each BeginScene and every visible model re-uploads its
+    // materials. A persistent residency cache would avoid the re-upload, but
+    // needs lifetime hooks on Model destruction that do not exist yet.
+    RHI::BufferHandle MaterialStorageBufferHandle = nullptr;
+    uint32_t MaterialStorageBufferIndex = 0;
+    uint32_t MaterialBufferOffset = 0;
 
     bool EnableLighting = true;
 };
@@ -65,12 +90,16 @@ void Renderer3D::Init()
     RHI::GraphicsPipelineDesc pipeDesc{};
     pipeDesc.vertexShader = s_Data3D.VertexShader;
     pipeDesc.fragmentShader = s_Data3D.FragmentShader;
-    pipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"},
-                             {RHI::ShaderDataType::Float3, "a_Normal"},
-                             {RHI::ShaderDataType::Float2, "a_TexCoord"},
-                             {RHI::ShaderDataType::Int4, "a_Joints"},
-                             {RHI::ShaderDataType::Float4, "a_Weights"}};
+    // Location 5 (a_Tangent) must match VertexInput in Basic3D.slang.
+    pipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"}, {RHI::ShaderDataType::Float3, "a_Normal"},
+                             {RHI::ShaderDataType::Float2, "a_TexCoord"}, {RHI::ShaderDataType::Float4, "a_Tangent"},
+                             {RHI::ShaderDataType::Int4, "a_Joints"},     {RHI::ShaderDataType::Float4, "a_Weights"},
+                             {RHI::ShaderDataType::Float4, "a_Color"}};
 
+    // Push constants only carry where things live (camera, bones, lights, and
+    // the material's buffer location); the material's VALUES moved to the
+    // per-material storage buffer because this block was at the 256-byte
+    // device limit with no room for one more field.
     pipeDesc.pushConstantSize = 192;
     pipeDesc.blendMode = RHI::BlendMode::Alpha;
     pipeDesc.depthTest = true;
@@ -81,6 +110,12 @@ void Renderer3D::Init()
     pipeDesc.colorFormats[1] = RHI::TextureFormat::R32_SINT;
 
     s_Data3D.ModelPipeline = device.CreateGraphicsPipeline(pipeDesc);
+
+    // Double-sided variant: identical except culling, selected per material.
+    RHI::GraphicsPipelineDesc doubleSidedDesc = pipeDesc;
+    doubleSidedDesc.cullMode = RHI::CullMode::None;
+    doubleSidedDesc.debugName = "ModelPipeline.DoubleSided";
+    s_Data3D.ModelPipelineDoubleSided = device.CreateGraphicsPipeline(doubleSidedDesc);
 
     // Initialize Grid Pipeline
     std::string gridShaderPath = (FileSystem::Get().GetRootPath() / "assets/shaders/Grid.slang").string();
@@ -135,12 +170,23 @@ void Renderer3D::Init()
     boneBufferDesc.hostVisible = true;
     s_Data3D.BoneStorageBufferHandle = device.CreateBuffer(boneBufferDesc);
     s_Data3D.BoneStorageBufferIndex = device.GetBufferBindlessIndex(s_Data3D.BoneStorageBufferHandle);
+
+    RHI::BufferDesc materialBufferDesc{};
+    materialBufferDesc.size = sizeof(RD3d::MaterialGPU) * kMaxMaterialsPerFrame;
+    materialBufferDesc.usage = RHI::BufferUsage::Storage;
+    materialBufferDesc.hostVisible = true;
+    s_Data3D.MaterialStorageBufferHandle = device.CreateBuffer(materialBufferDesc);
+    // The material array lives in its own bindless namespace (shader binding
+    // 2), separate from the light/bone arrays of binding 0.
+    s_Data3D.MaterialStorageBufferIndex = device.GetMaterialBufferBindlessIndex(s_Data3D.MaterialStorageBufferHandle);
+    s_Data3D.MaterialBufferOffset = 1; // Slot 0 is the default material, written each BeginScene.
 }
 
 void Renderer3D::Shutdown()
 {
     auto& device = Renderer::GetDevice();
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipeline);
+    device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineDoubleSided);
     device.DestroyShader(s_Data3D.VertexShader);
     device.DestroyShader(s_Data3D.FragmentShader);
 
@@ -150,8 +196,10 @@ void Renderer3D::Shutdown()
 
     device.DestroyBuffer(s_Data3D.LightStorageBufferHandle);
     device.DestroyBuffer(s_Data3D.BoneStorageBufferHandle);
+    device.DestroyBuffer(s_Data3D.MaterialStorageBufferHandle);
 
     s_Data3D.WhiteTexture.reset();
+
 }
 
 void Renderer3D::BeginScene(const EditorCamera& camera, const std::vector<RD3d::LightData>& lights)
@@ -165,6 +213,8 @@ void Renderer3D::BeginScene(const EditorCamera& camera, const std::vector<RD3d::
                                                                      lights.size() * sizeof(RD3d::LightData));
     }
     s_Data3D.BoneBufferOffset = 0;
+
+    RestartMaterialRegion();
 }
 
 void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform,
@@ -179,6 +229,22 @@ void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform,
                                                                      lights.size() * sizeof(RD3d::LightData));
     }
     s_Data3D.BoneBufferOffset = 0;
+
+    RestartMaterialRegion();
+}
+
+void Renderer3D::RestartMaterialRegion()
+{
+    // Slot 0: the default material (glTF's "no material" white PBR surface).
+    // Rewritten every frame so the host-visible buffer never has to be
+    // initialised outside a command buffer.
+    auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
+
+    RD3d::Material defaultMaterial;
+    RD3d::MaterialGPU defaultGPU = RD3d::FillMaterialGPU(defaultMaterial);
+    cmd.UpdateBuffer(s_Data3D.MaterialStorageBufferHandle, &defaultGPU, sizeof(defaultGPU), 0);
+
+    s_Data3D.MaterialBufferOffset = 1;
 }
 
 void Renderer3D::EndScene() {}
@@ -223,88 +289,131 @@ Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator* ani
     return binding;
 }
 
+Renderer3D::MaterialBinding Renderer3D::PrepareMaterialBinding(const RD3d::Model& model)
+{
+    MaterialBinding binding;
+    const auto& materials = model.GetMaterials();
+    if (materials.empty())
+        return binding; // draws fall back to the default material
+
+    auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
+
+    const uint32_t available = kMaxMaterialsPerFrame - s_Data3D.MaterialBufferOffset;
+    if (materials.size() > available)
+    {
+        // Draw the clamped tail with the default material instead of pointing
+        // push constants at memory that was never written this frame.
+        UHE_CORE_WARN("Material buffer exhausted: model needs {0} slots, {1} left this frame; "
+                      "trailing primitives draw with the default material",
+                      materials.size(), available);
+    }
+
+    const uint32_t count = std::min<uint32_t>(static_cast<uint32_t>(materials.size()), available);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        RD3d::MaterialGPU gpu = RD3d::FillMaterialGPU(materials[i]);
+        cmd.UpdateBuffer(s_Data3D.MaterialStorageBufferHandle, &gpu, sizeof(gpu),
+                         (s_Data3D.MaterialBufferOffset + i) * sizeof(RD3d::MaterialGPU));
+    }
+
+    binding.BufferIndex = s_Data3D.MaterialStorageBufferIndex;
+    binding.BaseIndex = s_Data3D.MaterialBufferOffset;
+    binding.Count = count;
+    s_Data3D.MaterialBufferOffset += count;
+    return binding;
+}
+
 void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transform, int entityID,
                              const RD3d::Animator* animator)
 {
-    // Upload bone matrices once per model, then forward the buffer location to
-    // every sub-mesh.
+    // Upload bone matrices and material parameters once per model, then
+    // forward the buffer locations to every sub-mesh.
     BoneBinding bones = PrepareBoneBinding(animator);
+    MaterialBinding materials = PrepareMaterialBinding(model);
 
     for (const auto& mesh : model.GetMesh())
     {
-        SubmitMesh(mesh, transform, entityID, model.GetMaterials(), bones.BufferIndex, bones.Offset);
+        SubmitMesh(mesh, transform, entityID, model, materials, bones.BufferIndex, bones.Offset);
     }
 }
 
 // Issue #17: submit a single mesh (one glTF node) with its model's materials.
-void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, int entityID,
-                            const std::vector<RD3d::Material>& materials, int boneBufferIndex, int boneOffset)
+void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, int entityID, const RD3d::Model& model,
+                            const MaterialBinding& materialBinding, int boneBufferIndex, int boneOffset)
 {
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
-    cmd.BindPipeline(s_Data3D.ModelPipeline);
-
+    // MUST stay byte-identical to PushConstants in Basic3D.slang. Material
+    // values live in the per-material storage buffer; these 192 bytes only
+    // carry where everything lives.
     struct PushConstants
     {
         glm::mat4 viewProj;
         glm::mat4 model;
         glm::vec4 cameraPos;
         int entityID;
-        int textureSlot;
         int enableLighting;
         int lightBufferIndex;
         int numLights;
-        int mrTextureSlot;
-        float metallicFactor;
-        float roughnessFactor;
         int boneBufferIndex;
         int boneOffset;
-        int padding1;
-        int padding2;
+        int materialBufferIndex;
+        int materialIndex;
+        int useVertexColor;
+        glm::ivec3 padding;
     } pc;
+
+    static_assert(sizeof(PushConstants) == 192, "PushConstants must stay byte-identical to the Slang struct");
+    static_assert(offsetof(PushConstants, materialBufferIndex) == 168,
+                  "materialBufferIndex offset must match the Slang layout");
     pc.viewProj = s_Data3D.ViewProjection;
     pc.model = transform;
     pc.cameraPos = glm::vec4(s_Data3D.CameraPosition, 1.0f);
     pc.entityID = entityID;
-    pc.textureSlot = 0; // Temp hardcode until material system is done
     pc.enableLighting = s_Data3D.EnableLighting ? 1 : 0;
     pc.lightBufferIndex = s_Data3D.LightStorageBufferIndex;
-    pc.numLights = static_cast<int>(s_Data3D.CurrentLights.size());
-    pc.mrTextureSlot = -1;
-    pc.metallicFactor = 1.0f;
-    pc.roughnessFactor = 1.0f;
+    pc.numLights = static_cast<int>(std::min<size_t>(s_Data3D.CurrentLights.size(), 1024));
     pc.boneBufferIndex = boneBufferIndex;
     pc.boneOffset = boneOffset;
+    pc.materialBufferIndex = materialBinding.BufferIndex;
+    pc.useVertexColor = 0;
+    pc.padding = glm::ivec3(0);
+
+    const auto& materials = model.GetMaterials();
+
+    pc.model = transform * mesh.LocalTransform;
 
     for (const auto& prim : mesh.primitive)
     {
         if (!prim.VertexBuffer || !prim.IndexBuffer)
             continue;
 
-        int textureSlot = s_Data3D.WhiteTexture->GetTextureIndex(); // Default to white texture
-        int mrTextureSlot = -1;
-        float metallicFactor = 0.0f;
-        float roughnessFactor = 0.4f;
-
+        // glTF default material when the index is absent or out of range:
+        // white base, fully rough, non-metallic. Slot 0 of the material buffer
+        // holds exactly that, so out-of-range primitives just point at it.
+        const RD3d::Material* material = nullptr;
+        int materialIndex = 0; // default slot
         if (prim.materialIndex < materials.size())
         {
-            auto& material = materials[prim.materialIndex];
-            if (material.AlbedoTexture)
-            {
-                textureSlot = material.AlbedoTexture->GetTextureIndex();
-            }
-            if (material.MetallicRoughnessTexture)
-            {
-                mrTextureSlot = material.MetallicRoughnessTexture->GetTextureIndex();
-            }
-            metallicFactor = material.MetallicFactor;
-            roughnessFactor = material.RoughnessFactor;
+            material = &materials[prim.materialIndex];
+            const int localIndex = static_cast<int>(prim.materialIndex);
+            if (materialBinding.BaseIndex >= 0 && localIndex < static_cast<int>(materialBinding.Count))
+                materialIndex = materialBinding.BaseIndex + localIndex;
+            else
+                material = nullptr; // buffer exhausted: draw with the default
         }
 
-        pc.textureSlot = textureSlot;
-        pc.mrTextureSlot = mrTextureSlot;
-        pc.metallicFactor = metallicFactor;
-        pc.roughnessFactor = roughnessFactor;
+        pc.materialIndex = materialIndex;
+        // COLOR_0 is a per-PRIMITIVE attribute in glTF, so the flag lives on
+        // the primitive rather than the material: two materials in one mesh
+        // can have vertex colours on different primitives.
+        pc.useVertexColor = prim.hasVertexColor ? 1 : 0;
+
+        // Cull mode lives in the pipeline, so a doubleSided material needs the
+        // variant bound rather than a state change.
+        const bool doubleSided = material && material->DoubleSided;
+        cmd.BindPipeline(doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline);
+
         cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
 
         cmd.BindVertexBuffer(prim.VertexBuffer);

@@ -63,6 +63,15 @@ public:
     /// Frees \p slot for reuse. The descriptor is not cleared; the next registrant overwrites it.
     void UnregisterBuffer(u32 slot);
 
+    /// Binding 2 of the global set: the per-material data arrays the shader
+    /// reads (MaterialGPU). A SEPARATE array from binding 0 because SPIR-V
+    /// allows one descriptor type per binding - StructuredBuffer<LightData>
+    /// and StructuredBuffer<MaterialGPU> cannot share binding 0 in the same
+    /// module, which is exactly why the shader declares both.
+    u32 RegisterMaterialBuffer(vk::raii::Device& device, vk::Buffer buffer, vk::DeviceSize size);
+    /// Frees \p slot for reuse.
+    void UnregisterMaterialBuffer(u32 slot);
+
     /// Registers \p imageView/\p sampler and \returns its bindless slot.
     u32 BindTexture(vk::raii::Device& device, vk::ImageView imageView, vk::Sampler sampler);
     /// Frees \p slot for reuse.
@@ -79,6 +88,7 @@ public:
 
     /// Mutable cursor accessors used while filling the bindless arrays.
     [[nodiscard]] u32& GetNextBufferIndex() { return m_NextBufferIndex; }
+    [[nodiscard]] u32& GetNextMaterialBufferIndex() { return m_NextMaterialBufferIndex; }
     [[nodiscard]] u32& GetNextTextureIndex() { return m_NextTextureIndex; }
 
     [[nodiscard]] const u32& GetBufferIndex() const { return m_NextBufferIndex; }
@@ -108,7 +118,9 @@ private:
     static constexpr uint32_t MAX_BINDLESS_RESOURCES = 10000;
     uint32_t m_NextBufferIndex = 0;
     uint32_t m_NextTextureIndex = 0;
+    uint32_t m_NextMaterialBufferIndex = 0;
     std::vector<u32> m_FreeBufferIndices;
     std::vector<u32> m_FreeTextureIndices;
+    std::vector<u32> m_FreeMaterialBufferIndices;
 };
 } // namespace UHE::RHI::VULKAN

@@ -54,6 +54,11 @@ public:
     virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;
     /// \returns the bindless slot assigned to \p handle, or an invalid index when bindless is off.
     virtual u32 GetBufferBindlessIndex(BufferHandle handle) = 0;
+    /// Slot of \p handle in the per-material data array (shader binding 2).
+    /// The shader's fixed bindless layout keeps material arrays separate from
+    /// the light/bone arrays of binding 0 because SPIR-V allows one descriptor
+    /// type per binding.
+    virtual u32 GetMaterialBufferBindlessIndex(BufferHandle handle) = 0;
     virtual TextureHandle CreateTexture(const TextureDesc& desc) = 0;
     virtual ShaderHandle CreateShader(const ShaderDesc& desc) = 0;
     virtual PipelineHandle CreateGraphicsPipeline(const GraphicsPipelineDesc& desc) = 0;

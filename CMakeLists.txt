@@ -239,6 +239,97 @@ add_subdirectory(UHE/vendor/yaml-cpp)
 add_subdirectory(UHE/vendor/box2d)
 add_subdirectory(UHE/vendor/fastgltf)
 
+# Meshoptimizer (https://github.com/zeux/meshoptimizer) - MIT, no dependencies.
+# Upstream also builds a demo/ and a gltfpack executable; we only want the
+# library. MESHOPT_INSTALL is forced off because the install() rules would
+# otherwise pull into `make install` a vendored dep the engine never installs.
+set(MESHOPT_BUILD_DEMO OFF CACHE BOOL "" FORCE)
+set(MESHOPT_BUILD_GLTFPACK OFF CACHE BOOL "" FORCE)
+set(MESHOPT_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(MESHOPT_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(UHE/vendor/meshoptimizer EXCLUDE_FROM_ALL)
+
+# Basis Universal (https://github.com/BinomialLLC/basis_universal) - Apache 2.0.
+# KTX2/Basis transcoding for KHR_texture_basisu (issues #29 Tier 4, #42).
+# Only the transcoder goes into the runtime: the file's own CMakeLists builds
+# the encoder CLI and examples, which the engine never needs at runtime. The
+# TEST harness additionally compiles the encoder to generate real KTX2
+# fixtures (see tests/gltf). Zstd is in because KTX2 UASTC files are commonly
+# zstd-supercompressed and refusing them would look like a loader bug.
+set(BASISU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/UHE/vendor/basis_universal")
+add_library(basisu_transcoder STATIC
+    "${BASISU_DIR}/transcoder/basisu_transcoder.cpp"
+    "${BASISU_DIR}/zstd/zstd.c"
+)
+target_include_directories(basisu_transcoder PUBLIC
+    "${BASISU_DIR}/transcoder"
+    "${BASISU_DIR}/zstd"
+)
+# Upstream notes the codec must be built with strict aliasing off (GCC/Clang).
+if(NOT MSVC)
+    target_compile_options(basisu_transcoder PRIVATE -fno-strict-aliasing)
+endif()
+target_compile_definitions(basisu_transcoder PUBLIC
+    BASISD_SUPPORT_KTX2=1
+    BASISD_SUPPORT_KTX2_ZSTD=1
+    # Upstream 2026-04 note: globally disable the dEQP Android ASTC
+    # decompressor and route to basisu's internal decoder, which lives in the
+    # transcoder TU (guarded by BASISU_ASTC_HELPERS_IMPLEMENTATION).
+    BASISU_DISABLE_ANDROID_ASTC_DECOMP=1
+)
+
+# Test-only encoder for the KTX2 round-trip harness: encodes real .ktx2
+# fixtures at run time so the decode assertions run against genuine files
+# rather than hand-packed bytes. EXCLUDE_FROM_ALL keeps it out of normal
+# builds; only tests/gltf links it. SSE is off so the lib needs no special
+# compile flags (encoding speed is irrelevant for a 32x32 fixture).
+add_library(basisu_encoder_testlib EXCLUDE_FROM_ALL STATIC
+    "${BASISU_DIR}/encoder/basisu_backend.cpp"
+    "${BASISU_DIR}/encoder/basisu_basis_file.cpp"
+    "${BASISU_DIR}/encoder/basisu_comp.cpp"
+    "${BASISU_DIR}/encoder/basisu_enc.cpp"
+    "${BASISU_DIR}/encoder/basisu_etc.cpp"
+    "${BASISU_DIR}/encoder/basisu_frontend.cpp"
+    "${BASISU_DIR}/encoder/basisu_gpu_texture.cpp"
+    "${BASISU_DIR}/encoder/basisu_pvrtc1_4.cpp"
+    "${BASISU_DIR}/encoder/basisu_resampler.cpp"
+    "${BASISU_DIR}/encoder/basisu_resample_filters.cpp"
+    "${BASISU_DIR}/encoder/basisu_ssim.cpp"
+    "${BASISU_DIR}/encoder/basisu_uastc_enc.cpp"
+    "${BASISU_DIR}/encoder/basisu_bc7e_scalar.cpp"
+    "${BASISU_DIR}/encoder/basisu_dds_export.cpp"
+    "${BASISU_DIR}/encoder/basisu_bc7enc.cpp"
+    "${BASISU_DIR}/encoder/jpgd.cpp"
+    "${BASISU_DIR}/encoder/basisu_kernels_sse.cpp"
+    "${BASISU_DIR}/encoder/basisu_bc15_spmd.cpp"
+    "${BASISU_DIR}/encoder/basisu_bc15_spmd_sse.cpp"
+    "${BASISU_DIR}/encoder/basisu_opencl.cpp"
+    "${BASISU_DIR}/encoder/pvpngreader.cpp"
+    "${BASISU_DIR}/encoder/basisu_tinyexr.cpp"
+    # The compressor references these even for LDR-only encodes, so the
+    # upstream list is followed rather than trimmed further.
+    "${BASISU_DIR}/encoder/basisu_uastc_hdr_4x4_enc.cpp"
+    "${BASISU_DIR}/encoder/basisu_astc_hdr_6x6_enc.cpp"
+    "${BASISU_DIR}/encoder/basisu_astc_hdr_common.cpp"
+    "${BASISU_DIR}/encoder/basisu_astc_ldr_common.cpp"
+    "${BASISU_DIR}/encoder/basisu_astc_ldr_encode.cpp"
+    "${BASISU_DIR}/encoder/basisu_astc_ldr_fencode.cpp"
+    "${BASISU_DIR}/encoder/basisu_xbc7_encode.cpp"
+)
+target_include_directories(basisu_encoder_testlib PUBLIC
+    "${BASISU_DIR}/transcoder"
+    "${BASISU_DIR}/encoder"
+)
+if(NOT MSVC)
+    target_compile_options(basisu_encoder_testlib PRIVATE -fno-strict-aliasing)
+endif()
+# zstd for UASTC supercompression resolves from basisu_transcoder at link time.
+target_compile_definitions(basisu_encoder_testlib PUBLIC
+    BASISU_SUPPORT_SSE=0
+    BASISU_SUPPORT_KTX2=1
+    BASISU_SUPPORT_KTX2_ZSTD=1
+)
+
 # MSDF text rendering (msdf-atlas-gen + msdfgen)
 set(MSDF_ATLAS_USE_VCPKG OFF        CACHE BOOL "" FORCE)
 set(MSDF_ATLAS_USE_SKIA  OFF        CACHE BOOL "" FORCE)

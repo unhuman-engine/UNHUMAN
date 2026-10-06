@@ -8,9 +8,9 @@ namespace UHE
 class VulkanTexture2D final : public Texture2D
 {
 public:
-    VulkanTexture2D(const std::string& path);
-    VulkanTexture2D(u32 width, u32 height);
-    VulkanTexture2D(const void* data, size_t size);
+    VulkanTexture2D(const std::string& path, const RHI::SamplerDesc& sampler = {});
+    VulkanTexture2D(u32 width, u32 height, const RHI::SamplerDesc& sampler = {});
+    VulkanTexture2D(const void* data, size_t size, const RHI::SamplerDesc& sampler = {});
     ~VulkanTexture2D() override;
 
     u32 GetWidth() const override { return m_Width; }

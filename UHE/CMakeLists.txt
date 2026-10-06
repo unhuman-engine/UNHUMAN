@@ -59,6 +59,7 @@ target_include_directories(UHE PUBLIC
     "vendor/box2d/include"
     "vendor/jolt"
     "vendor/miniaudio"
+    "vendor/meshoptimizer/src"
 )
 
 target_sources(UHE PRIVATE
@@ -104,6 +105,8 @@ PRIVATE
     box2d
     Jolt
     msdf-atlas-gen
+    meshoptimizer
+    basisu_transcoder
 )
 
 if(UNIX)

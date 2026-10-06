@@ -31,8 +31,15 @@ void VulkanDescriptorPool::CreateDescriptorPool()
 
 void VulkanDescriptorPool::CreateBindlessDescriptorPool(uint32_t maxBindlessResources)
 {
+    // Pool sizes must cover the GLOBAL SET's arrays, not just one each: the
+    // set (see VulkanDescriptorManager::init) binds TWO storage-buffer arrays
+    // of maxBindlessResources - binding 0 (lights/bones) and binding 2 (per-
+    // material data) - plus one combined-image-sampler array. Undercounting
+    // the storage-buffer type makes vkAllocateDescriptorSets fail outright,
+    // because the single global set requests both arrays at once.
     std::array<vk::DescriptorPoolSize, 2> poolSizes = {
-        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageBuffer, .descriptorCount = maxBindlessResources},
+        vk::DescriptorPoolSize{.type = vk::DescriptorType::eStorageBuffer,
+                               .descriptorCount = maxBindlessResources * 2},
         vk::DescriptorPoolSize{.type = vk::DescriptorType::eCombinedImageSampler,
                                .descriptorCount = maxBindlessResources}};
 

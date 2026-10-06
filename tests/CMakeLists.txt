@@ -4,4 +4,7 @@
 # GPU-dependent tests will need a `gpu` label + ICD gating - see
 # docs/architecture/ci-cd.md ("Test infrastructure", labels: unit, gpu, slow, soak).
 add_subdirectory(rendergraph)
+add_subdirectory(meshopt)
+add_subdirectory(gltf)
 add_subdirectory(scene)
+add_subdirectory(shader)

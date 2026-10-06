@@ -1,0 +1,137 @@
+// Stubs for the GPU-facing entry points the loader calls, so the glTF harness can
+// link and run without a Vulkan device.
+//
+// The test assets declare no materials and no textures, and the harness only
+// exercises the CPU-side scene walk, so none of these are ever reached in a
+// passing run. They exist to satisfy the linker, and each one loudly reports if
+// it is ever actually called - a silent no-op here would let a future test
+// "pass" while skipping the code it claims to cover.
+//
+// Test-only: never compile into the engine.
+
+#include <cstdio>
+#include <vector>
+
+#include "UHE/RHI/RHITypes.h"
+#include "UHE/Renderer/Texture.h"
+#include "UHE/Renderer3D/LoadModel.h"
+
+namespace UHE
+{
+
+// The samplers the loader requested, in order. Recording them lets the harness
+// assert that glTF's declared magFilter/minFilter/wrapS/wrapT actually reached
+// the texture factory - a stub that discarded the argument would make that path
+// untestable, and an untestable path is the one that silently regresses.
+//
+// Kept as a LIST rather than a single "last" value: colour space is a per-SLOT
+// property (baseColor is sRGB, normal/metalRough/occlusion are linear), so
+// asserting it needs every request, not only whichever happened to be last.
+std::vector<RHI::SamplerDesc> g_RequestedSamplers{};
+int g_TextureCreateCalls = 0;
+
+// The first bytes and size of the most recent CreateFromMemory payload, so a
+// test can assert WHICH image reached the factory (KTX2 magic vs PNG bytes)
+// without the stub ever creating a GPU texture.
+std::vector<u8> g_LastMemoryData(12, 0);
+size_t g_LastMemorySize = 0;
+
+namespace
+{
+void RecordSampler(const RHI::SamplerDesc& sampler)
+{
+    g_RequestedSamplers.push_back(sampler);
+    ++g_TextureCreateCalls;
+}
+} // namespace
+
+Ref<Texture2D> Texture2D::Create(const std::string& path, const RHI::SamplerDesc& sampler)
+{
+    RecordSampler(sampler);
+    std::printf("STUB: Texture2D::Create(\"%s\") called - the glTF harness must not load textures\n", path.c_str());
+    return nullptr;
+}
+
+Ref<Texture2D> Texture2D::Create(u32 width, u32 height, const RHI::SamplerDesc& sampler)
+{
+    RecordSampler(sampler);
+    std::printf("STUB: Texture2D::Create(%u, %u) called\n", width, height);
+    return nullptr;
+}
+
+Ref<Texture2D> Texture2D::CreateFromMemory(const void* data, size_t size, const RHI::SamplerDesc& sampler)
+{
+    RecordSampler(sampler);
+    g_LastMemorySize = size;
+    g_LastMemoryData.assign(12, 0);
+    if (data != nullptr && size > 0)
+        std::memcpy(g_LastMemoryData.data(), data, std::min<size_t>(size, 12));
+    std::printf("STUB: Texture2D::CreateFromMemory(%zu bytes) called\n", size);
+    return nullptr;
+}
+
+} // namespace UHE
+
+namespace UHE::RD3d
+{
+
+// The real implementation creates Vulkan buffers; the harness has no device, so
+// this emulates upload by marking the owning Geometry's primitives as uploaded.
+//
+// Emulating rather than stubbing out is the point: the loader's scene walk copies
+// GPU handles into the per-node Mesh entries BEFORE any upload runs, so those
+// copies are all null. The real code closes that gap after upload; a stub that
+// did nothing here would let that ordering bug pass 60 checks while the editor
+// silently draws nothing.
+void Model::UploadGeometry(Geometry& geometry, size_t geometryIndex)
+{
+    for (auto& prim : geometry.primitive)
+    {
+        if (prim.vertices.empty())
+            continue;
+        // Non-null handles stand in for Vulkan BufferHandle values.
+        prim.VertexBuffer = reinterpret_cast<RHI::BufferHandle>(0x1);
+        prim.IndexCount = static_cast<u32>(prim.indices.size());
+        if (!prim.indices.empty())
+            prim.IndexBuffer = reinterpret_cast<RHI::BufferHandle>(0x2);
+    }
+
+    // Same propagation the real upload performs.
+    for (auto& mesh : m_LoadedMeshes)
+    {
+        if (mesh.geometryIndex != geometryIndex)
+            continue;
+        for (size_t i = 0; i < mesh.primitive.size() && i < geometry.primitive.size(); ++i)
+        {
+            mesh.primitive[i].VertexBuffer = geometry.primitive[i].VertexBuffer;
+            mesh.primitive[i].IndexBuffer = geometry.primitive[i].IndexBuffer;
+            mesh.primitive[i].IndexCount = geometry.primitive[i].IndexCount;
+        }
+    }
+}
+
+void Model::ReleaseGeometryBuffers(std::vector<Geometry>& geometry)
+{
+    // Silent on purpose: Destroy() calls this on every unload, including the
+    // normal end-of-scope path after a successful load.
+}
+
+} // namespace UHE::RD3d
+
+namespace UHE
+{
+
+RHI::SamplerDesc StubLastRequestedSampler() { return g_RequestedSamplers.empty() ? RHI::SamplerDesc{} : g_RequestedSamplers.back(); }
+const std::vector<RHI::SamplerDesc>& StubRequestedSamplers() { return g_RequestedSamplers; }
+int StubTextureCreateCallCount() { return g_TextureCreateCalls; }
+const std::vector<u8>& StubLastMemoryData() { return g_LastMemoryData; }
+size_t StubLastMemorySize() { return g_LastMemorySize; }
+void StubReset()
+{
+    g_RequestedSamplers.clear();
+    g_TextureCreateCalls = 0;
+    g_LastMemoryData.assign(12, 0);
+    g_LastMemorySize = 0;
+}
+
+} // namespace UHE
