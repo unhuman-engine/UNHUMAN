@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Unhuman Engine (UHE)</h1>
-  <p>A modern, high-performance C++ robotics simulation engine powered by Vulkan and Slang.</p>
+  <p>A modern, high-performance C++ robotics and game engine powered by Vulkan and Slang.</p>
 
 ---
 
@@ -8,19 +8,19 @@
 
 <div align="center">
   <!-- Place an image in the demo/ folder named 'editor_showcase.png' -->
-  <img src="demo/image.png" alt="Unhuman Environment Editor" width="80%">
+  <img src="demo/image.png" alt="Unhuman Engine Editor" width="80%">
   <br>
-  <em>Unhuman Environment & Simulation Editor</em>
+  <em>Unhuman Environment & Game Editor</em>
   <br><br>
   <!-- YouTube Demo Video -->
   <a href="https://youtu.be/CHDIU61auYo">
-    <img src="https://img.youtube.com/vi/CHDIU61auYo/maxresdefault.jpg" alt="Robotics Simulation Demo" width="80%">
+    <img src="https://img.youtube.com/vi/CHDIU61auYo/maxresdefault.jpg" alt="Simulation and Gameplay Demo" width="80%">
   </a>
   <br>
-  <em>Real-time Kinematics & Physics Simulation Demo</em>
+  <em>Real-time Simulation, Kinematics & Gameplay Demo</em>
 </div>
 
-**Unhuman Engine (UHE)** is a lightweight, highly extensible C++ simulation engine designed for real-time robotics applications, synthetic data generation, and embodied AI. It utilizes a modern **Vulkan RHI** backend, compiles compute and rendering shaders via **Slang**, and features a fully integrated ImGui editor for environment authoring and robot introspection.
+**Unhuman Engine (UHE)** is a lightweight, highly extensible C++ engine designed for real-time robotics applications, synthetic data generation, embodied AI, and game development. It utilizes a modern **Vulkan RHI** backend, compiles compute and rendering shaders via **Slang**, and features a fully integrated ImGui editor for environment authoring, gameplay prototyping, and robot introspection.
 
 ## Key Features
 - **Modern Graphics Backend**: Fully abstracted Render Hardware Interface (RHI) running on **Vulkan**, optimized for high-fidelity sensor rendering (RGB, Depth, Segmentation).
