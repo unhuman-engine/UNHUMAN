@@ -1,7 +1,6 @@
 <div align="center">
   <h1>Unhuman Engine (UHE)</h1>
-  <p>A modern, cross-platform C++ game engine powered by Vulkan and Slang.</p>
-</div>
+  <p>A modern, high-performance C++ robotics and game engine powered by Vulkan and Slang.</p>
 
 ---
 
@@ -11,32 +10,28 @@
   <!-- Place an image in the demo/ folder named 'editor_showcase.png' -->
   <img src="demo/image.png" alt="Unhuman Engine Editor" width="80%">
   <br>
-  <em>Unhuman Engine Editor Interface</em>
+  <em>Unhuman Environment & Game Editor</em>
   <br><br>
   <!-- YouTube Demo Video -->
   <a href="https://youtu.be/CHDIU61auYo">
-    <img src="https://img.youtube.com/vi/CHDIU61auYo/maxresdefault.jpg" alt="Engine Gameplay Demo" width="80%">
+    <img src="https://img.youtube.com/vi/CHDIU61auYo/maxresdefault.jpg" alt="Simulation and Gameplay Demo" width="80%">
   </a>
   <br>
-  <em>Real-time Rendering & Physics Demo</em>
+  <em>Real-time Simulation, Kinematics & Gameplay Demo</em>
 </div>
 
----
-
-**Unhuman Engine (UHE)** is a lightweight, highly extensible C++ game engine designed for real-time applications and game development. It utilizes a modern **Vulkan RHI** backend, compiles shaders via **Slang**, and features a fully integrated ImGui editor.
+**Unhuman Engine (UHE)** is a lightweight, highly extensible C++ engine designed for real-time robotics applications, synthetic data generation, embodied AI, and game development. It utilizes a modern **Vulkan RHI** backend, compiles compute and rendering shaders via **Slang**, and features a fully integrated ImGui editor for environment authoring, gameplay prototyping, and robot introspection.
 
 ## Key Features
-
-- **Modern Graphics Backend**: Fully abstracted Render Hardware Interface (RHI) running on **Vulkan**.
-- **Slang Shader Compiler**: Next-generation shading language support with dynamic compilation and SPIR-V generation.
-- **Multi-Threading**: High-performance Job System and Task Graph architecture for parallel execution.
-- **Text Rendering**: Crisp, scalable text rendering using MSDF (Multi-channel Signed Distance Fields).
-- **UHE Editor**: A robust, dockable ImGui-based editor (`UHE_EDITOR`) for scene inspection, profiling, and asset management.
-- **Entity Component System**: A fast, data-driven scene system (`entt`) supporting native script components and serialization.
-- **2D & 3D Physics**: Integrated physics handling with `Box2D and jolt(in future)`.
-- **AAA Dependency Management**: No bloated submodules or slow package managers. The engine fetches precompiled binaries (Slang, GLFW) automatically for zero-compile-time dependencies.
-- **Cross-Platform Tooling**: Generates Ninja builds for Linux and Visual Studio 2022 solutions for Windows with a single click.
-
+- **Modern Graphics Backend**: Fully abstracted Render Hardware Interface (RHI) running on **Vulkan**, optimized for high-fidelity sensor rendering (RGB, Depth, Segmentation).
+- **Slang Shader Compiler**: Next-generation shading language support for accelerating robot perception algorithms and compute workloads via SPIR-V.
+- **Multi-Threading**: High-performance Job System and Task Graph architecture for parallel execution of complex multi-agent simulations.
+- **Text & HUD Rendering**: Crisp MSDF text rendering for on-screen telemetry, spatial UI, and diagnostic overlays.
+- **UHE Editor**: A robust, dockable ImGui-based editor (`UHE_EDITOR`) for scene inspection, kinematic profiling, and asset management.
+- **Entity Component System**: A fast, data-driven scene system (`entt`) supporting native script components, massive robot swarms, and deterministic serialization.
+- **2D & 3D Physics Dynamics**: Integrated rigid-body physics handling with `Box2D` and `Jolt` (upcoming) for accurate locomotion, grasping, and collision simulation.
+- **AAA Dependency Management**: No bloated submodules. The engine fetches precompiled binaries (Slang, GLFW) automatically for rapid environment deployment.
+- **Cross-Platform Tooling**: Generates Ninja builds for Linux (ROS compatibility environments) and Visual Studio 2022 solutions for Windows with a single click.
 ## Recent Updates
 
 - **Core Job System**: Implemented a robust JobSystem and TaskGraph for multi-threading.
@@ -52,8 +47,8 @@
 The repository is logically split to ensure the core engine remains separate from the application logic:
 
 - `UHE/` — The core engine, platform abstraction (Windows/Linux), Vulkan RHI, and vendor libraries.
-- `UHE_EDITOR/` — The standalone editor application built on top of the engine.
-- `sandbox/` — A lightweight testing application for running isolated scenes.
+- `UHE_EDITOR/` — The standalone editor application built for scene authoring and robot introspection.
+- `sandbox/` — A lightweight testing application for running isolated control logic and environments.
 - `script/Setup.py` — The automated dependency fetcher that pulls heavy OS-specific binaries (like Slang) into `UHE/vendor/bin/`.
 - `docs/` — Design docs, architecture notes and the work order. Start at [`docs/README.md`](docs/README.md); the roadmap is [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
