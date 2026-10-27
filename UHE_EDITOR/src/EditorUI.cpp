@@ -233,12 +233,9 @@ namespace EditorUI
 
     bool ToggleMenuItem(const char* label, bool* value, const char* shortcut)
     {
-        if (ImGui::MenuItem(label, shortcut, value))
-        {
-            *value = !*value;
-            return true;
-        }
-        return false;
+        // ImGui::MenuItem already flips *value when p_selected is passed, so the
+        // previous manual flip cancelled it out and the toggles did nothing.
+        return ImGui::MenuItem(label, shortcut, value);
     }
 
     void Separator()

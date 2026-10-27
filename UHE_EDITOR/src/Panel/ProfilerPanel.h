@@ -29,6 +29,7 @@ namespace UHE
 
         void RefreshVisibleScopes();
         void ApplySort();
+        void ClearSelection();
         bool MatchesFilter(const ProfileScopeStats& stats) const;
         void DrawTreeNode(i32 index);
         float ScopePercent(const ProfileScopeStats& stats) const;
@@ -40,7 +41,13 @@ namespace UHE
         bool m_MainThreadOnly = false;
         int m_SortColumn = 2; // 0 total... see ScopeColumn; 2 == Total ms (default)
         bool m_SortDescending = true;
-        i32 m_SelectedScope = -1;
+
+        // Selection identity, not a row index: Profiler::EndFrame rebuilds and
+        // re-sorts the stats every frame, so an index would silently point at a
+        // different scope. Resolved back to a row by RefreshVisibleScopes().
+        std::string m_SelectedName;
+        std::string m_SelectedModule;
+        i32 m_SelectedRow = -1;
 
         // Tree tab
         int m_TreeForceOpen = 1; // 1 = expand all, -1 = collapse all (applied on the next frame)

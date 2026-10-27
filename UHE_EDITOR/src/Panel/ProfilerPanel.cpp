@@ -150,7 +150,7 @@ namespace UHE
         if (ImGui::Button("Reset", ImVec2(72, 0)))
         {
             Profiler::ResetHistory();
-            m_SelectedScope = -1;
+            ClearSelection();
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Clear averages, min/max and the history graph");
@@ -338,7 +338,7 @@ namespace UHE
 
         RefreshVisibleScopes();
 
-        const float detailsHeight = m_SelectedScope >= 0 ? 46.0f : 0.0f;
+        const float detailsHeight = m_SelectedRow >= 0 ? 46.0f : 0.0f;
         const float tableHeight = ImMax(ImGui::GetContentRegionAvail().y - detailsHeight, 80.0f);
 
         const ImGuiTableFlags flags = ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
@@ -387,9 +387,20 @@ namespace UHE
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::PushID(static_cast<int>(row));
-                const bool selected = m_SelectedScope == static_cast<i32>(row);
+                const bool selected = m_SelectedRow == static_cast<i32>(row);
                 if (ImGui::Selectable(scope.Name.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns))
-                    m_SelectedScope = selected ? -1 : static_cast<i32>(row);
+                {
+                    if (selected)
+                    {
+                        ClearSelection();
+                    }
+                    else
+                    {
+                        m_SelectedRow = static_cast<i32>(row);
+                        m_SelectedName = scope.Name;
+                        m_SelectedModule = scope.Module;
+                    }
+                }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("%s\n%s\nmain thread %.3f ms of %.3f ms", scope.Name.c_str(),
                                       scope.Module.c_str(), scope.MainThreadMs, scope.TotalMs);
@@ -436,8 +447,31 @@ namespace UHE
                 m_VisibleScopes.push_back(&stats);
         ApplySort();
 
-        if (m_SelectedScope >= static_cast<i32>(m_VisibleScopes.size()))
-            m_SelectedScope = -1;
+        // Re-resolve the selection: the list is rebuilt and re-sorted every
+        // frame, so last frame's row index means nothing here.
+        m_SelectedRow = -1;
+        if (m_SelectedName.empty())
+            return;
+
+        for (std::size_t row = 0; row < m_VisibleScopes.size(); ++row)
+        {
+            const ProfileScopeStats& stats = *m_VisibleScopes[row];
+            if (stats.Name == m_SelectedName && stats.Module == m_SelectedModule)
+            {
+                m_SelectedRow = static_cast<i32>(row);
+                return;
+            }
+        }
+
+        // Filtered out, or the scope stopped running: drop the selection.
+        ClearSelection();
+    }
+
+    void ProfilerPanel::ClearSelection()
+    {
+        m_SelectedRow = -1;
+        m_SelectedName.clear();
+        m_SelectedModule.clear();
     }
 
     void ProfilerPanel::ApplySort()
@@ -479,10 +513,10 @@ namespace UHE
 
     void ProfilerPanel::DrawScopeDetails()
     {
-        if (m_SelectedScope < 0 || m_SelectedScope >= static_cast<i32>(m_VisibleScopes.size()))
+        if (m_SelectedRow < 0 || m_SelectedRow >= static_cast<i32>(m_VisibleScopes.size()))
             return;
 
-        const ProfileScopeStats& scope = *m_VisibleScopes[static_cast<std::size_t>(m_SelectedScope)];
+        const ProfileScopeStats& scope = *m_VisibleScopes[static_cast<std::size_t>(m_SelectedRow)];
         ImGui::Separator();
         ImGui::TextColored(PercentColor(ScopePercent(scope)), "%s", scope.Name.c_str());
         ImGui::SameLine(0.0f, 10.0f);
@@ -542,8 +576,10 @@ namespace UHE
         const f32 fraction = frameMs > 0.0f ? node.TotalMs / frameMs : 0.0f;
         const ImVec4 color = PercentColor(fraction);
 
-        ImGui::PushID(node.Name.c_str());
-        ImGui::PushID(static_cast<int>(node.Depth));
+        // Unique per node: sibling scopes (a mesh submitted N times, for
+        // instance) share name and depth, and duplicate IDs would cross-wire
+        // ImGui's open/close state between them.
+        ImGui::PushID(index);
         ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding;
         const bool leaf = node.FirstChild < 0;
         if (leaf)
@@ -564,7 +600,6 @@ namespace UHE
                 DrawTreeNode(child);
             ImGui::TreePop();
         }
-        ImGui::PopID();
         ImGui::PopID();
     }
 

@@ -348,8 +348,12 @@ void SceneHierarchyPanel::DrawEntityNode(Entity entity) {
   }
   if (MatchesFilter(entity, needle))
     ImGui::PushStyleColor(ImGuiCol_Text, kAccent());
-  bool opened = ImGui::TreeNodeEx(tc.Tag.c_str(), flags |
-                                                        ((expanded || forceOpen) ? ImGuiTreeNodeFlags_DefaultOpen : 0));
+  // ImGuiTreeNodeFlags_DefaultOpen only seeds the state the first time a node is
+  // drawn, so Expand All and the search reveal could not reopen a node the user
+  // had already collapsed. Force the state instead; the click handling below
+  // keeps m_ExpandedEntities in sync (SetNextItemOpen does not report a toggle).
+  ImGui::SetNextItemOpen(expanded || forceOpen, ImGuiCond_Always);
+  bool opened = ImGui::TreeNodeEx(tc.Tag.c_str(), flags);
   if (MatchesFilter(entity, needle))
     ImGui::PopStyleColor();
   if (m_SelectionContext == entity)

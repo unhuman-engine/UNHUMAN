@@ -104,6 +104,11 @@ void Editor::OnUpdate(UHE::Timestep ts)
         cmd.SetScissor(0, 0, passDesc.renderWidth, passDesc.renderHeight);
     }
 
+    // Timestep handed to the renderer. While paused the scene is redrawn from
+    // the frozen state (stepping advances it by exactly one frame), so sprite and
+    // model animations must not keep ticking on the render path.
+    f32 renderTs = ts;
+
     switch (m_SceneState)
     {
         case SceneState::Edit:
@@ -137,8 +142,17 @@ void Editor::OnUpdate(UHE::Timestep ts)
                 if (graphMode)
                     m_ActiveScene->OnUpdateRuntimeSimulation(ts);
                 else
-                    m_ActiveScene->OnUpdateRuntime(ts);
+                    m_ActiveScene->OnUpdateRuntime(ts); // simulation + render
                 m_StepRequested = false;
+            }
+            else
+            {
+                renderTs = 0.0f;
+                // The graph path renders the runtime scene in EndFrameGraph; the
+                // immediate path owns the render pass here and has to draw, or
+                // pausing would leave the viewport black.
+                if (!graphMode)
+                    m_ActiveScene->RenderRuntimeScene(renderTs);
             }
             break;
         }
@@ -149,7 +163,7 @@ void Editor::OnUpdate(UHE::Timestep ts)
         // Scene rendering is deferred into EndFrameGraph so the compiler owns
         // the attachment transitions; the ImGui pass is declared after this
         // and therefore runs second (UI on top).
-        DeclareSceneGraphPass(ts, runtimeScene);
+        DeclareSceneGraphPass(renderTs, runtimeScene);
     }
     else
     {

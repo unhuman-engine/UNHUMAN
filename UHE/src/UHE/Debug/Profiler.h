@@ -29,8 +29,10 @@ namespace UHE
     {
         const char* Name = nullptr;   // literal from the call site
         const char* Module = nullptr; // __FILE__ of the call site
-        f32 StartMs = 0.0f;
-        f32 EndMs = 0.0f;
+        // Absolute milliseconds since process start: f64 so a long session does
+        // not quantize short scopes (f32 loses sub-ms resolution past ~4e6 ms).
+        f64 StartMs = 0.0;
+        f64 EndMs = 0.0;
         u16 Depth = 0;
         u16 Reserved = 0;
         ProfileThreadId Thread = 0;
@@ -41,8 +43,8 @@ namespace UHE
     {
         std::string Name;
         std::string Module;
-        f32 StartMs = 0.0f;
-        f32 TotalMs = 0.0f;
+        f64 StartMs = 0.0;  // absolute, for the timeline tooltip
+        f32 TotalMs = 0.0f; // durations stay f32: they are always small
         f32 SelfMs = 0.0f;
         u16 Depth = 0;
         i32 Parent = -1;
@@ -109,8 +111,8 @@ namespace UHE
         // ─── Recording API (used by ProfilerScope) ──────────────────────────
         // Returns the scope's start time in ms, or a negative value when the
         // scope must not be recorded (disabled/paused).
-        static f32 BeginScope();
-        static void EndScope(const char* name, const char* module, f32 startMs);
+        static f64 BeginScope();
+        static void EndScope(const char* name, const char* module, f64 startMs);
         [[nodiscard]] static f64 NowMs();
 
         // ─── Read-only view for the UI (main thread) ────────────────────────
@@ -145,7 +147,7 @@ namespace UHE
     private:
         const char* m_Name;
         const char* m_Module;
-        f32 m_StartMs;
+        f64 m_StartMs;
     };
 } // namespace UHE
 

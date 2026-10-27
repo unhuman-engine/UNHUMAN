@@ -136,7 +136,7 @@ namespace UHE
             return *t_Buffer;
         }
 
-        void AppendSample(ThreadBuffer& buffer, const char* name, const char* module, f32 startMs)
+        void AppendSample(ThreadBuffer& buffer, const char* name, const char* module, f64 startMs)
         {
             if (buffer.Count < kSamplesPerThread)
             {
@@ -144,13 +144,29 @@ namespace UHE
                 sample.Name = name;
                 sample.Module = module;
                 sample.StartMs = startMs;
-                sample.EndMs = static_cast<f32>(Profiler::NowMs());
+                sample.EndMs = Profiler::NowMs();
                 sample.Depth = static_cast<u16>(buffer.Depth);
                 sample.Thread = buffer.Id;
             }
             else
             {
                 s_DroppedSamples.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        // Empties the thread buffers without aggregating them: used when capture
+        // is off so a stale sample can never leak into the next captured frame.
+        void DiscardPendingSamples(const std::vector<ThreadBuffer*>& buffers)
+        {
+            for (ThreadBuffer* buffer : buffers)
+            {
+                if (buffer->IsMainThread)
+                {
+                    buffer->Count = 0;
+                    continue;
+                }
+                std::lock_guard<std::mutex> lock(buffer->Mutex);
+                buffer->Count = 0;
             }
         }
     } // namespace
@@ -194,17 +210,17 @@ namespace UHE
     }
 
     // ─── recording ──────────────────────────────────────────────────────────
-    f32 Profiler::BeginScope()
+    f64 Profiler::BeginScope()
     {
         if (!s_Enabled.load(std::memory_order_relaxed) || !s_Capturing.load(std::memory_order_relaxed))
-            return -1.0f;
+            return -1.0;
 
         ThreadBuffer& buffer = CurrentBuffer();
         ++buffer.Depth;
-        return static_cast<f32>(NowMs());
+        return NowMs();
     }
 
-    void Profiler::EndScope(const char* name, const char* module, f32 startMs)
+    void Profiler::EndScope(const char* name, const char* module, f64 startMs)
     {
         ThreadBuffer& buffer = CurrentBuffer();
         if (buffer.Depth > 0)
@@ -241,6 +257,21 @@ namespace UHE
 
     void Profiler::EndFrame()
     {
+        // Capture off (disabled or frozen): drop whatever the thread buffers
+        // collected and leave the last captured frame intact, so the panel keeps
+        // showing it instead of blanking out and the history stops growing.
+        if (!s_Enabled.load(std::memory_order_relaxed) || !s_Capturing.load(std::memory_order_relaxed))
+        {
+            {
+                std::lock_guard<std::mutex> lock(s_BufferMutex);
+                s_DrainList = s_Buffers;
+            }
+            DiscardPendingSamples(s_DrainList);
+            s_DroppedSamples.store(0, std::memory_order_relaxed);
+            s_HaveFrameStart = false;
+            return;
+        }
+
         const f64 endMs = NowMs();
         const f32 frameMs = s_HaveFrameStart ? static_cast<f32>(endMs - s_FrameStartMs) : 0.0f;
 
@@ -315,7 +346,7 @@ namespace UHE
                 node.Name = sample.Name != nullptr ? sample.Name : "?";
                 node.Module = Basename(sample.Module);
                 node.StartMs = sample.StartMs;
-                node.TotalMs = sample.EndMs - sample.StartMs;
+                node.TotalMs = static_cast<f32>(sample.EndMs - sample.StartMs);
                 node.SelfMs = node.TotalMs;
                 node.Depth = static_cast<u16>(stack.size());
                 node.Parent = stack.empty() ? -1 : stack.back().Node;
@@ -481,7 +512,7 @@ namespace UHE
 
     ProfilerScope::~ProfilerScope()
     {
-        if (m_StartMs >= 0.0f)
+        if (m_StartMs >= 0.0)
             Profiler::EndScope(m_Name, m_Module, m_StartMs);
     }
 } // namespace UHE
