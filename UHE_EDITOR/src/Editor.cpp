@@ -592,8 +592,13 @@ void Editor::OnImGuiRender()
         m_ResetLayout = false;
     }
 
+    // The dockspace must leave room for the status bar *and* the item spacing
+    // ImGui inserts before it. Reserving only the bar leaves the host window's
+    // content ~6px taller than its inner rect, which makes the whole dockspace
+    // scrollable by those few pixels (a full-height scrollbar that barely moves).
     const f32 statusBarHeight = ImGui::GetFrameHeight() + 6.0f;
-    ImGui::DockSpace(dockspaceId, ImVec2(0.0f, -statusBarHeight), ImGuiDockNodeFlags_None);
+    ImGui::DockSpace(dockspaceId, ImVec2(0.0f, -(statusBarHeight + style.ItemSpacing.y)),
+                     ImGuiDockNodeFlags_None);
     style.WindowMinSize.x = previousMinWidth;
 
     DrawStatusBar();
