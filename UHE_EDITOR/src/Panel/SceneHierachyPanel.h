@@ -17,7 +17,7 @@ namespace UHE {
 
 		void SetContext(const Ref<Scene>& context);
 
-		void OnImGuiRender();
+		void OnImGuiRender(bool showHierarchy = true, bool showInspector = true);
 
 		Entity GetSelectedEntity() const { return m_SelectionContext; }
 		void SetSelectedEntity(Entity entity);
@@ -31,6 +31,9 @@ namespace UHE {
 		// OnImGuiRender; children are drawn recursively from their parent node.
 		void DrawEntityNode(Entity entity);
 		void DrawCreateEntityMenu(Entity parent);
+		bool MatchesFilter(Entity entity, const std::string& needle);
+		bool SubtreeMatchesFilter(Entity entity, const std::string& needle);
+		void ExpandAll(Entity entity);
 
 		void DrawComponents(Entity entity);
 
@@ -58,5 +61,7 @@ namespace UHE {
 		// OnImGuiRender, outside any registry iteration.
 		std::vector<u64> m_PendingCreateParents; // 0 = create at root
 		std::vector<u64> m_PendingDeleteIDs;
+
+		char m_SearchBuffer[128] = {};
 	};
 }

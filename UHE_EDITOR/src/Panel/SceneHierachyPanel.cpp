@@ -1,4 +1,5 @@
 #include "SceneHierachyPanel.h"
+#include "EditorUI.h"
 #include "glm/trigonometric.hpp"
 #include "imgui/imgui_internal.h"
 #include <imgui/imgui.h>
@@ -8,6 +9,8 @@
 #include <glm/gtc/type_ptr.hpp>
 #include "UHE/AssestsManager/VfsSystem.h"
 #include "EditorTheme.h"
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 
 // todo divide them in other file as usage after 3d support
@@ -131,76 +134,169 @@ void SceneHierarchyPanel::ApplyQueuedMutations() {
   }
 }
 
-void SceneHierarchyPanel::OnImGuiRender() {
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 8));
-  ImGui::Begin("Scene Hierarchy");
-  ImGuiIO &io = ImGui::GetIO();
-  ImFont *boldFont = io.Fonts->Fonts.Size > 1 ? io.Fonts->Fonts[1] : nullptr;
-  if (boldFont)
-    ImGui::PushFont(boldFont);
-  ImGui::TextColored(DimText(0.60f), "ENTITIES");
-  if (boldFont)
-    ImGui::PopFont();
-  ImGui::Spacing();
-  ImGui::Separator();
-  ImGui::Spacing();
-  // Issue #17: draw the Scene's deduplicated root list; children render
-  // recursively inside DrawEntityNode. Snapshotting the roots once per frame
-  // means mutations queued inside popups can't corrupt what we iterate.
-  std::vector<Entity> roots = m_Context->GetRootEntities();
-  int rowIdx = 0;
-  for (Entity entity : roots) {
-    if (rowIdx % 2 == 1) {
-      ImVec2 cursorPos = ImGui::GetCursorScreenPos();
-      ImVec2 regionAvail = ImGui::GetContentRegionAvail();
-      float rowHeight =
-          ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f + 2.0f;
-      ImGui::GetWindowDrawList()->AddRectFilled(
-          cursorPos,
-          ImVec2(cursorPos.x + regionAvail.x, cursorPos.y + rowHeight),
-          ImGui::GetColorU32(ImGuiCol_TableRowBgAlt), 0.0f);
+void SceneHierarchyPanel::OnImGuiRender(bool showHierarchy, bool showInspector) {
+  UHE_PROFILE_FUNCTION();
+  if (showHierarchy) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
+    ImGui::Begin("Scene Hierarchy");
+
+    ImGuiIO &io = ImGui::GetIO();
+    ImFont *boldFont = io.Fonts->Fonts.Size > 1 ? io.Fonts->Fonts[1] : nullptr;
+
+    if (boldFont)
+      ImGui::PushFont(boldFont);
+    ImGui::TextColored(DimText(0.60f), "ENTITIES");
+    if (boldFont)
+      ImGui::PopFont();
+
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu", m_Context ? m_Context->GetRegistry().view<entt::entity>().size() : 0);
+
+    const float buttonsWidth = 172.0f;
+    ImGui::SameLine(ImGui::GetWindowWidth() - buttonsWidth);
+    if (ImGui::SmallButton("Expand All")) {
+      for (Entity root : m_Context->GetRootEntities())
+        ExpandAll(root);
     }
-    DrawEntityNode(entity);
-    rowIdx++;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Expand every entity branch");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Collapse"))
+      m_ExpandedEntities.clear();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Collapse every entity branch");
+
+    EditorUI::SearchField("##HierarchySearch", m_SearchBuffer, sizeof(m_SearchBuffer),
+                          "Search entities...", -1.0f);
+    ImGui::Spacing();
+
+    std::string needle = m_SearchBuffer;
+    std::transform(needle.begin(), needle.end(), needle.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool filtering = !needle.empty();
+
+    // Issue #17: draw the Scene's deduplicated root list; children render
+    // recursively inside DrawEntityNode. Snapshotting the roots once per frame
+    // means mutations queued inside popups can't corrupt what we iterate.
+    std::vector<Entity> roots = m_Context->GetRootEntities();
+    int rowIdx = 0;
+    size_t visibleCount = 0;
+    for (Entity entity : roots) {
+      if (filtering && !SubtreeMatchesFilter(entity, needle))
+        continue;
+      if (rowIdx % 2 == 1) {
+        ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+        ImVec2 regionAvail = ImGui::GetContentRegionAvail();
+        float rowHeight =
+            ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f + 2.0f;
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            cursorPos,
+            ImVec2(cursorPos.x + regionAvail.x, cursorPos.y + rowHeight),
+            ImGui::GetColorU32(ImGuiCol_TableRowBgAlt), 0.0f);
+      }
+      DrawEntityNode(entity);
+      rowIdx++;
+      visibleCount++;
+    }
+
+    if (filtering && visibleCount == 0)
+      ImGui::TextDisabled("No entities match \"%s\"", m_SearchBuffer);
+
+    // Issue #17: "unparent to root" drop zone, registered BEFORE the tree rows
+    // so a drop on a row prefers that row's own target; this one only wins over
+    // empty panel space.
+    {
+      ImVec2 regionMin = ImGui::GetWindowContentRegionMin();
+      ImVec2 regionMax = ImGui::GetWindowContentRegionMax();
+      ImVec2 origin = ImGui::GetWindowPos();
+      ImRect bb(ImVec2(origin.x + regionMin.x, origin.y + regionMin.y),
+                ImVec2(origin.x + regionMax.x, origin.y + regionMax.y));
+      if (ImGui::BeginDragDropTargetCustom(bb, ImGui::GetID("HierarchyDropToRoot"))) {
+        if (const ImGuiPayload *payload =
+                ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))
+          m_Context->QueueCollapse(*(const u64 *)payload->Data);
+        ImGui::EndDragDropTarget();
+      }
+    }
+
+    if (ImGui::IsMouseDown(0) && ImGui::IsWindowHovered() &&
+        !ImGui::IsAnyItemHovered())
+      m_SelectionContext = {};
+    if (ImGui::BeginPopupContextWindow("HierarchyContextMenu",
+                                       ImGuiPopupFlags_MouseButtonRight |
+                                           ImGuiPopupFlags_NoOpenOverItems)) {
+      DrawCreateEntityMenu({});
+      ImGui::EndPopup();
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
   }
 
-  // Issue #17: "unparent to root" drop zone, registered BEFORE the tree rows
-  // so a drop on a row prefers that row's own target; this one only wins over
-  // empty panel space.
-  {
-    ImVec2 regionMin = ImGui::GetWindowContentRegionMin();
-    ImVec2 regionMax = ImGui::GetWindowContentRegionMax();
-    ImVec2 origin = ImGui::GetWindowPos();
-    ImRect bb(ImVec2(origin.x + regionMin.x, origin.y + regionMin.y),
-              ImVec2(origin.x + regionMax.x, origin.y + regionMax.y));
-    if (ImGui::BeginDragDropTargetCustom(bb, ImGui::GetID("HierarchyDropToRoot"))) {
-      if (const ImGuiPayload *payload =
-              ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))
-        m_Context->QueueCollapse(*(const u64 *)payload->Data);
-      ImGui::EndDragDropTarget();
+  if (showInspector) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
+    ImGui::Begin("Properties");
+    if (m_SelectionContext) {
+      auto &tagComponent = m_SelectionContext.GetComponent<TagComponent>();
+      ImGuiIO &io = ImGui::GetIO();
+      ImFont *boldFont = io.Fonts->Fonts.Size > 1 ? io.Fonts->Fonts[1] : nullptr;
+      if (boldFont)
+        ImGui::PushFont(boldFont);
+      ImGui::TextColored(::EditorTheme::Accent(), "%s", tagComponent.Tag.c_str());
+      if (boldFont)
+        ImGui::PopFont();
+      ImGui::SameLine();
+      ImGui::TextDisabled("#%llu", (unsigned long long)m_SelectionContext.GetUUID());
+      ImGui::Separator();
+      DrawComponents(m_SelectionContext);
+    } else {
+      ImGui::TextDisabled("Select an entity to view properties");
+      ImGui::Spacing();
+      ImGui::TextWrapped("Use the Hierarchy to pick an entity, or create one from the "
+                         "Create menu in the main menu bar.");
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+  }
+}
+
+bool SceneHierarchyPanel::MatchesFilter(Entity entity, const std::string& needle) {
+  if (needle.empty() || !entity.HasComponent<TagComponent>())
+    return false;
+
+  std::string tag = entity.GetComponent<TagComponent>().Tag;
+  std::transform(tag.begin(), tag.end(), tag.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return tag.find(needle) != std::string::npos;
+}
+
+bool SceneHierarchyPanel::SubtreeMatchesFilter(Entity entity, const std::string& needle) {
+  if (MatchesFilter(entity, needle))
+    return true;
+
+  if (!entity.HasComponent<RelationshipComponent>())
+    return false;
+
+  for (u64 childID : entity.GetComponent<RelationshipComponent>().Children) {
+    Entity child = m_Context->GetEntityWithUUID(childID);
+    if (child && SubtreeMatchesFilter(child, needle))
+      return true;
+  }
+  return false;
+}
+
+void SceneHierarchyPanel::ExpandAll(Entity entity) {
+  if (!entity)
+    return;
+
+  if (entity.HasComponent<RelationshipComponent>() &&
+      !entity.GetComponent<RelationshipComponent>().Children.empty()) {
+    m_ExpandedEntities.insert(entity.GetUUID());
+    for (u64 childID : entity.GetComponent<RelationshipComponent>().Children) {
+      Entity child = m_Context->GetEntityWithUUID(childID);
+      if (child)
+        ExpandAll(child);
     }
   }
-
-  if (ImGui::IsMouseDown(0) && ImGui::IsWindowHovered() &&
-      !ImGui::IsAnyItemHovered())
-    m_SelectionContext = {};
-  if (ImGui::BeginPopupContextWindow("HierarchyContextMenu",
-                                     ImGuiPopupFlags_MouseButtonRight |
-                                         ImGuiPopupFlags_NoOpenOverItems)) {
-    DrawCreateEntityMenu({});
-    ImGui::EndPopup();
-  }
-  ImGui::End();
-  ImGui::PopStyleVar();
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 8));
-  ImGui::Begin("Properties");
-  if (m_SelectionContext) {
-    DrawComponents(m_SelectionContext);
-  } else {
-    ImGui::TextDisabled("Select an entity to view properties");
-  }
-  ImGui::End();
-  ImGui::PopStyleVar();
 }
 
 void SceneHierarchyPanel::SetSelectedEntity(Entity entity) {
@@ -232,6 +328,12 @@ void SceneHierarchyPanel::DrawEntityNode(Entity entity) {
   u64 entityID = entity.GetUUID();
   bool expanded = m_ExpandedEntities.count(entityID) != 0;
 
+  std::string needle = m_SearchBuffer;
+  std::transform(needle.begin(), needle.end(), needle.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  const bool filtering = !needle.empty();
+  const bool forceOpen = filtering && hasChildren && SubtreeMatchesFilter(entity, needle);
+
   ImGui::PushID((uint32_t)entity);
   ImGuiTreeNodeFlags flags =
       ((m_SelectionContext == entity) ? ImGuiTreeNodeFlags_Selected : 0) |
@@ -244,7 +346,12 @@ void SceneHierarchyPanel::DrawEntityNode(Entity entity) {
     ImGui::PushStyleColor(ImGuiCol_Header, kAccentMuted());
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, kAccentMuted());
   }
-  bool opened = ImGui::TreeNodeEx(tc.Tag.c_str(), flags | (expanded ? ImGuiTreeNodeFlags_DefaultOpen : 0));
+  if (MatchesFilter(entity, needle))
+    ImGui::PushStyleColor(ImGuiCol_Text, kAccent());
+  bool opened = ImGui::TreeNodeEx(tc.Tag.c_str(), flags |
+                                                        ((expanded || forceOpen) ? ImGuiTreeNodeFlags_DefaultOpen : 0));
+  if (MatchesFilter(entity, needle))
+    ImGui::PopStyleColor();
   if (m_SelectionContext == entity)
     ImGui::PopStyleColor(2);
   if (ImGui::IsItemClicked())
@@ -308,8 +415,11 @@ void SceneHierarchyPanel::DrawEntityNode(Entity entity) {
         // Parent points back at us — stale entries (child re-parented or
         // deleted elsewhere) can never produce a duplicate row.
         if (child && child.HasComponent<RelationshipComponent>() &&
-            child.GetComponent<RelationshipComponent>().Parent == entityID)
+            child.GetComponent<RelationshipComponent>().Parent == entityID) {
+          if (filtering && !SubtreeMatchesFilter(child, needle))
+            continue;
           DrawEntityNode(child);
+        }
       }
     }
     ImGui::TreePop();
@@ -500,66 +610,84 @@ void SceneHierarchyPanel::DrawComponents(Entity entity) {
   ImGui::PopStyleVar();
   ImGui::PopStyleColor(4);
   if (ImGui::BeginPopup("AddComponents")) {
-    ImGui::TextColored(DimText(0.50f), "Components");
+    static char addFilter[128] = {};
+    auto match = [&](const char* label) {
+      if (addFilter[0] == '\0')
+        return true;
+      std::string haystack = label;
+      std::string needle = addFilter;
+      std::transform(haystack.begin(), haystack.end(), haystack.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      std::transform(needle.begin(), needle.end(), needle.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      return haystack.find(needle) != std::string::npos;
+    };
+
+    ImGui::TextColored(DimText(0.50f), "ADD COMPONENT");
+    EditorUI::SearchField("##AddComponentSearch", addFilter, sizeof(addFilter),
+                          "Search components...", 260.0f);
     ImGui::Separator();
-    if (ImGui::MenuItem("  Camera")) {
+
+    if (match("Camera") && ImGui::MenuItem("Camera")) {
       m_SelectionContext.AddComponent<CameraComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Sprite Renderer")) {
+    if (match("Sprite Renderer") && ImGui::MenuItem("Sprite Renderer")) {
       m_SelectionContext.AddComponent<SpriteRendererComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Text Node")) {
+    if (match("Text Node") && ImGui::MenuItem("Text Node")) {
       m_SelectionContext.AddComponent<TextComponent>();
       ImGui::CloseCurrentPopup();
     }
-
-    if (ImGui::MenuItem("  Sprite Animation")) {
+    if (match("Sprite Animation") && ImGui::MenuItem("Sprite Animation")) {
       m_SelectionContext.AddComponent<SpriteAnimationComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Rigid Body 2D")) {
+    ImGui::Separator();
+    if (match("Rigid Body 2D") && ImGui::MenuItem("Rigid Body 2D")) {
       m_SelectionContext.AddComponent<RigidBody2DComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Box Collider 2D")) {
+    if (match("Box Collider 2D") && ImGui::MenuItem("Box Collider 2D")) {
       m_SelectionContext.AddComponent<BoxColliderComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Model 3D")) {
+    ImGui::Separator();
+    if (match("Model 3D") && ImGui::MenuItem("Model 3D")) {
       m_SelectionContext.AddComponent<Model3DComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Rigid Body 3D")) {
+    if (match("Rigid Body 3D") && ImGui::MenuItem("Rigid Body 3D")) {
       m_SelectionContext.AddComponent<RigidBody3DComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Box Collider 3D")) {
+    if (match("Box Collider 3D") && ImGui::MenuItem("Box Collider 3D")) {
       m_SelectionContext.AddComponent<BoxCollider3DComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Sphere Collider 3D")) {
+    if (match("Sphere Collider 3D") && ImGui::MenuItem("Sphere Collider 3D")) {
       m_SelectionContext.AddComponent<SphereCollider3DComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Capsule Collider 3D")) {
+    if (match("Capsule Collider 3D") && ImGui::MenuItem("Capsule Collider 3D")) {
       m_SelectionContext.AddComponent<CapsuleCollider3DComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Animator 3D")) {
+    if (match("Animator 3D") && ImGui::MenuItem("Animator 3D")) {
       m_SelectionContext.AddComponent<AnimatorComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Directional Light")) {
+    ImGui::Separator();
+    if (match("Directional Light") && ImGui::MenuItem("Directional Light")) {
       m_SelectionContext.AddComponent<DirectionalLightComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Point Light")) {
+    if (match("Point Light") && ImGui::MenuItem("Point Light")) {
       m_SelectionContext.AddComponent<PointLightComponent>();
       ImGui::CloseCurrentPopup();
     }
-    if (ImGui::MenuItem("  Spot Light")) {
+    if (match("Spot Light") && ImGui::MenuItem("Spot Light")) {
       m_SelectionContext.AddComponent<SpotLightComponent>();
       ImGui::CloseCurrentPopup();
     }
