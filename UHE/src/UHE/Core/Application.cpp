@@ -111,53 +111,57 @@ namespace UHE{
 
 	while (m_Running)
 	{   
-		UHE_PROFILE_SCOPE("Frame");
+		UHE::Profiler::BeginFrame();
 		{
-			UHE_PROFILE_SCOPE("application");
-			float time = (float)glfwGetTime();
-
-			Timestep timestep = time - m_LastFrameTime;
-			m_LastFrameTime = time;
-
-			if (timestep > 0.25f)
-				timestep = 0.25f;
-
-			if (!m_Minimized) {
-				Audio::AudioEngine::Update();
-				
-				Renderer::GetDevice().Begin();
-				// §9.1.4 resize policy: Begin may recreate the swapchain and skip
-				// the frame — layers must not record GPU work this iteration.
-				const bool frameSkipped = Renderer::GetDevice().FrameSkipped();
-
-				if (!frameSkipped)
-				{
-					for (Layer* layer : m_LayerStack)
-						layer->OnUpdate(timestep);
-				}
-
-				m_ImGuiLayer->Begin();
-				for (Layer* layer : m_LayerStack)
-					layer->OnImGuiRender();
-				m_ImGuiLayer->End();
-
-				Renderer::GetDevice().End();
-			}
-
-			m_Window->OnUpdate();
-			
+			UHE_PROFILE_SCOPE("Frame");
 			{
-				UHE_PROFILE_SCOPE("TracyDummyTestWork");
-				float result = 0.0f;
-				for (int i = 0; i < 100000; i++) {
-					result += std::sin((float)i) * std::cos((float)i);
+				UHE_PROFILE_SCOPE("application");
+				float time = (float)glfwGetTime();
+
+				Timestep timestep = time - m_LastFrameTime;
+				m_LastFrameTime = time;
+
+				if (timestep > 0.25f)
+					timestep = 0.25f;
+
+				if (!m_Minimized) {
+					Audio::AudioEngine::Update();
+					
+					Renderer::GetDevice().Begin();
+					// §9.1.4 resize policy: Begin may recreate the swapchain and skip
+					// the frame — layers must not record GPU work this iteration.
+					const bool frameSkipped = Renderer::GetDevice().FrameSkipped();
+
+					if (!frameSkipped)
+					{
+						for (Layer* layer : m_LayerStack)
+							layer->OnUpdate(timestep);
+					}
+
+					m_ImGuiLayer->Begin();
+					for (Layer* layer : m_LayerStack)
+						layer->OnImGuiRender();
+					m_ImGuiLayer->End();
+
+					Renderer::GetDevice().End();
 				}
-				if (result == 0.12345f) { // Prevent compiler optimization
-					UHE_CORE_INFO("Dummy work result: {}", result);
+
+				m_Window->OnUpdate();
+				
+				{
+					UHE_PROFILE_SCOPE("TracyDummyTestWork");
+					float result = 0.0f;
+					for (int i = 0; i < 100000; i++) {
+						result += std::sin((float)i) * std::cos((float)i);
+					}
+					if (result == 0.12345f) { // Prevent compiler optimization
+						UHE_CORE_INFO("Dummy work result: {}", result);
+					}
 				}
 			}
+			UHE_PROFILE_FRAMEMARK;
 		}
-		UHE_PROFILE_FRAMEMARK;
+		UHE::Profiler::EndFrame();
 	}
 
 	};

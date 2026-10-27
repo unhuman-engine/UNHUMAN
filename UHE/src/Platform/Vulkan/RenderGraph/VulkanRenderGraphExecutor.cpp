@@ -231,6 +231,7 @@ void VulkanRenderGraphExecutor::Record(const RGResolvedFrame& resolved,
                                        VulkanCommandBuffer& target, VulkanBarrierEncoder& encoder,
                                        std::vector<std::string>& errors) const
 {
+    UHE_PROFILE_FUNCTION();
     RecordRange(resolved, specs, 0, static_cast<u32>(resolved.passes.size()),
                 target.GetHandle(), encoder, errors);
 }

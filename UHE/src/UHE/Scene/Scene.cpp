@@ -565,6 +565,7 @@ void Scene::CollapseEntity(Entity entity)
 
 void Scene::FlushPendingModelOps()
 {
+    UHE_PROFILE_FUNCTION();
     if (!m_PendingModelExpands.empty())
     {
         auto pending = m_PendingModelExpands;
@@ -941,6 +942,7 @@ static glm::mat4 GetWorldFromCache(const std::unordered_map<entt::entity, glm::m
 
 void Scene::UpdateWorldTransformCache()
 {
+    UHE_PROFILE_FUNCTION();
     m_WorldTransformCache.clear();
     m_WorldTransformByUUID.clear();
 
@@ -1002,6 +1004,7 @@ void Scene::UpdateWorldTransformCache()
 
 void Scene::RenderSprites(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms)
 {
+    UHE_PROFILE_FUNCTION();
     auto animView = m_registry.view<SpriteAnimationComponent>();
     for (auto entity : animView)
     {
@@ -1043,6 +1046,7 @@ void Scene::RenderSprites(Timestep ts, const std::unordered_map<entt::entity, gl
 
 void Scene::RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms)
 {
+    UHE_PROFILE_FUNCTION();
     if (!GetShowLightIcons()) return;
 
     if (!m_DirLightIcon)
@@ -1079,6 +1083,7 @@ void Scene::RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt
 
 void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms)
 {
+    UHE_PROFILE_FUNCTION();
     auto view = m_registry.view<TransformComponent, Model3DComponent>();
     for (auto entity : view)
     {
