@@ -52,6 +52,11 @@ namespace EditorTheme
     ImVec4 ConsoleError();
     ImVec4 ConsoleCritical();
 
+    // ---- semantic status colors ----
+    ImVec4 Success();
+    ImVec4 Warning();
+    ImVec4 Danger();
+
     // Palette accessors for panels with hand-drawn accents.
     ImVec4 Accent();
     ImVec4 AccentHover();

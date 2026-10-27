@@ -68,6 +68,7 @@ namespace EditorTheme
         bool s_CustomEnabled = false;
         ImVec4 s_CustomAccent{0.424f, 0.388f, 1.000f, 1.0f};
         ImVec4 s_ConsoleInfo{1, 1, 1, 1}, s_ConsoleWarn{1, 1, 0, 1}, s_ConsoleError{1, 0, 0, 1}, s_ConsoleCritical{1, 0, 1, 1};
+        bool s_LightTheme = false;
 
         // ---------- style builder ----------
         void BuildStyle(ImGuiStyle& s, const ThemeDef& t)
@@ -184,29 +185,34 @@ namespace EditorTheme
 
         void ApplyMetrics(ImGuiStyle& s)
         {
-            s.WindowRounding    = 4.0f;
-            s.ChildRounding     = 4.0f;
-            s.FrameRounding     = 4.0f;
-            s.PopupRounding     = 4.0f;
-            s.GrabRounding      = 4.0f;
-            s.TabRounding       = 5.0f;
+            s.WindowRounding    = 6.0f;
+            s.ChildRounding     = 5.0f;
+            s.FrameRounding     = 5.0f;
+            s.PopupRounding     = 6.0f;
+            s.GrabRounding      = 5.0f;
+            s.TabRounding       = 6.0f;
             s.ScrollbarRounding = 9.0f;
             s.WindowBorderSize  = 1.0f;
             s.ChildBorderSize   = 1.0f;
             s.PopupBorderSize   = 1.0f;
             s.FrameBorderSize   = 0.0f;
-            s.FramePadding      = ImVec2(7, 4);
-            s.ItemSpacing       = ImVec2(8, 5);
-            s.ItemInnerSpacing  = ImVec2(6, 5);
-            s.IndentSpacing     = 20.0f;
-            s.ScrollbarSize     = 13.0f;
+            s.FramePadding      = ImVec2(8, 5);
+            s.ItemSpacing       = ImVec2(8, 6);
+            s.ItemInnerSpacing  = ImVec2(7, 5);
+            s.CellPadding       = ImVec2(6, 4);
+            s.IndentSpacing     = 18.0f;
+            s.ScrollbarSize     = 12.0f;
             s.GrabMinSize       = 9.0f;
-            s.WindowPadding     = ImVec2(8, 8);
+            s.WindowPadding     = ImVec2(10, 10);
             s.DockingSeparatorSize = 2.0f;
+            s.SeparatorTextBorderSize = 1.0f;
+            s.SeparatorTextAlign = ImVec2(0.0f, 0.5f);
+            s.SeparatorTextPadding = ImVec2(20.0f, 3.0f);
         }
 
         void ComputeConsolePalette(bool light)
         {
+            s_LightTheme = light;
             if (light)
             {
                 s_ConsoleInfo     = {0.120f, 0.130f, 0.150f, 1.0f};
@@ -348,6 +354,10 @@ namespace EditorTheme
     ImVec4 ConsoleWarn()     { return s_ConsoleWarn; }
     ImVec4 ConsoleError()    { return s_ConsoleError; }
     ImVec4 ConsoleCritical() { return s_ConsoleCritical; }
+
+    ImVec4 Success() { return s_LightTheme ? ImVec4(0.110f, 0.560f, 0.240f, 1.0f) : ImVec4(0.310f, 0.780f, 0.420f, 1.0f); }
+    ImVec4 Warning() { return s_LightTheme ? ImVec4(0.720f, 0.480f, 0.000f, 1.0f) : ImVec4(0.980f, 0.700f, 0.220f, 1.0f); }
+    ImVec4 Danger()  { return s_LightTheme ? ImVec4(0.780f, 0.150f, 0.150f, 1.0f) : ImVec4(0.950f, 0.340f, 0.340f, 1.0f); }
 
     // ---- palette accessors ----
 
