@@ -103,6 +103,14 @@ public:
     void OnUpdateEditor(Timestep ts, EditorCamera& camera);
     void OnUpdateRuntime(Timestep ts);
 
+    // Update and render are split so a render graph pass can own the recording
+    // step while the simulation/timestep still runs on the main thread. The
+    // combined OnUpdate* functions keep the immediate path unchanged.
+    void OnUpdateEditorSimulation(Timestep ts);
+    void RenderEditorScene(Timestep ts, EditorCamera& camera);
+    void OnUpdateRuntimeSimulation(Timestep ts);
+    void RenderRuntimeScene(Timestep ts);
+
     void OnRuntimeStart();
     void OnRuntimeStop();
 
