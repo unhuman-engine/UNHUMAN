@@ -17,6 +17,13 @@ namespace UHE
     public:
         void OnImGuiRender();
 
+        // Call-tree name filter: marks every node whose name or module contains
+        // `needle` plus all of its ancestors in `visible`, so a match stays
+        // reachable even when none of its ancestors match. An empty needle keeps
+        // everything. Returns true when at least one node matched.
+        static bool ComputeTreeVisibility(const std::vector<ProfileNode>& tree, const std::string& needle,
+                                          std::vector<char>& visible);
+
     private:
         void DrawToolbar();
         void DrawSummary();
@@ -31,7 +38,7 @@ namespace UHE
         void ApplySort();
         void ClearSelection();
         bool MatchesFilter(const ProfileScopeStats& stats) const;
-        void DrawTreeNode(i32 index);
+        void DrawTreeNode(i32 index, const std::string& needle);
         float ScopePercent(const ProfileScopeStats& stats) const;
         static ImVec4 PercentColor(float fraction);
 
@@ -52,6 +59,10 @@ namespace UHE
         // Tree tab
         int m_TreeForceOpen = 1; // 1 = expand all, -1 = collapse all (applied on the next frame)
         float m_TreeMinMilliseconds = 0.0f;
+        // Per-node "keep this branch" flags for the call-tree name filter, so the
+        // draw pass stays O(nodes) instead of re-walking every subtree.
+        std::vector<char> m_TreeBranchVisible;
+        u32 m_TreeDrawnNodes = 0;
 
         // Frame budget target
         int m_TargetFps = 60;

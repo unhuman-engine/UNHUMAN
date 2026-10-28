@@ -528,6 +528,29 @@ namespace UHE
                            scope.MaxMs);
     }
 
+    bool ProfilerPanel::ComputeTreeVisibility(const std::vector<ProfileNode>& tree, const std::string& needle,
+                                              std::vector<char>& visible)
+    {
+        visible.assign(tree.size(), needle.empty() ? 1 : 0);
+        if (needle.empty())
+            return !tree.empty();
+
+        bool anyMatch = false;
+        for (std::size_t i = 0; i < tree.size(); ++i)
+        {
+            const ProfileNode& node = tree[i];
+            if (!ContainsCaseInsensitive(node.Name, needle) && !ContainsCaseInsensitive(node.Module, needle))
+                continue;
+
+            anyMatch = true;
+            // Keep the match and every ancestor, so the path to it stays visible.
+            for (i32 current = static_cast<i32>(i); current >= 0;
+                 current = tree[static_cast<std::size_t>(current)].Parent)
+                visible[static_cast<std::size_t>(current)] = 1;
+        }
+        return anyMatch;
+    }
+
     void ProfilerPanel::DrawCallTree()
     {
         EditorUI::SectionHeader("Call Tree");
@@ -551,18 +574,29 @@ namespace UHE
             return;
         }
 
+        // Name filter for the tree. A branch stays visible when the node itself
+        // matches or one of its descendants does, so a match is always reachable
+        // even when none of its ancestors match.
+        const std::string needle = ToLowerCopy(m_SearchBuffer);
+        const bool filtering = !needle.empty();
+        ComputeTreeVisibility(tree, needle, m_TreeBranchVisible);
+
+        m_TreeDrawnNodes = 0;
         ImGui::BeginChild("##treeScroll", ImVec2(0.0f, 0.0f), false);
         for (std::size_t i = 0; i < tree.size(); ++i)
         {
             if (tree[i].Parent >= 0)
                 continue; // drawn by its parent
-            DrawTreeNode(static_cast<i32>(i));
+            DrawTreeNode(static_cast<i32>(i), needle);
         }
         ImGui::EndChild();
         m_TreeForceOpen = 0;
+
+        if (filtering && m_TreeDrawnNodes == 0)
+            ImGui::TextDisabled("No scopes match \"%s\"", m_SearchBuffer);
     }
 
-    void ProfilerPanel::DrawTreeNode(i32 index)
+    void ProfilerPanel::DrawTreeNode(i32 index, const std::string& needle)
     {
         const std::vector<ProfileNode>& tree = Profiler::GetFrameTree();
         if (index < 0 || index >= static_cast<i32>(tree.size()))
@@ -571,6 +605,14 @@ namespace UHE
         const ProfileNode& node = tree[static_cast<std::size_t>(index)];
         if (node.TotalMs < m_TreeMinMilliseconds)
             return;
+
+        const bool filtering = !needle.empty();
+        if (filtering && m_TreeBranchVisible[static_cast<std::size_t>(index)] == 0)
+            return;
+
+        const bool selfMatches = ContainsCaseInsensitive(node.Name, needle) ||
+                                 ContainsCaseInsensitive(node.Module, needle);
+        ++m_TreeDrawnNodes;
 
         const f32 frameMs = Profiler::GetLastFrameMs();
         const f32 fraction = frameMs > 0.0f ? node.TotalMs / frameMs : 0.0f;
@@ -586,10 +628,16 @@ namespace UHE
             flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if (m_TreeForceOpen != 0)
             ImGui::SetNextItemOpen(m_TreeForceOpen > 0, ImGuiCond_Always);
+        else if (filtering && !selfMatches)
+            ImGui::SetNextItemOpen(true, ImGuiCond_Always); // ancestor of a match: reveal it
 
+        if (selfMatches && filtering)
+            ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Accent());
         const bool open = ImGui::TreeNodeEx("##node", flags, "%s  %.3f ms (self %.3f)  %.1f%%  [%s]",
                                             node.Name.c_str(), node.TotalMs, node.SelfMs, fraction * 100.0f,
                                             node.Module.c_str());
+        if (selfMatches && filtering)
+            ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s\nstart +%.3f ms  duration %.3f ms\nthread %s", node.Name.c_str(), node.StartMs,
                               node.TotalMs, Profiler::GetThreadName(node.Thread));
@@ -597,7 +645,7 @@ namespace UHE
         if (open && !leaf)
         {
             for (i32 child = node.FirstChild; child >= 0; child = tree[static_cast<std::size_t>(child)].NextSibling)
-                DrawTreeNode(child);
+                DrawTreeNode(child, needle);
             ImGui::TreePop();
         }
         ImGui::PopID();
