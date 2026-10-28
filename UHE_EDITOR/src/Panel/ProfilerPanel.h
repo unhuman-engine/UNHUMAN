@@ -17,12 +17,15 @@ namespace UHE
     public:
         void OnImGuiRender();
 
-        // Call-tree name filter: marks every node whose name or module contains
-        // `needle` plus all of its ancestors in `visible`, so a match stays
-        // reachable even when none of its ancestors match. An empty needle keeps
-        // everything. Returns true when at least one node matched.
+        // Call-tree name filter. `visible[i]` is set for every node that the draw
+        // pass may render: nodes whose name or module contains `needle`, plus the
+        // ancestors needed to reach them, and only when the node and its whole
+        // ancestor chain clear `minMilliseconds` (the same threshold DrawTreeNode
+        // prunes with - a match under a pruned ancestor can never be drawn).
+        // An empty needle keeps everything that is drawable. Returns true when at
+        // least one drawable node matched.
         static bool ComputeTreeVisibility(const std::vector<ProfileNode>& tree, const std::string& needle,
-                                          std::vector<char>& visible);
+                                          f32 minMilliseconds, std::vector<char>& visible);
 
     private:
         void DrawToolbar();
@@ -62,7 +65,6 @@ namespace UHE
         // Per-node "keep this branch" flags for the call-tree name filter, so the
         // draw pass stays O(nodes) instead of re-walking every subtree.
         std::vector<char> m_TreeBranchVisible;
-        u32 m_TreeDrawnNodes = 0;
 
         // Frame budget target
         int m_TargetFps = 60;

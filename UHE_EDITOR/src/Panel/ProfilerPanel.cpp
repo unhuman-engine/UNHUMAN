@@ -529,15 +529,37 @@ namespace UHE
     }
 
     bool ProfilerPanel::ComputeTreeVisibility(const std::vector<ProfileNode>& tree, const std::string& needle,
-                                              std::vector<char>& visible)
+                                              f32 minMilliseconds, std::vector<char>& visible)
     {
-        visible.assign(tree.size(), needle.empty() ? 1 : 0);
+        // DrawTreeNode prunes a branch at the first node below the duration
+        // threshold, so a node is only drawable when it *and* its whole ancestor
+        // chain clear it.
+        std::vector<char> drawable(tree.size(), 0);
+        bool anyDrawable = false;
+        for (std::size_t i = 0; i < tree.size(); ++i)
+        {
+            const ProfileNode& node = tree[i];
+            const bool parentDrawable =
+                node.Parent < 0 || drawable[static_cast<std::size_t>(node.Parent)] != 0;
+            if (parentDrawable && node.TotalMs >= minMilliseconds)
+            {
+                drawable[i] = 1;
+                anyDrawable = true;
+            }
+        }
+
+        visible.assign(tree.size(), 0);
         if (needle.empty())
-            return !tree.empty();
+        {
+            visible = drawable;
+            return anyDrawable;
+        }
 
         bool anyMatch = false;
         for (std::size_t i = 0; i < tree.size(); ++i)
         {
+            if (drawable[i] == 0)
+                continue; // pruned, directly or by an ancestor: never drawn
             const ProfileNode& node = tree[i];
             if (!ContainsCaseInsensitive(node.Name, needle) && !ContainsCaseInsensitive(node.Module, needle))
                 continue;
@@ -579,9 +601,19 @@ namespace UHE
         // even when none of its ancestors match.
         const std::string needle = ToLowerCopy(m_SearchBuffer);
         const bool filtering = !needle.empty();
-        ComputeTreeVisibility(tree, needle, m_TreeBranchVisible);
+        const bool anyDrawableMatch =
+            ComputeTreeVisibility(tree, needle, m_TreeMinMilliseconds, m_TreeBranchVisible);
 
-        m_TreeDrawnNodes = 0;
+        // Drawn before the tree child: that child fills the remaining space, so a
+        // message after it would sit below the visible area until the panel is
+        // scrolled.
+        if (filtering && !anyDrawableMatch)
+        {
+            ImGui::TextDisabled("No scopes match \"%s\"", m_SearchBuffer);
+            m_TreeForceOpen = 0;
+            return;
+        }
+
         ImGui::BeginChild("##treeScroll", ImVec2(0.0f, 0.0f), false);
         for (std::size_t i = 0; i < tree.size(); ++i)
         {
@@ -591,9 +623,6 @@ namespace UHE
         }
         ImGui::EndChild();
         m_TreeForceOpen = 0;
-
-        if (filtering && m_TreeDrawnNodes == 0)
-            ImGui::TextDisabled("No scopes match \"%s\"", m_SearchBuffer);
     }
 
     void ProfilerPanel::DrawTreeNode(i32 index, const std::string& needle)
@@ -612,7 +641,17 @@ namespace UHE
 
         const bool selfMatches = ContainsCaseInsensitive(node.Name, needle) ||
                                  ContainsCaseInsensitive(node.Module, needle);
-        ++m_TreeDrawnNodes;
+
+        // While filtering, a node that keeps any child has to be open or the
+        // matching descendants below it stay hidden - including when the node
+        // matches the filter itself.
+        bool hasVisibleChild = false;
+        if (filtering)
+        {
+            for (i32 child = node.FirstChild; child >= 0 && !hasVisibleChild;
+                 child = tree[static_cast<std::size_t>(child)].NextSibling)
+                hasVisibleChild = m_TreeBranchVisible[static_cast<std::size_t>(child)] != 0;
+        }
 
         const f32 frameMs = Profiler::GetLastFrameMs();
         const f32 fraction = frameMs > 0.0f ? node.TotalMs / frameMs : 0.0f;
@@ -628,8 +667,8 @@ namespace UHE
             flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if (m_TreeForceOpen != 0)
             ImGui::SetNextItemOpen(m_TreeForceOpen > 0, ImGuiCond_Always);
-        else if (filtering && !selfMatches)
-            ImGui::SetNextItemOpen(true, ImGuiCond_Always); // ancestor of a match: reveal it
+        else if (hasVisibleChild)
+            ImGui::SetNextItemOpen(true, ImGuiCond_Always); // reveal the matching descendants
 
         if (selfMatches && filtering)
             ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::Accent());
