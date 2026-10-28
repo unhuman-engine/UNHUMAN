@@ -6,6 +6,7 @@
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 #include "ImGuizmo.h"
+#include "UHE/AssestsManager/AssetImport.h"
 #include "UHE/AssestsManager/Project.h"
 #include "UHE/AssestsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
@@ -52,22 +53,12 @@ void Editor::OnAttach()
     m_IconPause = Texture2D::Create((rootPath / "assets/icon/pause.png").string());
     m_IconStop = Texture2D::Create((rootPath / "assets/icon/stop.png").string());
 
-    // Startup: an explicit -project wins, otherwise reopen the most recent
-    // project; the launcher shows when neither is available (or with -launcher).
+    // The editor always starts on the project manager unless a project is named
+    // explicitly. Silently reopening the last project made it impossible to pick
+    // another one without hunting for the menu entry.
     const std::string requestedProject = CommandLine::GetValue("-project");
-    if (!requestedProject.empty())
-    {
-        if (!OpenProject(requestedProject))
-            m_ProjectLauncher.SetMessage("Could not open '" + requestedProject + "'");
-    }
-    else if (!CommandLine::HasFlag("-launcher"))
-    {
-        for (const std::filesystem::path& recent : m_ProjectLauncher.GetRecent())
-        {
-            if (OpenProject(recent))
-                break;
-        }
-    }
+    if (!requestedProject.empty() && !OpenProject(requestedProject))
+        m_ProjectLauncher.SetMessage("Could not open '" + requestedProject + "'");
 }
 
 void Editor::OnDetach() {}
@@ -264,6 +255,85 @@ void Editor::OnEvent(UHE::Event& e)
     EventDispatcher dispatcher(e);
     dispatcher.Dispatch<MouseButtonPressedEvent>(UHE_BIND_EVENT_FN(Editor::OnMouseButtonPressedEvent));
     dispatcher.Dispatch<KeyPressedEvent>(UHE_BIND_EVENT_FN(Editor::onKeyPressed));
+    dispatcher.Dispatch<WindowFileDropEvent>(UHE_BIND_EVENT_FN(Editor::OnFileDrop));
+}
+
+bool Editor::OnFileDrop(WindowFileDropEvent& e)
+{
+    if (!m_Project)
+    {
+        m_ProjectLauncher.SetMessage("Open a project before importing files");
+        return false;
+    }
+
+    // Everything the user drops is copied into the project first, so a scene can
+    // never reference a file that lives outside it.
+    const std::vector<std::filesystem::path> imported = m_ContentBrowserPanel.ImportFiles(e.GetPaths());
+    if (imported.empty())
+        return false;
+
+    const glm::vec2& viewportMin = m_ViewPortBounds[0];
+    const glm::vec2& viewportMax = m_ViewPortBounds[1];
+    const bool overViewport = e.GetX() >= viewportMin.x && e.GetX() <= viewportMax.x &&
+                              e.GetY() >= viewportMin.y && e.GetY() <= viewportMax.y;
+
+    for (const std::filesystem::path& file : imported)
+    {
+        if (!overViewport)
+            continue; // the Content Browser already shows the imported file
+        CreateEntityFromAsset(file);
+    }
+    return true;
+}
+
+bool Editor::CreateEntityFromAsset(const std::filesystem::path& assetPath)
+{
+    if (!m_ActiveScene || assetPath.empty())
+        return false;
+
+    // Components store project-relative paths so the scene stays portable.
+    const std::string storedPath = m_Project ? MakeAssetRelativePath(assetPath, m_Project->AssetPath)
+                                             : assetPath.generic_string();
+    const std::string extension = assetPath.extension().string();
+    const std::string name = assetPath.stem().string();
+
+    if (extension == ".unhuman")
+    {
+        OpenScene(assetPath);
+        return true;
+    }
+
+    if (extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".bmp" ||
+        extension == ".tga" || extension == ".hdr" || extension == ".ktx2")
+    {
+        Entity sprite = m_ActiveScene->CreateEntity(name);
+        auto& src = sprite.AddComponent<SpriteRendererComponent>();
+        src.TexturePath = storedPath;
+        src.Texture = Texture2D::Create(storedPath);
+        if (src.Texture)
+            UHE_CORE_INFO("Imported texture '{0}' into the scene", storedPath);
+        else
+            UHE_CORE_ERROR("Could not load imported texture '{0}'", storedPath);
+        m_SceneHireacyPanel.SetSelectedEntity(sprite);
+        return true;
+    }
+
+    if (extension == ".gltf" || extension == ".glb" || extension == ".fbx" || extension == ".obj")
+    {
+        Entity model = m_ActiveScene->CreateEntity(name);
+        auto& mc = model.AddComponent<Model3DComponent>();
+        mc.ModelPath = storedPath;
+        mc.IsLoaded = mc.ModelData && mc.ModelData->loadModel(storedPath);
+        if (mc.IsLoaded)
+            UHE_CORE_INFO("Imported model '{0}' into the scene", storedPath);
+        else
+            UHE_CORE_ERROR("Could not load imported model '{0}'", storedPath);
+        m_SceneHireacyPanel.SetSelectedEntity(model);
+        return true;
+    }
+
+    UHE_CORE_INFO("Imported '{0}' into the project (no scene entity for this type)", storedPath);
+    return false;
 }
 
 void Editor::OnScreenPlay()
@@ -778,49 +848,9 @@ void Editor::OnImGuiRender()
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("Content_Browser_item"))
         {
             const char* path = (const char*)payload->Data;
-            std::filesystem::path itemPath(path);
-            std::string extension = itemPath.extension().string();
-
-            if (extension == ".unhuman")
-            {
-                OpenScene(path);
-            }
-            else if (extension == ".png" || extension == ".jpg")
-            {
-                UHE_CORE_INFO("Accepted Viewport DragDropPayload: {0}", path);
-                // Create a new entity with the texture
-                std::string filename = itemPath.stem().string();
-                Entity spriteEntity = m_ActiveScene->CreateEntity(filename);
-                auto& src = spriteEntity.AddComponent<SpriteRendererComponent>();
-                src.TexturePath = itemPath.string();
-                src.Texture = Texture2D::Create(itemPath.string());
-                if (src.Texture)
-                {
-                    UHE_CORE_INFO("Successfully loaded texture into viewport!");
-                }
-                else
-                {
-                    UHE_CORE_ERROR("Failed to load texture into viewport from payload!");
-                }
-            }
-            else if (extension == ".gltf" || extension == ".glb")
-            {
-                UHE_CORE_INFO("Accepted Viewport DragDropPayload (3D Model): {0}", path);
-                std::string filename = itemPath.stem().string();
-                Entity modelEntity = m_ActiveScene->CreateEntity(filename);
-                auto& mc = modelEntity.AddComponent<Model3DComponent>();
-                mc.ModelPath = path;
-                if (mc.ModelData->loadModel(itemPath.string()))
-                {
-                    mc.IsLoaded = true;
-                    UHE_CORE_INFO("Successfully loaded 3D model into viewport!");
-                }
-                else
-                {
-                    mc.IsLoaded = false;
-                    UHE_CORE_ERROR("Failed to load 3D model into viewport from payload!");
-                }
-            }
+            // Shared with OS drops: stores a project-relative path and builds the
+            // matching entity (texture, model, or opens a scene).
+            CreateEntityFromAsset(std::filesystem::path(path));
         }
 
         ImGui::EndDragDropTarget();
@@ -951,7 +981,7 @@ void Editor::DrawMainMenuBar()
             if (!folder.empty() && !OpenProject(folder))
                 m_ProjectLauncher.SetMessage("Could not open '" + folder + "'");
         }
-        if (ImGui::MenuItem("Close Project"))
+        if (ImGui::MenuItem("Project Manager..."))
             CloseProject();
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))

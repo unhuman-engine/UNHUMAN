@@ -52,6 +52,11 @@ namespace UHE
 		void CloseProject();
 		[[nodiscard]] std::filesystem::path ProjectAssetPath() const;
 
+		// Files dropped from the OS file explorer: imported into the project, and
+		// placed in the scene when they land on the viewport.
+		bool OnFileDrop(WindowFileDropEvent& e);
+		bool CreateEntityFromAsset(const std::filesystem::path& assetPath);
+
 		void DrawMainMenuBar();
 		void DrawEditorToolbar();
 		void DrawViewportHeader();

@@ -16,6 +16,19 @@ namespace UHE {
 		// Re-roots the browser (and its breadcrumbs) at a project's asset folder.
 		void SetBaseDirectory(const std::filesystem::path& directory);
 
+		// Folder the user is browsing; imports and OS drops land here.
+		const std::filesystem::path& GetCurrentDirectory() const { return m_CurrentDirectory; }
+
+		// Copies external files into the browsed folder (OS drops call this).
+		// Returns the imported paths; failures are reported in the panel.
+		std::vector<std::filesystem::path> ImportFiles(const std::vector<std::string>& sources);
+
+		// File-picker import into the browsed folder.
+		void ImportFromDialog();
+
+		// Re-scans the current folder (after an import).
+		void Refresh() { m_TextureCache.clear(); }
+
 		void OnImGuiRender();
 		
 	private:

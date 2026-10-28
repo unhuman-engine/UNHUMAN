@@ -248,14 +248,19 @@ projects/GameSnake/
   already-resolvable paths pass through, otherwise `game:` is tried before
   `engine:`. Scene-serialized paths such as `Textures/wall.png` therefore resolve
   inside whichever project is open.
-- The editor opens a project before anything else: `-project <dir>` on the command
-  line, otherwise the most recent project, otherwise the launcher
-  (`Panel/ProjectLauncherPanel`). The launcher lists recent projects (persisted in
-  `editor_projects.ini` next to the theme settings), creates new ones, opens any
-  folder that has a manifest, and lists the starter projects under `projects/`.
-  File > Close Project returns to it.
-- Scene dialogs start inside the project's `Assets/` folder, and the status bar
-  shows the open project.
+- The editor opens a project before anything else: the launcher is the startup
+  screen (`-project <dir>` skips it and opens that project directly), it lists the
+  projects the editor knows about (persisted in `editor_projects.ini` next to the
+  theme settings), creates new ones, opens any folder that has a manifest, and
+  lists the starter projects under `projects/`. File > Project Manager... returns
+  to it. Scene dialogs start inside the project's `Assets/` folder, and the status
+  bar shows the open project.
+- Importing goes through `ImportAssetFile` (`AssestsManager/AssetImport.h`): files
+  dropped from the OS file explorer are copied into the project before anything
+  references them (name clashes are numbered, never overwritten) and are placed in
+  the scene when they land on the viewport; the Content Browser's `Import` button
+  does the same from a file dialog. Components store the project-relative path, so
+  a scene stays portable with its project.
 
 ### Cook step
 

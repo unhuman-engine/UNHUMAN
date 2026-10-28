@@ -1,6 +1,7 @@
 // Project system harness: creates, loads, saves and mounts a project, and checks
 // that asset paths resolve through the project ("game:") and engine ("engine:")
 // mounts. No GPU, no ImGui.
+#include "UHE/AssestsManager/AssetImport.h"
 #include "UHE/AssestsManager/Project.h"
 #include "UHE/AssestsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
@@ -155,6 +156,32 @@ int main()
         Check(found.size() == 3, "scan: the list stays deduplicated");
         Check(std::none_of(found.begin(), found.end(), [](const ProjectInfo& info) { return info.Name == "Broken"; }),
               "scan: folders that are not projects are skipped");
+    }
+
+    // ── asset import (OS drops and the Content Browser's Import button) ─────
+    {
+        const fs::path incoming = sandbox / "incoming";
+        WriteFile(incoming / "wall.png", "dropped texture");
+        const fs::path target = sandbox / "ImportTarget";
+        std::string error;
+
+        const fs::path first = ImportAssetFile(incoming / "wall.png", target, &error);
+        Check(first == target / "wall.png" && fs::exists(first), "import: copies the file into the folder");
+        Check(fs::file_size(first) == fs::file_size(incoming / "wall.png"), "import: the copy is complete");
+
+        const fs::path second = ImportAssetFile(incoming / "wall.png", target, &error);
+        Check(second == target / "wall_1.png" && fs::exists(second),
+              "import: a name clash is numbered instead of overwritten");
+
+        Check(ImportAssetFile(first, target, &error) == first, "import: re-importing an owned file is a no-op");
+
+        error.clear();
+        Check(ImportAssetFile(sandbox / "missing.png", target, &error).empty(), "import: a missing source fails");
+        Check(!error.empty(), "import: the failure is explained");
+
+        Check(MakeAssetRelativePath(first, target) == "wall.png", "import: project-owned file gets a relative path");
+        Check(MakeAssetRelativePath(incoming / "wall.png", target) == (incoming / "wall.png").generic_string(),
+              "import: a file outside the base keeps its full path");
     }
 
     // ── shipped examples ────────────────────────────────────────────────────

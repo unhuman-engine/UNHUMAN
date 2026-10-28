@@ -1,7 +1,9 @@
 #include "ContentBrowserPanel.h"
 #include "EditorTheme.h"
 #include "EditorUI.h"
+#include "UHE/AssestsManager/AssetImport.h"
 #include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/Utils/PlatfromUtils.h"
 #include "imgui.h"
 #include "uhepch.h"
 
@@ -70,6 +72,43 @@ void ContentBrowserPanel::SetBaseDirectory(const std::filesystem::path &director
   m_BaseDirectory = directory;
   m_CurrentDirectory = directory;
   m_SelectedPath.clear();
+}
+
+std::vector<std::filesystem::path>
+ContentBrowserPanel::ImportFiles(const std::vector<std::string> &sources) {
+  std::vector<std::filesystem::path> imported;
+  imported.reserve(sources.size());
+
+  for (const std::string &source : sources) {
+    std::string error;
+    const std::filesystem::path destination =
+        ImportAssetFile(source, m_CurrentDirectory, &error);
+    if (destination.empty()) {
+      UHE_CORE_WARN("Import failed for '{0}': {1}", source, error);
+      continue;
+    }
+    imported.push_back(destination);
+  }
+
+  if (!imported.empty()) {
+    // Drop cached previews: the folder gained files.
+    Refresh();
+    m_SelectedPath = imported.front();
+  }
+  return imported;
+}
+
+void ContentBrowserPanel::ImportFromDialog() {
+  // One filter string covering everything the editor can reference today.
+  const std::string file = FileDialogs::OpenFile(
+      "Assets (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.hdr;*.ktx2;*.glb;*.gltf;*.fbx;*.obj;*.unhuman)\0"
+      "*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.hdr;*.ktx2;*.glb;*.gltf;*.fbx;*.obj;*.unhuman\0"
+      "All files (*.*)\0*.*\0",
+      m_CurrentDirectory.string());
+  if (file.empty())
+    return;
+
+  ImportFiles({file});
 }
 
 void ContentBrowserPanel::DrawDirectoryTree(
@@ -299,11 +338,17 @@ void ContentBrowserPanel::OnImGuiRender() {
     ImGui::Spacing();
     const float availW = ImGui::GetContentRegionAvail().x;
     const float listButtonW = 62.0f;
+    const float importButtonW = 74.0f;
     EditorUI::SearchField("##ContentSearch", m_SearchBuffer, sizeof(m_SearchBuffer),
-                          "Search assets...", std::max(80.0f, availW - listButtonW - 6.0f));
+                          "Search assets...", std::max(80.0f, availW - listButtonW - importButtonW - 12.0f));
     ImGui::SameLine(0.0f, 6.0f);
     if (ImGui::Button(m_ListMode ? "Grid" : "List", ImVec2(listButtonW, 0.0f)))
       m_ListMode = !m_ListMode;
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ImGui::Button("Import", ImVec2(importButtonW, 0.0f)))
+      ImportFromDialog();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Copy a file from outside the project into this folder");
 
     // Collect, filter and sort entries once per frame.
     const std::string needle = ToLower(m_SearchBuffer);
