@@ -29,6 +29,7 @@ working tree.
 | [assets-and-audio.md](architecture/assets-and-audio.md) | Asset identity, refcounting and async loading, and the audio voice and bus model | DESIGN, phases A and B not started | #24 |
 | [ci-cd.md](architecture/ci-cd.md) | CI tiers, sanitizers, test infrastructure and rollout order | PARTIAL, builds and sanitizers run but there are no in-tree unit tests | #9, #10 |
 | [scripting.md](architecture/scripting.md) | Lua 5.4 with sol2: VM, bindings, ECS integration, coroutines, sandbox and hot reload | DESIGN | #28 |
+| [robotics-and-clients.md](architecture/robotics-and-clients.md) | Headless simulation, step/reset/observe, sensors, and the thin-client/server split for training robots, drones and cars | DESIGN | — |
 
 ## Code state the documents assume
 

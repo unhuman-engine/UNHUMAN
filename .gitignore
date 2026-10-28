@@ -427,6 +427,11 @@ build_debug/
 build-release/
 .agents/
 editor_projects.ini
+
+# Project content is local: a project ships its manifest and folder layout, the
+# assets a user imports/drops into Assets/ are not tracked.
+projects/*/Assets/*
+!projects/*/Assets/README.md
 imgui.ini
 .worktrees/
 

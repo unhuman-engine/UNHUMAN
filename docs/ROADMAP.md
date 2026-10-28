@@ -27,6 +27,7 @@ is marked done because a doc says so.
 | W3 | Renderer features + material correctness | #29, #25 | [backlog/renderer.md](backlog/renderer.md) |
 | W4 | Jobs, assets, audio | #5 | [jobsystem.md](architecture/jobsystem.md), [assets-and-audio.md](architecture/assets-and-audio.md) |
 | W5 | Tooling: CI, docs, editor, animation, scripting | #9, #10, #12, #17, #24, #28 | [ci-cd.md](architecture/ci-cd.md) |
+| W6 | Robotics training + client/server split | — | [robotics-and-clients.md](architecture/robotics-and-clients.md) |
 
 Dependency shape: **W1 → W2 → W3 (passes/shading)** because barriers must have an owner before
 multi-pass work is safe. **W3 materials and W4 are independent** and can be interleaved when W1/W2
