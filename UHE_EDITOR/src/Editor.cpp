@@ -6,7 +6,9 @@
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 #include "ImGuizmo.h"
+#include "UHE/AssestsManager/Project.h"
 #include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/Core/CommandLine.h"
 #include "UHE/Math/Math.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer3D/Renderer3D.h"
@@ -49,6 +51,23 @@ void Editor::OnAttach()
     m_IconPlay = Texture2D::Create((rootPath / "assets/icon/play.png").string());
     m_IconPause = Texture2D::Create((rootPath / "assets/icon/pause.png").string());
     m_IconStop = Texture2D::Create((rootPath / "assets/icon/stop.png").string());
+
+    // Startup: an explicit -project wins, otherwise reopen the most recent
+    // project; the launcher shows when neither is available (or with -launcher).
+    const std::string requestedProject = CommandLine::GetValue("-project");
+    if (!requestedProject.empty())
+    {
+        if (!OpenProject(requestedProject))
+            m_ProjectLauncher.SetMessage("Could not open '" + requestedProject + "'");
+    }
+    else if (!CommandLine::HasFlag("-launcher"))
+    {
+        for (const std::filesystem::path& recent : m_ProjectLauncher.GetRecent())
+        {
+            if (OpenProject(recent))
+                break;
+        }
+    }
 }
 
 void Editor::OnDetach() {}
@@ -375,7 +394,8 @@ void Editor::NewScene()
 
 void Editor::OpenScene()
 {
-    std::string filepath = FileDialogs::OpenFile("UHE Scene (*.unhuman)\0*.unhuman\0");
+    // Scenes live inside the project; start the dialog there.
+    std::string filepath = FileDialogs::OpenFile("UHE Scene (*.unhuman)\0*.unhuman\0", ProjectAssetPath().string());
     if (!filepath.empty())
     {
         OpenScene(filepath);
@@ -396,6 +416,58 @@ void Editor::OpenScene(const std::filesystem::path& path)
         serializer.Deserialize(filepath);
         m_CurrentScenePath = path;
     }
+}
+
+bool Editor::OpenProject(const std::filesystem::path& path)
+{
+    ProjectInfo info;
+    std::string error;
+    if (!Project::Load(path, info, &error))
+    {
+        UHE_CORE_ERROR("Could not open project '{0}': {1}", path.string(), error);
+        return false;
+    }
+
+    SetProject(std::move(info));
+    return true;
+}
+
+void Editor::SetProject(ProjectInfo info)
+{
+    std::string error;
+    if (!Project::EnsureAssetFolder(info, &error))
+        UHE_CORE_WARN("Project '{0}': {1}", info.Name, error);
+
+    // "game:" -> the project's Assets folder, "engine:" -> the folder shipped
+    // next to the binary. Mounting the project last keeps it ahead of the engine
+    // assets, so a project can shadow an engine file by name.
+    Project::Mount(info, FileSystem::Get().GetRootPath() / "assets");
+
+    m_Project = std::move(info);
+    m_ShowLauncher = false;
+    m_ProjectLauncher.AddRecent(*m_Project);
+    m_ContentBrowserPanel.SetBaseDirectory(m_Project->AssetPath);
+
+    const std::filesystem::path startScene = Project::StartScenePath(*m_Project);
+    std::error_code ec;
+    if (!startScene.empty() && std::filesystem::is_regular_file(startScene, ec))
+        OpenScene(startScene);
+    else
+        NewScene();
+
+    UHE_CORE_INFO("Opened project '{0}' ({1})", m_Project->Name, m_Project->RootPath.string());
+}
+
+void Editor::CloseProject()
+{
+    m_Project.reset();
+    m_ShowLauncher = true;
+    m_ProjectLauncher.SetMessage("");
+}
+
+std::filesystem::path Editor::ProjectAssetPath() const
+{
+    return m_Project ? m_Project->AssetPath : std::filesystem::path();
 }
 
 void DrawConsolePanel()
@@ -525,7 +597,7 @@ void DrawConsolePanel()
 
 void Editor::SaveSceneAs()
 {
-    std::string filepath = FileDialogs::SaveFile("UHE Scene (*.unhuman)\0.unhuman\0");
+    std::string filepath = FileDialogs::SaveFile("UHE Scene (*.unhuman)\0.unhuman\0", ProjectAssetPath().string());
 
     if (!filepath.empty())
     {
@@ -573,6 +645,16 @@ void Editor::OnImGuiRender()
 {
     UHE_PROFILE_FUNCTION();
     EditorTheme::EnsureApplied();
+
+    // No project yet: the launcher owns the screen, exactly like a real engine
+    // editor. Nothing else is submitted, so no panel can touch a missing asset root.
+    if (m_ShowLauncher && !m_Project)
+    {
+        ProjectInfo opened;
+        if (m_ProjectLauncher.OnImGuiRender(opened))
+            SetProject(std::move(opened));
+        return;
+    }
 
     static bool dockspaceOpen = true;
 
@@ -863,6 +945,15 @@ void Editor::DrawMainMenuBar()
         if (ImGui::MenuItem("Save Scene As...", "Ctrl+S"))
             SaveSceneAs();
         ImGui::Separator();
+        if (ImGui::MenuItem("Open Project..."))
+        {
+            const std::string folder = FileDialogs::SelectFolder("Open Project", std::filesystem::current_path().string());
+            if (!folder.empty() && !OpenProject(folder))
+                m_ProjectLauncher.SetMessage("Could not open '" + folder + "'");
+        }
+        if (ImGui::MenuItem("Close Project"))
+            CloseProject();
+        ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))
             Application::Get().Close();
         ImGui::EndMenu();
@@ -1102,6 +1193,17 @@ void Editor::DrawStatusBar()
     ImGui::SameLine(0.0f, 8.0f);
     ImGui::TextUnformatted(m_CurrentScenePath.empty() ? "Untitled Scene" : m_CurrentScenePath.filename().string().c_str());
 
+    if (m_Project)
+    {
+        ImGui::SameLine(0.0f, 10.0f);
+        EditorUI::Separator();
+        ImGui::SameLine(0.0f, 10.0f);
+        ImGui::TextDisabled("Project: %s", m_Project->Name.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s\nAssets: %s", m_Project->RootPath.string().c_str(),
+                              m_Project->AssetPath.string().c_str());
+    }
+
     ImGui::SameLine(0.0f, 10.0f);
     EditorUI::Separator();
     ImGui::SameLine(0.0f, 10.0f);
@@ -1177,6 +1279,49 @@ void Editor::DrawPreferencesContent()
         m_ResetLayout = true;
     ImGui::SameLine();
     ImGui::Checkbox("Fullscreen Viewport", &m_IsViewportFullScreen);
+
+    if (m_Project)
+    {
+        EditorUI::SectionHeader("Project");
+        ImGui::TextDisabled("%s", m_Project->Name.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s\nAssets: %s", m_Project->RootPath.string().c_str(),
+                              m_Project->AssetPath.string().c_str());
+
+        // Start scene, relative to the project root (like a default map).
+        char startScene[256];
+        std::snprintf(startScene, sizeof(startScene), "%s", m_Project->StartScene.c_str());
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputTextWithHint("##StartScene", "Assets/Scenes/Main.unhuman", startScene, sizeof(startScene),
+                                     ImGuiInputTextFlags_EnterReturnsTrue))
+        {
+            m_Project->StartScene = startScene;
+            std::string error;
+            if (!Project::Save(*m_Project, &error))
+                UHE_CORE_WARN("Could not save the project manifest: {0}", error);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Opened automatically the next time this project is opened");
+
+        const bool canUseCurrentScene = !m_CurrentScenePath.empty();
+        ImGui::BeginDisabled(!canUseCurrentScene);
+        if (ImGui::Button("Use Current Scene") && canUseCurrentScene)
+        {
+            std::error_code ec;
+            std::filesystem::path relative = std::filesystem::relative(m_CurrentScenePath, m_Project->RootPath, ec);
+            m_Project->StartScene = ec ? m_CurrentScenePath.string() : relative.generic_string();
+            std::string error;
+            if (!Project::Save(*m_Project, &error))
+                UHE_CORE_WARN("Could not save the project manifest: {0}", error);
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save the current scene inside the project first");
+
+        ImGui::SameLine();
+        if (ImGui::Button("Close Project"))
+            CloseProject();
+    }
 
     EditorUI::SectionHeader("About");
     ImGui::TextDisabled("Unhuman Engine (UHE) - Editor");

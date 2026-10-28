@@ -227,6 +227,36 @@ class Vfs {
 targets use the same mounts instead of building paths by hand. The old
 `FileSystem::Resolve` can remain a shim forwarding to the VFS during migration.
 
+### Projects
+
+Implemented. A project is a directory holding a YAML manifest
+(`Project.uheproject`) and an `Assets/` folder; it owns the game content, while
+the folder shipped next to the binary keeps the engine's own assets.
+
+```
+projects/GameSnake/
+  Project.uheproject      Project: { Name, EngineVersion, StartScene }
+  Assets/                 mounted as game:
+```
+
+- `UHE::Project` (`AssestsManager/Project.h`) creates, loads, saves and validates
+  manifests; `Project::Mount` points `game:` at `<project>/Assets` and `engine:`
+  at the binary's asset folder. Re-mounting replaces a prefix in place, so the
+  project stays ahead of the engine folder and can shadow a file by name.
+- `ResolveAssetPath` (`AssestsManager/VfsSystem.h`) is the single seam used by
+  content loaders (`Texture2D::Create`, `Model::loadModel`): absolute and
+  already-resolvable paths pass through, otherwise `game:` is tried before
+  `engine:`. Scene-serialized paths such as `Textures/wall.png` therefore resolve
+  inside whichever project is open.
+- The editor opens a project before anything else: `-project <dir>` on the command
+  line, otherwise the most recent project, otherwise the launcher
+  (`Panel/ProjectLauncherPanel`). The launcher lists recent projects (persisted in
+  `editor_projects.ini` next to the theme settings), creates new ones, opens any
+  folder that has a manifest, and lists the starter projects under `projects/`.
+  File > Close Project returns to it.
+- Scene dialogs start inside the project's `Assets/` folder, and the status bar
+  shows the open project.
+
 ### Cook step
 
 Eventually, source assets are imported into a binary runtime format with flat

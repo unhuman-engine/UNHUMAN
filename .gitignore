@@ -426,6 +426,7 @@ UHE/vendor/bin/
 build_debug/
 build-release/
 .agents/
+editor_projects.ini
 imgui.ini
 .worktrees/
 

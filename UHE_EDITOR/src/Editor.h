@@ -3,11 +3,13 @@
 
 #include "Panel/SceneHierachyPanel.h"
 #include "Panel/ProfilerPanel.h"
+#include "Panel/ProjectLauncherPanel.h"
 #include "UHE/Renderer/EditorCamera.h"
 #include "Panel/ContentBrowserPanel.h"
 #include "UHE/Renderer/Framebuffer.h"
 
 #include <filesystem>
+#include <optional>
 
 namespace UHE::RHI::VULKAN
 {
@@ -43,6 +45,12 @@ namespace UHE
 		void OpenScene();
 		void SaveSceneAs();
 		void OpenScene(const std::filesystem::path& path);
+
+		// Project lifecycle: the editor has no asset root until a project is open.
+		bool OpenProject(const std::filesystem::path& path);
+		void SetProject(ProjectInfo info);
+		void CloseProject();
+		[[nodiscard]] std::filesystem::path ProjectAssetPath() const;
 
 		void DrawMainMenuBar();
 		void DrawEditorToolbar();
@@ -90,6 +98,9 @@ namespace UHE
 		SceneHierarchyPanel m_SceneHireacyPanel;
 		ContentBrowserPanel m_ContentBrowserPanel;
 		ProfilerPanel m_ProfilerPanel;
+		ProjectLauncherPanel m_ProjectLauncher;
+		std::optional<ProjectInfo> m_Project;
+		bool m_ShowLauncher = true;
 		Ref<Framebuffer> m_Framebuffer;
 		Ref<Texture2D> m_IconPlay;
 		Ref<Texture2D> m_IconPause;

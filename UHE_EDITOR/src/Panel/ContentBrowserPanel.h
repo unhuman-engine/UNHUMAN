@@ -13,6 +13,9 @@ namespace UHE {
 	public:
 		ContentBrowserPanel();
 
+		// Re-roots the browser (and its breadcrumbs) at a project's asset folder.
+		void SetBaseDirectory(const std::filesystem::path& directory);
+
 		void OnImGuiRender();
 		
 	private:

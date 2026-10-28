@@ -65,6 +65,13 @@ ContentBrowserPanel::ContentBrowserPanel() {
   m_modelPng = Texture2D::Create((rootPath / "assets/icon/3dmodel.png").string());
 }
 
+void ContentBrowserPanel::SetBaseDirectory(const std::filesystem::path &directory) {
+  // Icons stay engine-owned; only the browsed tree moves into the project.
+  m_BaseDirectory = directory;
+  m_CurrentDirectory = directory;
+  m_SelectedPath.clear();
+}
+
 void ContentBrowserPanel::DrawDirectoryTree(
     const std::filesystem::path &directoryPath) {
   std::error_code ec;
