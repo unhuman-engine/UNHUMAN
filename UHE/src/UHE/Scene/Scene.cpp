@@ -565,6 +565,7 @@ void Scene::CollapseEntity(Entity entity)
 
 void Scene::FlushPendingModelOps()
 {
+    UHE_PROFILE_FUNCTION();
     if (!m_PendingModelExpands.empty())
     {
         auto pending = m_PendingModelExpands;
@@ -833,6 +834,13 @@ void Scene::OnViewportResize(u32 width, u32 height)
 
 void Scene::OnUpdateEditor(Timestep ts, EditorCamera& camera)
 {
+    OnUpdateEditorSimulation(ts);
+    RenderEditorScene(ts, camera);
+}
+
+void Scene::OnUpdateEditorSimulation(Timestep ts)
+{
+    UHE_PROFILE_FUNCTION();
     // Issue #17 hardening: apply hierarchy mutations deferred from the editor
     // UI (component pools are only touched here, outside any registry view
     // iteration, so no entt iterator gets invalidated).
@@ -878,8 +886,13 @@ void Scene::OnUpdateEditor(Timestep ts, EditorCamera& camera)
             }
         }
     }
+}
 
-    // Issue #17: refresh world transforms from the hierarchy before rendering.
+void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera)
+{
+    UHE_PROFILE_FUNCTION();
+    // Called immediately before drawing (legacy path) or from the render-graph
+    // scene pass, so UI edits made after OnUpdate are reflected this frame.
     UpdateWorldTransformCache();
 
     Renderer2D::BeginScene(camera);
@@ -941,6 +954,7 @@ static glm::mat4 GetWorldFromCache(const std::unordered_map<entt::entity, glm::m
 
 void Scene::UpdateWorldTransformCache()
 {
+    UHE_PROFILE_FUNCTION();
     m_WorldTransformCache.clear();
     m_WorldTransformByUUID.clear();
 
@@ -1002,6 +1016,7 @@ void Scene::UpdateWorldTransformCache()
 
 void Scene::RenderSprites(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms)
 {
+    UHE_PROFILE_FUNCTION();
     auto animView = m_registry.view<SpriteAnimationComponent>();
     for (auto entity : animView)
     {
@@ -1043,6 +1058,7 @@ void Scene::RenderSprites(Timestep ts, const std::unordered_map<entt::entity, gl
 
 void Scene::RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms)
 {
+    UHE_PROFILE_FUNCTION();
     if (!GetShowLightIcons()) return;
 
     if (!m_DirLightIcon)
@@ -1079,6 +1095,7 @@ void Scene::RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt
 
 void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms)
 {
+    UHE_PROFILE_FUNCTION();
     auto view = m_registry.view<TransformComponent, Model3DComponent>();
     for (auto entity : view)
     {
@@ -1182,6 +1199,13 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
 
 void Scene::OnUpdateRuntime(Timestep ts)
 {
+    OnUpdateRuntimeSimulation(ts);
+    RenderRuntimeScene(ts);
+}
+
+void Scene::OnUpdateRuntimeSimulation(Timestep ts)
+{
+    UHE_PROFILE_FUNCTION();
     // Issue #17 hardening: apply hierarchy mutations deferred from the editor
     // UI before anything reads the tree this frame.
     FlushPendingReparents();
@@ -1277,7 +1301,13 @@ void Scene::OnUpdateRuntime(Timestep ts)
     }
 
     // Issue #17: refresh world transforms after scripts/physics so rendering
-    // uses this frame's final transforms.
+    // uses this frame's final transforms. Done in RenderRuntimeScene so the
+    // graph path sees UI/script changes made after the simulation step.
+}
+
+void Scene::RenderRuntimeScene(Timestep ts)
+{
+    UHE_PROFILE_FUNCTION();
     UpdateWorldTransformCache();
 
     Camera* mainCamera = nullptr;
@@ -1297,18 +1327,18 @@ void Scene::OnUpdateRuntime(Timestep ts)
         }
     }
 
-    if (mainCamera)
-    {
-        Renderer2D::BeginScene(*mainCamera, cameraTransform);
-        RenderSprites(ts, m_WorldTransformCache);
-        Renderer2D::EndScene();
-        
-        auto lights = RD3d::LightSystem::ExtractLights(m_registry);
-        Renderer3D::BeginScene(*mainCamera, cameraTransform, lights);
+    if (!mainCamera)
+        return;
 
-        RenderModels(ts, m_WorldTransformCache);
-        Renderer3D::EndScene();
-    }
+    Renderer2D::BeginScene(*mainCamera, cameraTransform);
+    RenderSprites(ts, m_WorldTransformCache);
+    Renderer2D::EndScene();
+
+    auto lights = RD3d::LightSystem::ExtractLights(m_registry);
+    Renderer3D::BeginScene(*mainCamera, cameraTransform, lights);
+
+    RenderModels(ts, m_WorldTransformCache);
+    Renderer3D::EndScene();
 }
 
 void Scene::OnRuntimeStart()

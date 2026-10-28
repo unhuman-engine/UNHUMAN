@@ -21,6 +21,10 @@ add_executable(rg_test
     ${CMAKE_SOURCE_DIR}/UHE/src/Platform/Vulkan/VulkanSemaphore.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/Platform/Vulkan/VulkanBarrierEncoder.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/Platform/Vulkan/VulkanTypes.cpp
+    # The executor carries UHE_PROFILE_* scopes. Profiler.cpp has no ImGui or
+    # engine dependencies (std only), so the harness compiles the real TU
+    # instead of stubbing ProfilerScope.
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Debug/Profiler.cpp
 )
 
 # Mirrors the UHE target's PUBLIC include list (UHE/CMakeLists.txt) so the

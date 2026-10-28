@@ -16,9 +16,25 @@ namespace UHE {
 		: public spdlog::sinks::base_sink<Mutex>
 	{
 	public:
-		const std::vector<ImGuiLogEntry>& GetLogs() const { return m_Logs; }
+		// Returns a copy of the buffered log entries. The lock keeps this safe
+		// against log calls coming from worker threads.
+		std::vector<ImGuiLogEntry> GetSnapshot()
+		{
+			std::lock_guard<Mutex> lock(this->mutex_);
+			return m_Logs;
+		}
 
-		void Clear() { m_Logs.clear(); }
+		size_t GetCount()
+		{
+			std::lock_guard<Mutex> lock(this->mutex_);
+			return m_Logs.size();
+		}
+
+		void Clear()
+		{
+			std::lock_guard<Mutex> lock(this->mutex_);
+			m_Logs.clear();
+		}
 
 	protected:
 		void sink_it_(const spdlog::details::log_msg& msg) override {
@@ -31,13 +47,18 @@ namespace UHE {
 
 			m_Logs.push_back(entry);
 
-			if (m_Logs.size() > 2000)
-				m_Logs.erase(m_Logs.begin());
+			// Trim in a batch so steady-state logging doesn't pay an O(n)
+			// erase on every single message.
+			if (m_Logs.size() > kMaxLogs + kTrimBatch)
+				m_Logs.erase(m_Logs.begin(), m_Logs.begin() + (m_Logs.size() - kMaxLogs));
 		}
 
 		void flush_() override {}
 
 	private:
+		static constexpr size_t kMaxLogs = 2000;
+		static constexpr size_t kTrimBatch = 256;
+
 		std::vector<ImGuiLogEntry> m_Logs;
 	};
 }

@@ -205,6 +205,7 @@ void Renderer3D::Shutdown()
 
 void Renderer3D::BeginScene(const EditorCamera& camera, const std::vector<RD3d::LightData>& lights)
 {
+    UHE_PROFILE_FUNCTION();
     s_Data3D.ViewProjection = camera.GetViewProjection();
     s_Data3D.CameraPosition = camera.GetPosition();
     s_Data3D.CurrentLights = lights;
@@ -221,6 +222,7 @@ void Renderer3D::BeginScene(const EditorCamera& camera, const std::vector<RD3d::
 void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform,
                             const std::vector<RD3d::LightData>& lights)
 {
+    UHE_PROFILE_FUNCTION();
     s_Data3D.ViewProjection = camera.GetProjection() * glm::inverse(transform);
     s_Data3D.CameraPosition = glm::vec3(transform[3]);
     s_Data3D.CurrentLights = lights;
@@ -252,6 +254,7 @@ void Renderer3D::EndScene() {}
 
 void Renderer3D::DrawGrid()
 {
+    UHE_PROFILE_FUNCTION();
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
     cmd.BindPipeline(s_Data3D.GridPipeline);
@@ -330,6 +333,7 @@ Renderer3D::MaterialBinding Renderer3D::PrepareMaterialBinding(const RD3d::Model
 void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transform, int entityID,
                              const RD3d::Animator* animator)
 {
+    UHE_PROFILE_FUNCTION();
     // Upload bone matrices and material parameters once per model, then
     // forward the buffer locations to every sub-mesh.
     BoneBinding bones = PrepareBoneBinding(animator);
@@ -345,6 +349,7 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
 void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, int entityID, const RD3d::Model& model,
                             const MaterialBinding& materialBinding, int boneBufferIndex, int boneOffset)
 {
+    UHE_PROFILE_FUNCTION();
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
     // MUST stay byte-identical to PushConstants in Basic3D.slang. Material

@@ -405,6 +405,7 @@ void VulkanDevice::DeferDestruction(std::function<void()>&& function)
 
 void VulkanDevice::Begin()
 {
+    UHE_PROFILE_FUNCTION();
     m_FrameSkipped = false;
     m_FrameGraphFailed = false;
     m_LegacySwapchainRendered = false;
@@ -465,6 +466,7 @@ void VulkanDevice::Begin()
 
 void VulkanDevice::End()
 {
+    UHE_PROFILE_FUNCTION();
     // §14 step 5: graph passes record into the same primary buffer before it
     // is ended (single-queue v1 — the TaskGraph overlaps CPU recording with
     // the previous work, but submit must wait for all nodes). Skipped frames
@@ -729,6 +731,7 @@ void VulkanDevice::ImmediateSubmit(std::function<void(vk::raii::CommandBuffer& c
 
 void VulkanDevice::WaitIdle()
 {
+    UHE_PROFILE_FUNCTION();
     getLogicalDevClass().getLogicalDevice().waitIdle();
 }
 

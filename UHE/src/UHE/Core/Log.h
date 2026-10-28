@@ -21,8 +21,13 @@ namespace UHE {
 	public:
 		static std::shared_ptr<ImGuiLogSink<std::mutex>> GetImGuiSink() { return s_ImGuiSink; }
 
+		// Absolute path of the per-session console.log file (empty if the file
+		// sink could not be created).
+		static const std::string& GetLogFilePath() { return s_LogFilePath; }
+
 	private:
 		static std::shared_ptr<ImGuiLogSink<std::mutex>> s_ImGuiSink;
+		static std::string s_LogFilePath;
 
 	private:
 		static std::shared_ptr<spdlog::logger> s_CoreLogger;

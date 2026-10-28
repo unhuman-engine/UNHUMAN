@@ -24,6 +24,9 @@ add_executable(scene_test
     # SpriteAnimation::Tick is invoked from RenderSprites (stubbed renderer,
     # but the symbol must resolve)
     ${SCENE_SRC_DIR}/Animation/Animation2D/SpriteAnimation.cpp
+    # Scene.cpp carries UHE_PROFILE_* scopes; Profiler.cpp is dependency-free
+    # (std only), so the harness compiles the real TU instead of stubbing it.
+    ${SCENE_SRC_DIR}/Debug/Profiler.cpp
 )
 
 # Same include set as UHE (mirrors UHE/CMakeLists.txt) so the real TUs resolve
