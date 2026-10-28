@@ -117,4 +117,28 @@ std::string FileSystem::Resolve(const std::string &virtualPath) {
   return (m_RootPath / "assets" / virtualPath).string();
 }
 
+std::filesystem::path ResolveAssetPath(const std::string &path) {
+  if (path.empty())
+    return {};
+
+  std::error_code ec;
+  const fs::path candidate(path);
+
+  // Absolute paths (file dialogs, engine assets) and paths that already resolve
+  // against the process working directory are used as they are.
+  if (candidate.is_absolute() || fs::exists(candidate, ec))
+    return candidate;
+
+  // Project assets first, engine assets second: Mount() keeps "game:" ahead of
+  // "engine:" so a project can override an engine-provided file by name.
+  for (const char *scheme : {"game:", "engine:"}) {
+    if (auto resolved = Vfs::Get().Resolve(std::string(scheme) + path)) {
+      if (fs::exists(*resolved, ec))
+        return *resolved;
+    }
+  }
+
+  return candidate;
+}
+
 } // namespace UHE

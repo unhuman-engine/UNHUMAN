@@ -80,4 +80,15 @@ private:
     FileSystem() = default;
     std::filesystem::path m_RootPath;
 };
+
+/**
+ * @brief Resolves an asset path handed in by content (scene files, inspector
+ * fields, drag & drop) against the mounted roots.
+ *
+ * Absolute paths and paths that already exist relative to the process are
+ * returned unchanged; otherwise the project mount ("game:") is tried first and
+ * the engine asset folder ("engine:") second. When nothing matches the original
+ * path is returned so the caller reports the failure it always did.
+ */
+UHE_API std::filesystem::path ResolveAssetPath(const std::string& path);
 } // namespace UHE
