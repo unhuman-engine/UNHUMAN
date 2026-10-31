@@ -12,11 +12,18 @@
 #include "UHE/Renderer2D/SubTexture2D.h"
 #include "UHE/Renderer/Texture.h"
 #include "UHE/Renderer/Font.h"
+#include "UHE/Core/input.h"
 
 #include <mutex>
 
 namespace UHE
 {
+// Input is read through GLFW, which needs a window this harness does not have.
+// The scripting bindings check for a context first, so these only have to link.
+bool Input::IsKeyPressed(int) { return false; }
+bool Input::IsMouseButtonPressed(int) { return false; }
+std::pair<float, float> Input::GetMousePosition() { return {0.0f, 0.0f}; }
+
 
 // ---- Renderer2D (all submission paths; nothing is drawn headless) ----
 void Renderer2D::Init() {}

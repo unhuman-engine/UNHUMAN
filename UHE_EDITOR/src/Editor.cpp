@@ -13,6 +13,7 @@
 #include "UHE/Math/Math.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Scripting/ScriptEngine.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 #include "Platform/Vulkan/VulkanDevice.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
@@ -38,9 +39,10 @@ void Editor::OnAttach()
 {
     EditorTheme::LoadSelected(); // pick up the persisted theme before first frame
 
-    // Shader edits show up without a restart while the editor is open; a game
-    // build leaves this off, since it ships no shader sources to watch.
+    // Shader and script edits show up without a restart while the editor is open;
+    // a game build leaves this off, since it ships no sources to watch.
     ShaderCache::Get().SetHotReloadEnabled(true);
+    ScriptEngine::Get().SetHotReloadEnabled(true);
 
     FramebufferSpecification fbSpec;
     fbSpec.Attachments = {FramebufferTextureFormat::RGBA8, FramebufferTextureFormat::RED_INTEGER,
@@ -1009,6 +1011,13 @@ void Editor::DrawMainMenuBar()
             // Compiles every loaded shader from source and rebuilds the pipelines
             // built from it, without restarting.
             ShaderCache::Get().ReloadAll();
+        }
+        if (ImGui::MenuItem("Reload Scripts", "Ctrl+Alt+R"))
+        {
+            // Recompiles every attached script and runs its OnCreate again, for
+            // the cases a file timestamp cannot see.
+            if (m_ActiveScene)
+                ScriptEngine::Get().ReloadAll(*m_ActiveScene);
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))

@@ -204,6 +204,16 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::EndMap;
     }
 
+    // Script (Lua)
+    if (entity.HasComponent<ScriptComponent>())
+    {
+        auto& sc = entity.GetComponent<ScriptComponent>();
+        out << YAML::Key << "ScriptComponent" << YAML::BeginMap;
+        out << YAML::Key << "ScriptPath" << YAML::Value << sc.ScriptPath;
+        out << YAML::Key << "Enabled" << YAML::Value << sc.Enabled;
+        out << YAML::EndMap;
+    }
+
     // Animator
     if (entity.HasComponent<AnimatorComponent>())
     {
@@ -602,6 +612,15 @@ bool SceneSerializer::Deserialize(const std::string& filepath)
             {
                 mc.IsLoaded = mc.ModelData->loadModel(mc.ModelPath);
             }
+        }
+
+        // Script (Lua)
+        auto scriptNode = entityNode["ScriptComponent"];
+        if (scriptNode)
+        {
+            auto& sc = entity.AddComponent<ScriptComponent>();
+            sc.ScriptPath = scriptNode["ScriptPath"] ? scriptNode["ScriptPath"].as<std::string>() : std::string();
+            sc.Enabled = scriptNode["Enabled"] ? scriptNode["Enabled"].as<bool>() : true;
         }
 
         // Animator

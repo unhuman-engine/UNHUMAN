@@ -390,8 +390,10 @@ layering and platform variants remain deferred.
 
 Shader hot reload is done and lives in [shaders.md](shaders.md): source mtimes are
 polled, the edit is compiled in-process and written back to its artifact, and the
-renderers rebuild the pipelines built from it. Textures and audio still reload
-through the asset registry's generation scheme only.
+renderers rebuild the pipelines built from it. Scripts reload the same way
+([scripting.md](scripting.md)): an edited `.lua` is recompiled and its instance
+restarted from `OnCreate`. Textures and audio still reload through the asset
+registry's generation scheme only.
 
 ## Open questions
 

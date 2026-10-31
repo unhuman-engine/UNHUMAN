@@ -128,8 +128,31 @@ struct UHE_API NativeScriptComponent
     }
 };
 
-struct UHE_API RigidBody2DComponent
+/**
+ * A Lua script attached to an entity (docs/architecture/scripting.md).
+ *
+ * The path resolves through the asset registry like any other asset, so a script
+ * lives with the project's content ("Scripts/drone.lua") and can be moved with
+ * it. The engine runs `OnCreate(self)`, `OnUpdate(self, dt)` and
+ * `OnDestroy(self)` from the file; see `UHE/Scripting/ScriptEngine.h` for the API
+ * a script is given.
+ *
+ * `RuntimeIndex` is the script engine's slot for this entity's instance. It is
+ * runtime state: it is never serialized, and a component that is copied gets a
+ * fresh instance the first time the copy is updated.
+ */
+struct UHE_API ScriptComponent
 {
+    std::string ScriptPath;
+    bool Enabled = true;
+    u32 RuntimeIndex = 0xFFFFFFFFu;
+
+    ScriptComponent() = default;
+    ScriptComponent(const ScriptComponent&) = default;
+    explicit ScriptComponent(std::string path) : ScriptPath(std::move(path)) {}
+};
+
+struct UHE_API RigidBody2DComponent{
     enum class BodyType
     {
         Static = 0,

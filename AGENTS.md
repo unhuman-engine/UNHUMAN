@@ -42,6 +42,26 @@ here. Follow them; if a rule is wrong, change it here first.
   waits at frame end, or `WaitIdle()` for a one-off — including the pipeline
   rebuild a shader hot reload triggers.
 
+## Scripting is a consumer of the engine
+
+- **The VM is main-thread only and never touched from a job.** A Lua state is not
+  thread-safe; scripts are driven from the scene step (`Scene::OnUpdate*Simulation`
+  → `ScriptEngine::Update`). A script that wants concurrency dispatches a job and
+  reads the result on a later frame.
+- **Every script call is protected.** A failing `OnCreate`/`OnUpdate`/`OnDestroy`
+  is logged with its chunk name and traceback, disables that instance, and lets the
+  frame continue. Never call a hook unprotected, and never let one reach the frame.
+- **The sandbox is the API.** `io`, `os`, `package` and `debug` are not reachable,
+  `load`/`loadfile`/`dofile` are removed, and scripts live in the project's assets
+  where `ResolveAssetPath` finds them. Adding a binding means adding to that
+  surface deliberately: every exposed function is a long-lived contract.
+- **A script resolves its entity through the registry on every call.** `self` is a
+  table holding an entity token, not a pointer: a script can outlive the entity it
+  was attached to, and `IsValid()` must answer for that case instead of crashing.
+- **A script error must not be a build or startup failure.** `tests/scripting`
+  covers the lifecycle, the API, errors and hot reload with no GPU, because all of
+  it is logic.
+
 ## Validation is a gate, not a log
 
 - Run `script/check_validation.sh` before pushing. It runs the engine with

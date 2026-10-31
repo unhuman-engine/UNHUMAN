@@ -157,7 +157,7 @@ changes — not before the render graph itself works.
 |---|---|---|---|
 | 1 | Entity hierarchy v2: root/children in entt + editor tree (today a model entity has exactly one parent, no root-child concept) | #17 | `TODO` |
 | 2 | Animation & audio visualization — needs a lib decision (OpenTimelineIO is a *video editor* format; check whether it fits before committing) | #24 | `UNDECIDED` |
-| 3 | Scripting host — Lua is the working proposal; scope is ECS binding + hot reload, no native FFI breadth | #28 | `UNDECIDED` |
+| 3 | Scripting host — Lua 5.4 with sol2: sandboxed VM, `ScriptComponent` with OnCreate/OnUpdate/OnDestroy, entity and rigid-body bindings, hot reload. No native FFI, no coroutines yet | #28 | `IN PROGRESS` — phase 1 done, see [scripting.md](architecture/scripting.md) |
 
 ---
 
@@ -227,7 +227,7 @@ stop-work signal for its milestone.
 | D15 | Android ambition: compile gate only, or device smoke | ci §14 | `UNDECIDED` — compile gate is the high-value one |
 | D16 | clang-tidy appetite: changed-files baseline vs repo-wide + suppressions | ci §14 | `UNDECIDED` |
 | D17 | Animation/audio visualization library | #24 | `UNDECIDED` |
-| D18 | Scripting language + binding scope (Lua proposal) | #28 | `UNDECIDED` |
+| D18 | Scripting language + binding scope | #28 | `DECIDED` — Lua 5.4 + sol2, curated API, scripts are project-relative paths until the asset manager is live ([scripting.md](architecture/scripting.md)) |
 | D19 | Solar/AMD-specific low-end floor: Vega 7 (GFX9) must stay a supported target | IDEA.md | `DECIDED` — 1.1/1.2 must work on it |
 
 ---

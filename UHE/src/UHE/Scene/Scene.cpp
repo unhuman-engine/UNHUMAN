@@ -5,6 +5,7 @@
 #include "Components.h"
 #include "Entity.h"
 #include "ScriptableEntity.h"
+#include "UHE/Scripting/ScriptEngine.h"
 #include "UHE/Core/UUID.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer3D/Renderer3D.h"
@@ -38,6 +39,7 @@ Scene::Scene()
     m_registry.storage<TextComponent>();
     m_registry.storage<SpriteAnimationComponent>();
     m_registry.storage<NativeScriptComponent>();
+    m_registry.storage<ScriptComponent>();
     m_registry.storage<RigidBody2DComponent>();
     m_registry.storage<BoxColliderComponent>();
     m_registry.storage<Model3DComponent>();
@@ -53,6 +55,7 @@ Scene::~Scene()
 {
     // Issue #17 lifetime fix: release script instances before the registry
     // dies so OnDestroy() can still access components and handles safely.
+    ScriptEngine::Get().OnSceneStop(*this);
     DestroyScriptInstances();
 }
 
@@ -167,6 +170,17 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
             auto& dst = newEntity.AddComponent<NativeScriptComponent>();
             dst.InstantiateScript = src.InstantiateScript;
             dst.DestroyScript = src.DestroyScript;
+        }
+
+        // Copy ScriptComponent. RuntimeIndex is deliberately not copied: the copy
+        // gets its own instance the first time it is updated.
+        if (srcRegistry.all_of<ScriptComponent>(srcEntity))
+        {
+            auto& src = srcRegistry.get<ScriptComponent>(srcEntity);
+            auto& dst = newEntity.AddComponent<ScriptComponent>();
+            dst.ScriptPath = src.ScriptPath;
+            dst.Enabled = src.Enabled;
+            dst.RuntimeIndex = 0xFFFFFFFFu;
         }
 
         // Copy RigidBody2DComponent
@@ -378,6 +392,13 @@ void Scene::DestroyEntity(Entity entity)
         u64 uuid = e.GetUUID();
         if (visited.find(uuid) != visited.end()) return;
         visited.insert(uuid);
+
+        // A Lua script's instance holds the entity handle: stop it while the
+        // entity is still valid, so OnDestroy can still touch components.
+        if (e.HasComponent<ScriptComponent>())
+        {
+            ScriptEngine::Get().OnEntityDestroyed(*this, static_cast<u32>(static_cast<entt::id_type>(e)));
+        }
 
         // Issue #17 lifetime fix: destroy the script instance (OnDestroy + delete)
         // BEFORE the registry handle dies, or it leaks and keeps a dangling Entity.
@@ -860,6 +881,11 @@ void Scene::OnUpdateEditorSimulation(Timestep ts)
             nsc.Instance->OnUpdate(ts);
         });
 
+    // Lua scripts run alongside the native ones, on the same step. The poll
+    // before it is what makes an edit on disk show up without a restart.
+    ScriptEngine::Get().Tick(*this);
+    ScriptEngine::Get().Update(*this, ts);
+
     {
         auto view = m_registry.view<AnimatorComponent>();
         for (auto entity : view)
@@ -1253,6 +1279,11 @@ void Scene::OnUpdateRuntimeSimulation(Timestep ts)
             });
     }
 
+    // Lua scripts run alongside the native ones, on the same step. The poll
+    // before it is what makes an edit on disk show up without a restart.
+    ScriptEngine::Get().Tick(*this);
+    ScriptEngine::Get().Update(*this, ts);
+
     // Physics
     {
         const int subStepCount = 4;
@@ -1488,6 +1519,7 @@ void Scene::OnRuntimeStop()
     // Issue #17 lifetime fix: the runtime (play-mode) scene copy instantiated
     // its own script instances; release them before the copy is swapped out,
     // otherwise every play session leaked the whole instance set.
+    ScriptEngine::Get().OnSceneStop(*this);
     DestroyScriptInstances();
 
     if (b2World_IsValid(m_PhysicsWorldId))
@@ -1531,6 +1563,7 @@ template <> void Scene::OnComponentAdded<SpriteAnimationComponent>(Entity entity
 {
 }
 template <> void Scene::OnComponentAdded<NativeScriptComponent>(Entity entity, NativeScriptComponent& component) {}
+template <> void Scene::OnComponentAdded<ScriptComponent>(Entity entity, ScriptComponent& component) {}
 template <> void Scene::OnComponentAdded<RigidBody2DComponent>(Entity entity, RigidBody2DComponent& component) {}
 template <> void Scene::OnComponentAdded<BoxColliderComponent>(Entity entity, BoxColliderComponent& component) {}
 template <> void Scene::OnComponentAdded<IDComponent>(Entity entity, IDComponent& component) {};

@@ -691,6 +691,10 @@ void SceneHierarchyPanel::DrawComponents(Entity entity) {
       m_SelectionContext.AddComponent<PointLightComponent>();
       ImGui::CloseCurrentPopup();
     }
+    if (match("Script") && ImGui::MenuItem("Script (Lua)")) {
+      m_SelectionContext.AddComponent<ScriptComponent>();
+      ImGui::CloseCurrentPopup();
+    }
     if (match("Spot Light") && ImGui::MenuItem("Spot Light")) {
       m_SelectionContext.AddComponent<SpotLightComponent>();
       ImGui::CloseCurrentPopup();
@@ -707,6 +711,18 @@ void SceneHierarchyPanel::DrawComponents(Entity entity) {
         DrawVec3Control("Scale", components.Scale, 1.0f);
       });
 
+
+  ::UHE::DrawComponents<ScriptComponent>(
+      "Script (Lua)", entity, [](ScriptComponent &sc) {
+        // The path resolves through the asset registry like any other asset, so
+        // a script lives with the project's content: "Scripts/drone.lua".
+        ImGui::InputText("Script", &sc.ScriptPath);
+        ImGui::Checkbox("Enabled", &sc.Enabled);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("A disabled script keeps its state and stops updating.");
+        ImGui::TextDisabled("OnCreate(self)  OnUpdate(self, dt)  OnDestroy(self)");
+        ImGui::TextDisabled("File > Reload Scripts re-runs OnCreate.");
+      });
 
   ::UHE::DrawComponents<TextComponent>(
       "Text Node", entity, [](TextComponent &tc) {

@@ -21,6 +21,7 @@ struct TagComponent;
 struct SpriteRendererComponent;
 struct SpriteAnimationComponent;
 struct NativeScriptComponent;
+struct ScriptComponent;
 struct RigidBody2DComponent;
 struct BoxColliderComponent;
 struct IDComponent;
@@ -119,6 +120,10 @@ public:
     static Ref<Scene> Copy(Ref<Scene> other);
     entt::registry& GetRegistry() { return m_registry; }
 
+    /// The scene's physics system. Scripts drive rigid bodies through it
+    /// (velocity and force), so it is reachable rather than private.
+    [[nodiscard]] Physics::PhysicsSystem3D& GetPhysicsSystem3D() { return m_PhysicsSystem3D; }
+
     static bool& GetShowLightIcons() { static bool s_ShowLightIcons = true; return s_ShowLightIcons; }
 
 public:
@@ -197,6 +202,7 @@ template <> UHE_API void Scene::OnComponentAdded<SpriteRendererComponent>(Entity
 template <> UHE_API void Scene::OnComponentAdded<TextComponent>(Entity entity, TextComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<SpriteAnimationComponent>(Entity entity, SpriteAnimationComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<NativeScriptComponent>(Entity entity, NativeScriptComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<ScriptComponent>(Entity entity, ScriptComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<RigidBody2DComponent>(Entity entity, RigidBody2DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<BoxColliderComponent>(Entity entity, BoxColliderComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<IDComponent>(Entity entity, IDComponent& components);

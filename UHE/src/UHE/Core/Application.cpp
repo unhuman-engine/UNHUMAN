@@ -5,6 +5,7 @@
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Scripting/ScriptEngine.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 
 #include "UHE/Core/Log.h"
@@ -38,6 +39,9 @@ namespace UHE{
 		Renderer3D::Init();
 		Physics::PhysicsSystem3D::Init();
 		Audio::AudioEngine::Init();
+		// One VM for the process, on the main thread: a Lua state is not
+		// thread-safe and every script call happens from a scene step.
+		ScriptEngine::Get().Init();
 
 		m_ImGuiLayer = ImGuiLayer::Create();
 		PushOverlay(m_ImGuiLayer);		
@@ -48,6 +52,7 @@ namespace UHE{
 		Renderer::GetDevice().WaitIdle();
 		Renderer::GetDevice().ResetCommandBuffers();
 		m_LayerStack.Clear();
+		ScriptEngine::Get().Shutdown();
 		Audio::AudioEngine::Shutdown();
 		Physics::PhysicsSystem3D::Shutdown();
 		Renderer3D::Shutdown();

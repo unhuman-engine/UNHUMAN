@@ -339,6 +339,10 @@ set(MSDF_ATLAS_NO_ARTERY_FONT ON    CACHE BOOL "" FORCE)
 set(MSDF_ATLAS_DYNAMIC_RUNTIME ON   CACHE BOOL "" FORCE)
 add_subdirectory(UHE/vendor/msdf-atlas-gen)
 
+# Lua 5.4, vendored: the scripting host (UHE/src/UHE/Scripting). sol2 is
+# header-only and is added as an include directory by UHE/CMakeLists.txt.
+add_subdirectory(UHE/vendor/lua)
+
 # Disable Jolt Physics tests and viewers to drastically reduce compile times
 set(TARGET_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)

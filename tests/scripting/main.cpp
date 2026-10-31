@@ -1,0 +1,431 @@
+// Scripting harness (docs/architecture/scripting.md).
+//
+// Runs the real ScriptEngine against a real Scene with no window, no device and
+// no ImGui -- the property the robotics path depends on, and the only way the
+// lifecycle, the error handling and hot reload are testable at all.
+//
+// What it checks: the sandbox (no io/os/package/debug, no load/dofile), the
+// lifecycle hooks and the order they run in, `self` keeping its fields across
+// frames, the entity API a script drives (transform, name, find, spawn,
+// destroy), a controller loop that converges on a target, an error being logged
+// and disabling one instance without touching the frame, a missing file, hot
+// reload restarting an instance, `Enabled = false` pausing one, and the script
+// surviving a scene save/load round trip.
+
+#include "UHE/Scene/Scene.h"
+#include "UHE/Scene/Entity.h"
+#include "UHE/Scene/Components.h"
+#include "UHE/Scene/SceneSerializer.h"
+#include "UHE/Physics/PhysicsSystem3D.h"
+#include "UHE/Scripting/ScriptEngine.h"
+
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <string>
+
+using namespace UHE;
+
+namespace
+{
+int g_failures = 0;
+
+void check(bool condition, const std::string& what)
+{
+    if (condition)
+    {
+        std::cout << "  ok   - " << what << '\n';
+    }
+    else
+    {
+        std::cout << "  FAIL - " << what << '\n';
+        ++g_failures;
+    }
+}
+
+void section(const std::string& name)
+{
+    std::cout << "\n[ " << name << " ]\n";
+}
+
+std::filesystem::path g_ScriptDir;
+
+/// Writes a script and returns its path. The harness owns its own directory: a
+/// test must never edit the project's scripts.
+std::string WriteScript(const std::string& name, const std::string& source)
+{
+    const std::filesystem::path path = g_ScriptDir / name;
+    std::ofstream file(path, std::ios::trunc);
+    file << source;
+    file.close();
+    return path.string();
+}
+
+glm::vec3 PositionOf(Scene& scene, const std::string& name)
+{
+    auto view = scene.GetRegistry().view<TagComponent>();
+    for (const entt::entity handle : view)
+    {
+        if (view.get<TagComponent>(handle).Tag == name)
+        {
+            Entity entity{handle, &scene};
+            if (entity.HasComponent<TransformComponent>())
+            {
+                return entity.GetComponent<TransformComponent>().Translation;
+            }
+        }
+    }
+    return {NAN, NAN, NAN};
+}
+
+bool HasEntity(Scene& scene, const std::string& name)
+{
+    auto view = scene.GetRegistry().view<TagComponent>();
+    for (const entt::entity handle : view)
+    {
+        if (view.get<TagComponent>(handle).Tag == name)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Starts a scene the way play mode does, then steps it like a runtime frame.
+void Start(Scene& scene)
+{
+    scene.OnRuntimeStart();
+    ScriptEngine::Get().OnSceneStart(scene);
+}
+
+void Step(Scene& scene, float dt, int times = 1)
+{
+    for (int i = 0; i < times; ++i)
+    {
+        scene.OnUpdateRuntimeSimulation(Timestep(dt));
+    }
+}
+
+Entity SpawnScripted(Scene& scene, const std::string& name, const std::string& scriptPath)
+{
+    Entity entity = scene.CreateEntity(name);
+    auto& script = entity.AddComponent<ScriptComponent>();
+    script.ScriptPath = scriptPath;
+    return entity;
+}
+} // namespace
+
+int main(int argc, char** argv)
+{
+    (void)argc;
+    (void)argv;
+
+    g_ScriptDir = std::filesystem::temp_directory_path() / "uhe-scripting-test";
+    std::error_code ec;
+    std::filesystem::remove_all(g_ScriptDir, ec);
+    std::filesystem::create_directories(g_ScriptDir, ec);
+
+    // Jolt's global registration, without which creating a scene's physics world
+    // walks into an unregistered allocator. Same call the scene harness makes.
+    Physics::PhysicsSystem3D::Init();
+
+    ScriptEngine& engine = ScriptEngine::Get();
+    engine.Init();
+
+    section("sandbox");
+    {
+        check(engine.IsInitialized(), "the engine initializes");
+        check(engine.State() != nullptr, "and exposes its VM");
+
+        // The libraries a script must not have.
+        check(engine.Run("assert(io == nil)", "sandbox"), "io is not reachable");
+        check(engine.Run("assert(os == nil)", "sandbox"), "os is not reachable");
+        check(engine.Run("assert(package == nil)", "sandbox"), "package is not reachable");
+        check(engine.Run("assert(debug == nil)", "sandbox"), "debug is not reachable");
+        check(engine.Run("assert(load == nil and loadfile == nil and dofile == nil and require == nil)",
+                         "sandbox"),
+              "code loading is not reachable");
+
+        // The libraries it does have.
+        check(engine.Run("assert(math.floor(2.7) == 2)", "sandbox"), "math works");
+        check(engine.Run("assert(string.upper('a') == 'A')", "sandbox"), "string works");
+        check(engine.Run("assert(#table.concat({'a','b'}) == 2)", "sandbox"), "table works");
+        check(engine.Run("assert(Log ~= nil and Input ~= nil)", "sandbox"), "the engine API is bound");
+    }
+
+    section("chunks and errors");
+    {
+        check(engine.Run("local x = 1 + 1", "good_chunk"), "a good chunk runs");
+        check(!engine.Run("error('boom')", "bad_chunk"), "a failing chunk reports failure");
+        check(engine.LastError().find("bad_chunk") != std::string::npos,
+              "the error names the chunk it came from");
+        check(engine.LastError().find("boom") != std::string::npos, "and carries the message");
+        check(!engine.RunFile(g_ScriptDir.string() + "/does-not-exist.lua"), "a missing file reports failure");
+        check(!engine.LastError().empty(), "and says why");
+    }
+
+    section("lifecycle");
+    {
+        const std::string script = WriteScript("lifecycle.lua", R"(
+-- OnCreate runs once; the reset to the origin is what proves it did not run again.
+function OnCreate(self)
+    self.speed = 2.0
+    self:SetPosition(0, 0, 0)
+end
+
+function OnUpdate(self, dt)
+    self.steps = (self.steps or 0) + 1
+    self:Translate(self.speed * dt, 0, 0)
+end
+
+function OnDestroy(self)
+    local marker = Find("Marker")
+    if marker then marker:Translate(0, 1, 0) end
+end
+)");
+
+        Scene scene;
+        SpawnScripted(scene, "Mover", script);
+        SpawnScripted(scene, "Marker", WriteScript("marker.lua", R"(
+function OnUpdate(self, dt) end
+)"));
+
+        Start(scene);
+        check(engine.InstanceCount() == 2, "both entities have an instance");
+
+        Step(scene, 0.5f, 2);
+        const glm::vec3 afterTwo = PositionOf(scene, "Mover");
+        check(std::abs(afterTwo.x - 2.0f) < 1e-4f,
+              "OnUpdate ran twice with dt: 2.0 speed * 0.5s * 2 steps");
+        check(std::abs(afterTwo.y) < 1e-4f && std::abs(afterTwo.z) < 1e-4f, "and only moved on x");
+
+        // `self` is the instance's own table, so a field written in OnCreate and
+        // bumped in OnUpdate survives across frames.
+        check(engine.ErroredInstanceCount() == 0, "nothing errored");
+
+        const glm::vec3 markerBefore = PositionOf(scene, "Marker");
+        Entity mover = scene.CreateEntity("Lookup");
+        (void)mover;
+        scene.DestroyEntity([&]
+                            {
+                                auto view = scene.GetRegistry().view<TagComponent>();
+                                for (const entt::entity handle : view)
+                                {
+                                    if (view.get<TagComponent>(handle).Tag == "Mover")
+                                    {
+                                        return Entity{handle, &scene};
+                                    }
+                                }
+                                return Entity{};
+                            }());
+
+        const glm::vec3 markerAfter = PositionOf(scene, "Marker");
+        check(std::abs(markerAfter.y - (markerBefore.y + 1.0f)) < 1e-4f,
+              "OnDestroy ran when the entity was destroyed");
+        check(engine.InstanceCount() == 1, "the destroyed entity's instance was released");
+        check(HasEntity(scene, "Lookup"), "the scene still has its other entities");
+    }
+
+    section("entity API");
+    {
+        const std::string script = WriteScript("api.lua", R"(
+function OnCreate(self)
+    self:SetName("Renamed")
+    self:SetScale(2, 2, 2)
+    self:SetRotation(0, 1.5707963, 0)
+    local child = Spawn("Child")
+    if child then child:SetPosition(5, 0, 0) end
+    self.id = self:GetID()
+    self.valid = self:IsValid()
+end
+
+function OnUpdate(self, dt)
+    local found = Find("Child")
+    if found then
+        self.childX = found:GetPosition().x
+    end
+    self.name = self:GetName()
+    self.scale = self:GetScale().x
+    self.mass = self:HasRigidBody()
+end
+)");
+
+        Scene scene;
+        Entity entity = SpawnScripted(scene, "Api", script);
+        Start(scene);
+        Step(scene, 0.1f, 2);
+
+        check(entity.GetComponent<TagComponent>().Tag == "Renamed", "SetName reached the tag");
+        check(std::abs(entity.GetComponent<TransformComponent>().Scale.x - 2.0f) < 1e-4f, "SetScale reached the transform");
+        check(HasEntity(scene, "Child"), "Spawn created an entity");
+        check(std::abs(PositionOf(scene, "Child").x - 5.0f) < 1e-4f, "and the script positioned it");
+        check(entity.GetComponent<IDComponent>().ID != 0 && engine.ErroredInstanceCount() == 0,
+              "GetID answered with a value a Lua integer can hold");
+        check(engine.ErroredInstanceCount() == 0, "nothing errored");
+        check(engine.InstanceCount() == 1, "the spawned entity has no script of its own");
+    }
+
+    section("controller loop");
+    {
+        // A stand-in for the robotics case: a script that steers an entity
+        // toward a target, one step at a time, with no renderer involved.
+        const std::string script = WriteScript("controller.lua", R"(
+local targetX = 10.0
+local gain = 0.5
+
+function OnCreate(self)
+    self.error = 0.0
+end
+
+function OnUpdate(self, dt)
+    local p = self:GetPosition()
+    local dx = targetX - p.x
+    self.error = math.abs(dx)
+    local step = dx * gain * dt
+    self:Translate(step, 0, 0)
+end
+)");
+
+        Scene scene;
+        SpawnScripted(scene, "Drone", script);
+        Start(scene);
+
+        Step(scene, 0.1f, 200);
+        const float x = PositionOf(scene, "Drone").x;
+        check(x > 9.0f && x <= 10.0f, "the controller converged on its target: x = " + std::to_string(x));
+        check(engine.ErroredInstanceCount() == 0, "and ran without error");
+    }
+
+    section("errors are contained");
+    {
+        const std::string broken = WriteScript("broken.lua", R"(
+function OnCreate(self)
+    self.ok = true
+end
+
+function OnUpdate(self, dt)
+    error("this script is broken")
+end
+)");
+
+        Scene scene;
+        SpawnScripted(scene, "Broken", broken);
+        SpawnScripted(scene, "Healthy", WriteScript("healthy.lua", R"(
+function OnUpdate(self, dt)
+    self:Translate(1 * dt, 0, 0)
+end
+)"));
+
+        Start(scene);
+        Step(scene, 1.0f, 3);
+
+        check(engine.ErroredInstanceCount() == 1, "the broken instance is disabled");
+        check(engine.LastError().find("this script is broken") != std::string::npos, "the error is reported");
+        check(engine.LastError().find("broken.lua") != std::string::npos, "with the file it came from");
+        check(std::abs(PositionOf(scene, "Healthy").x - 3.0f) < 1e-4f,
+              "the healthy instance kept running, on the same frames");
+        check(std::abs(PositionOf(scene, "Broken").x) < 1e-4f, "the broken one stopped");
+
+        // A script that fails to load is disabled too, and says why.
+        Scene other;
+        SpawnScripted(other, "Missing", g_ScriptDir.string() + "/not-here.lua");
+        Start(other);
+        Step(other, 0.1f);
+        check(engine.LastError().find("cannot read") != std::string::npos, "a missing script reports why");
+        engine.OnSceneStop(other);
+    }
+
+    section("disabled components and hot reload");
+    {
+        const std::string path = WriteScript("reload.lua", R"(
+function OnCreate(self)
+    self:SetPosition(0, 0, 0)
+end
+
+function OnUpdate(self, dt)
+    self:Translate(1 * dt, 0, 0)
+end
+)");
+
+        Scene scene;
+        Entity entity = SpawnScripted(scene, "Reloaded", path);
+        Start(scene);
+        Step(scene, 1.0f, 2);
+        check(std::abs(PositionOf(scene, "Reloaded").x - 2.0f) < 1e-4f, "the script ran");
+
+        // Disabling pauses it without dropping its state.
+        entity.GetComponent<ScriptComponent>().Enabled = false;
+        Step(scene, 1.0f, 2);
+        check(std::abs(PositionOf(scene, "Reloaded").x - 2.0f) < 1e-4f, "a disabled component does not update");
+        entity.GetComponent<ScriptComponent>().Enabled = true;
+        Step(scene, 1.0f);
+        check(std::abs(PositionOf(scene, "Reloaded").x - 3.0f) < 1e-4f, "and resumes where it left off");
+
+        // An edit is what hot reload is for: OnCreate runs again, which resets
+        // the position to the origin.
+        engine.SetHotReloadEnabled(true);
+        std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(5),
+                                         ec);
+        engine.Tick(scene);
+        check(std::abs(PositionOf(scene, "Reloaded").x) < 1e-4f, "a changed script restarts from OnCreate");
+        check(engine.ErroredInstanceCount() == 0, "and stays healthy");
+
+        // ReloadAll does the same for an unchanged file.
+        Step(scene, 1.0f);
+        engine.ReloadAll(scene);
+        check(std::abs(PositionOf(scene, "Reloaded").x) < 1e-4f, "an explicit reload restarts it too");
+        engine.SetHotReloadEnabled(false);
+    }
+
+    section("scene round trip");
+    {
+        const std::string path = WriteScript("saved.lua", "function OnUpdate(self, dt) end\n");
+
+        Scene scene;
+        Entity entity = SpawnScripted(scene, "Saved", path);
+        entity.GetComponent<ScriptComponent>().Enabled = false;
+
+        const std::string scenePath = (g_ScriptDir / "round-trip.unhuman").string();
+        SceneSerializer serializer(Ref<Scene>(&scene, [](Scene*) {}));
+        serializer.Serialize(scenePath);
+
+        Ref<Scene> loaded = CreateRef<Scene>();
+        SceneSerializer loader(loaded);
+        check(loader.Deserialize(scenePath), "the scene deserializes");
+
+        auto view = loaded->GetRegistry().view<ScriptComponent>();
+        check(view.size() == 1, "the script component survived the round trip");
+        if (view.size() == 1)
+        {
+            const auto& component = view.get<ScriptComponent>(view.front());
+            check(component.ScriptPath == path, "with its path");
+            check(!component.Enabled, "and its enabled flag");
+            check(component.RuntimeIndex == 0xFFFFFFFFu, "and no stale runtime slot");
+        }
+    }
+
+    section("teardown");
+    {
+        Scene scene;
+        SpawnScripted(scene, "Teardown", WriteScript("teardown.lua", R"(
+function OnCreate(self) self.started = true end
+function OnUpdate(self, dt) end
+)"));
+        Start(scene);
+        check(engine.InstanceCount() == 1, "one instance");
+        engine.OnSceneStop(scene);
+        check(engine.InstanceCount() == 0, "stopping the scene releases it");
+    }
+
+    engine.Shutdown();
+    check(!engine.IsInitialized(), "the engine shuts down");
+
+    Physics::PhysicsSystem3D::Shutdown();
+
+    std::filesystem::remove_all(g_ScriptDir, ec);
+
+    std::cout << (g_failures == 0 ? "\nALL CHECKS PASSED\n" : "\nFAILURES PRESENT\n");
+    return g_failures == 0 ? 0 : 1;
+}

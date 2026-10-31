@@ -94,9 +94,14 @@ endif()
 # Enable precompiled headers for ALL compilers (MSVC, GCC, Clang)
 target_precompile_headers(UHE PRIVATE src/uhepch.h)
 
+# sol2 is header-only and included by ScriptEngine.cpp alone, so it stays a
+# private include rather than something every engine client compiles.
+target_include_directories(UHE PRIVATE "vendor/sol2/include")
+
 target_link_libraries(UHE PUBLIC
     glfw Vulkan::Vulkan fastgltf::fastgltf
 PRIVATE
+    lua
     VulkanMemoryAllocator volk ImGui ImGuizmo
     yaml-cpp
     TracyClient
