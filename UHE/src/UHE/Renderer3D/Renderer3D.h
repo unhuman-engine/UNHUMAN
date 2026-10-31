@@ -57,10 +57,31 @@ public:
 
     static void DrawGrid();
 
+    /// Selects the pipeline set for a pass whose only attachment is the swapchain.
+    ///
+    /// The editor renders the scene into its own framebuffer — a colour target
+    /// plus the entity-id target — while the game path renders it straight into
+    /// the swapchain, which is one attachment in the swapchain's format. A
+    /// pipeline has to match the pass it is bound in, so the two are separate
+    /// sets rather than one.
+    static void SetSwapchainTarget(bool enabled);
+
+    /// Rebuilds every shader module and pipeline from the library's current bytes.
+    ///
+    /// The shader library calls this when a source changes on disk, and the
+    /// editor's Reload Shaders command calls it directly. Waits for the device to
+    /// be idle first: frames already queued reference the objects being replaced.
+    static void ReloadShaders();
+
     static bool IsLightingEnabled();
     static void SetLightingEnabled(bool enabled);
 
 private:
+    // Creates and destroys the shader modules and the pipelines built from them;
+    // the two are re-created together on reload.
+    static void CreateShaderResources();
+    static void DestroyShaderResources();
+
     // Rewrites the default material (slot 0) and resets the per-frame cursor.
     static void RestartMaterialRegion();
 };

@@ -432,6 +432,12 @@ editor_projects.ini
 # assets a user imports/drops into Assets/ are not tracked.
 projects/*/Assets/*
 !projects/*/Assets/README.md
+
+# Shader artifacts: `uhe_shaderc` writes <stem>.<stage>.<variant>.spv next to
+# each .slang at build time (and hot reload rewrites them), so they are outputs,
+# not sources. The two Texture.*.spv committed before this were hand-built.
+UHE_EDITOR/assets/shaders/*.spv
+
 imgui.ini
 .worktrees/
 

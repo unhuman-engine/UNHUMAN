@@ -4,6 +4,7 @@
 
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/Renderer2D.h"
+#include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 
 #include "UHE/Core/Log.h"
@@ -126,7 +127,12 @@ namespace UHE{
 
 				if (!m_Minimized) {
 					Audio::AudioEngine::Update();
-					
+
+					// Shader hot reload, before anything records GPU work: a reload
+					// destroys and rebuilds pipelines, so it cannot happen mid-frame.
+					// A no-op unless the app enabled it (the editor does).
+					ShaderCache::Get().Tick();
+
 					Renderer::GetDevice().Begin();
 					// §9.1.4 resize policy: Begin may recreate the swapchain and skip
 					// the frame — layers must not record GPU work this iteration.

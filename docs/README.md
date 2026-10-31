@@ -27,8 +27,9 @@ working tree.
 | [framegraph-and-rendergraph.md](architecture/framegraph-and-rendergraph.md) | FrameGraph frontend versus RenderGraph backend — **SUPERSEDED 2026-09-24**, the separate frontend layer is dropped; keep only the RenderGraph backend | ARCHIVED | #4, #14 |
 | [jobsystem.md](architecture/jobsystem.md) | The job-system thread pool and the TaskGraph DAG executor | IMPLEMENTED at `c271467` | #5 |
 | [assets-and-audio.md](architecture/assets-and-audio.md) | Asset identity, refcounting and async loading, and the audio voice and bus model | DESIGN, phases A and B not started | #24 |
-| [ci-cd.md](architecture/ci-cd.md) | CI tiers, sanitizers, test infrastructure and rollout order | PARTIAL, builds and sanitizers run but there are no in-tree unit tests | #9, #10 |
+| [ci-cd.md](architecture/ci-cd.md) | CI tiers, sanitizers, test infrastructure and rollout order | PARTIAL, builds, sanitizers and `ctest -L unit` run; the validation gate is enforced in `sanitizers.yml` and `test-renderer.yml` | #9, #10 |
 | [scripting.md](architecture/scripting.md) | Lua 5.4 with sol2: VM, bindings, ECS integration, coroutines, sandbox and hot reload | DESIGN | #28 |
+| [shaders.md](architecture/shaders.md) | Offline Slang → `.spv`, SPIR-V reflection, and hot reload | IMPLEMENTED, covered by `tests/shader` | #29, #7 |
 | [robotics-and-clients.md](architecture/robotics-and-clients.md) | Headless simulation, step/reset/observe, sensors, and the thin-client/server split for training robots, drones and cars | DESIGN | — |
 
 ## Code state the documents assume
@@ -41,7 +42,7 @@ working tree.
 | Stub sources are compiled into the binary | `UHE/CMakeLists.txt:6` uses a recursive glob over `UHE/src` |
 | The compute pipeline object is unused | `VulkanComputePipeline.{h,cpp}` is referenced nowhere else |
 | The descriptor backend is modernized but the frontend is not | issue #14 |
-| There is no unit test target in-tree | no `add_test` or `enable_testing` outside vendor; `UHE/src/UHE/Test/*` is the headless smoke harness |
+| There are unit tests in-tree | `tests/` holds one self-contained harness per subsystem, registered with CTest and run by `ctest -L unit` (see [ci-cd.md](architecture/ci-cd.md)) |
 
 ## Conventions
 

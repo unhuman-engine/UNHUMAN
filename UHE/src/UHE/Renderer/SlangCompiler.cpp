@@ -159,7 +159,8 @@ std::unordered_map<RHI::ShaderStage, std::string> SlangCompiler::CompileToGLSL(c
     return result;
 }
 
-std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> SlangCompiler::CompileToSPIRV(const std::string& filepath)
+std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> SlangCompiler::CompileToSPIRV(
+    const std::string& filepath, const std::vector<std::pair<std::string, std::string>>& defines)
 {
     std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> result;
 
@@ -171,8 +172,19 @@ std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> SlangCompiler::Compil
     targetDesc.format = SLANG_SPIRV;
     targetDesc.profile = slangGlobalSession->findProfile("spirv_1_5");
 
+    // The macro names and values must outlive the session: `SessionDesc` holds
+    // pointers into them.
+    std::vector<slang::PreprocessorMacroDesc> macros;
+    macros.reserve(defines.size());
+    for (const auto& [name, value] : defines)
+    {
+        macros.push_back(slang::PreprocessorMacroDesc{name.c_str(), value.c_str()});
+    }
+
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
+    sessionDesc.preprocessorMacros = macros.empty() ? nullptr : macros.data();
+    sessionDesc.preprocessorMacroCount = static_cast<SlangInt>(macros.size());
     sessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
 
     Slang::ComPtr<slang::ISession> session;

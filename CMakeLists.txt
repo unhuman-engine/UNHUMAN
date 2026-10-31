@@ -357,10 +357,21 @@ add_subdirectory(UHE/vendor/tracy)
 
 #main engine core
 add_subdirectory(UHE)
+#build tools (offline shader compiler)
+add_subdirectory(tools)
+
 #sandbox
 add_subdirectory(sandbox)
 add_subdirectory(UHE_EDITOR)
 add_subdirectory(UHEGAME)
+
+# Every app ships the assets the shaders live in, so each one needs the
+# artifacts to exist before its post-build asset copy runs.
+foreach(uhe_app Sandbox UHE_EDITOR UHEGAME)
+    if(TARGET ${uhe_app})
+        add_dependencies(${uhe_app} uhe_shaders)
+    endif()
+endforeach()
 
 
 get_property(all_targets DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY BUILDSYSTEM_TARGETS)

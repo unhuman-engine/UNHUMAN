@@ -49,6 +49,13 @@ public:
     /// \returns the index of the frame currently in flight (0 .. frames-in-flight - 1).
     [[nodiscard]] virtual u32 GetCurrentFrameIndex() const = 0;
 
+    /// \returns the format the swapchain images were created with.
+    ///
+    /// A pass that renders straight into the swapchain has one attachment in
+    /// this format, and a pipeline has to be created for the pass it is bound
+    /// in, so a scene pipeline that also serves such a pass needs it.
+    [[nodiscard]] virtual TextureFormat GetSwapchainFormat() = 0;
+
     // ── Resource creation ────────────────────────────────────────────────────
 
     virtual BufferHandle CreateBuffer(const BufferDesc& desc) = 0;

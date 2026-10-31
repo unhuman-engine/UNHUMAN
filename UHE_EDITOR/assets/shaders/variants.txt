@@ -1,0 +1,15 @@
+# Shader variants: one line per variant, "<name>: <DEFINE=VALUE>[;DEFINE=VALUE...]".
+#
+# The build compiles every .slang once per variant listed here, and the runtime
+# asks for a variant by name, so a define is written down once instead of at each
+# call site. Artifacts land beside the sources as
+# <stem>.<stage>.<variant>.spv.
+#
+# "default" always exists, even when this file is missing.
+
+default:
+
+# The swapchain pass has a single colour attachment, and a fragment output with
+# no matching attachment is invalid: the entity-id target only exists in the
+# editor's pass, so this variant drops it.
+no_entity_id: UHE_NO_ENTITY_ID=1
