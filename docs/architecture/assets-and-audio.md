@@ -248,13 +248,16 @@ projects/GameSnake/
   already-resolvable paths pass through, otherwise `game:` is tried before
   `engine:`. Scene-serialized paths such as `Textures/wall.png` therefore resolve
   inside whichever project is open.
-- The editor opens a project before anything else: the launcher is the startup
-  screen (`-project <dir>` skips it and opens that project directly), it lists the
-  projects the editor knows about (persisted in `editor_projects.ini` next to the
-  theme settings), creates new ones, opens any folder that has a manifest, and
-  lists the starter projects under `projects/`. File > Project Manager... returns
-  to it. Scene dialogs start inside the project's `Assets/` folder, and the status
-  bar shows the open project.
+- The editor opens a project before anything else: `-project <dir>` opens that
+  project directly, otherwise the most recent project still on disk is reopened,
+  and `-launcher` starts on the launcher instead. The launcher lists the projects
+  the editor knows about (persisted in `editor_projects.ini` in the engine's own
+  folder — `FileSystem::GetRootPath()`, next to `assets/` and `logs/`, rather than
+  the working directory, which changes with how the editor was started), creates
+  new ones, opens any folder that has a manifest, and lists the starter projects
+  under `projects/`. A single click opens an entry, and File > Project Manager...
+  returns to the launcher. Scene dialogs start inside the project's `Assets/`
+  folder, and the status bar shows the open project.
 - Importing goes through `ImportAssetFile` (`AssestsManager/AssetImport.h`): files
   dropped from the OS file explorer are copied into the project before anything
   references them (name clashes are numbered, never overwritten) and are placed in
@@ -384,6 +387,11 @@ ordering, audio buses and ducking, and event assets with variation.
 Phase E, optional polish: hot reload for shaders, textures and audio, streaming
 for music, and pooled readback and upload. The cook pipeline, mod override
 layering and platform variants remain deferred.
+
+Shader hot reload is done and lives in [shaders.md](shaders.md): source mtimes are
+polled, the edit is compiled in-process and written back to its artifact, and the
+renderers rebuild the pipelines built from it. Textures and audio still reload
+through the asset registry's generation scheme only.
 
 ## Open questions
 

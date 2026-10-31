@@ -29,8 +29,12 @@ namespace UHE
 
     std::filesystem::path ProjectLauncherPanel::SettingsPath()
     {
-        // Same location the theme settings use: the working directory.
-        return std::filesystem::current_path() / "editor_projects.ini";
+        // The engine's own folder, next to its assets and logs, rather than the
+        // working directory: the editor is started from a terminal, from the
+        // build directory and from a file manager, and a recent-project list
+        // that changes with the launch directory is not a recent-project list.
+        const std::filesystem::path root = FileSystem::Get().GetRootPath();
+        return (root.empty() ? std::filesystem::current_path() : root) / "editor_projects.ini";
     }
 
     ProjectLauncherPanel::ProjectLauncherPanel()
@@ -45,6 +49,11 @@ namespace UHE
         m_Recent.clear();
 
         std::ifstream file(SettingsPath());
+        // The list used to live in the working directory, so a session that
+        // still has one there is read once and written back to the new place
+        // the next time a project is opened.
+        if (!file)
+            file.open(std::filesystem::current_path() / "editor_projects.ini");
         if (!file)
             return;
 
@@ -184,12 +193,7 @@ namespace UHE
             {
                 ImGui::PushID(example.RootPath.string().c_str());
                 if (ImGui::Selectable(example.Name.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick))
-                {
-                    if (ImGui::IsMouseDoubleClicked(0))
-                        TryOpen(example.RootPath, opened, picked);
-                    else
-                        SetMessage("Double-click to open " + example.Name + "  (" + example.RootPath.string() + ")");
-                }
+                    TryOpen(example.RootPath, opened, picked);
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("%s\n%s", example.Name.c_str(), example.RootPath.string().c_str());
                 ImGui::PopID();
@@ -228,13 +232,10 @@ namespace UHE
             if (!exists)
                 ImGui::BeginDisabled();
 
+            // One click opens: an entry that answers a click with a hint reads as
+            // broken, and the tooltip already carries the path.
             if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick))
-            {
-                if (ImGui::IsMouseDoubleClicked(0))
-                    TryOpen(root, opened, picked);
-                else
-                    SetMessage("Double-click to open " + root.string());
-            }
+                TryOpen(root, opened, picked);
 
             if (!exists)
                 ImGui::EndDisabled();

@@ -12,6 +12,7 @@
 #include "UHE/Core/CommandLine.h"
 #include "UHE/Math/Math.h"
 #include "UHE/RHI/RHICommandBuffer.h"
+#include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 #include "Platform/Vulkan/VulkanDevice.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
@@ -37,6 +38,10 @@ void Editor::OnAttach()
 {
     EditorTheme::LoadSelected(); // pick up the persisted theme before first frame
 
+    // Shader edits show up without a restart while the editor is open; a game
+    // build leaves this off, since it ships no shader sources to watch.
+    ShaderCache::Get().SetHotReloadEnabled(true);
+
     FramebufferSpecification fbSpec;
     fbSpec.Attachments = {FramebufferTextureFormat::RGBA8, FramebufferTextureFormat::RED_INTEGER,
                           FramebufferTextureFormat::Depth};
@@ -53,12 +58,27 @@ void Editor::OnAttach()
     m_IconPause = Texture2D::Create((rootPath / "assets/icon/pause.png").string());
     m_IconStop = Texture2D::Create((rootPath / "assets/icon/stop.png").string());
 
-    // The editor always starts on the project manager unless a project is named
-    // explicitly. Silently reopening the last project made it impossible to pick
-    // another one without hunting for the menu entry.
+    // An explicit -project wins. Otherwise the most recent project that is still
+    // on disk is reopened, so relaunching the editor lands back in the project
+    // that was open rather than making the user find it again. `-launcher` asks
+    // for the manager instead, and File > Project Manager... returns to it from
+    // inside a project.
     const std::string requestedProject = CommandLine::GetValue("-project");
-    if (!requestedProject.empty() && !OpenProject(requestedProject))
-        m_ProjectLauncher.SetMessage("Could not open '" + requestedProject + "'");
+    if (!requestedProject.empty())
+    {
+        if (!OpenProject(requestedProject))
+            m_ProjectLauncher.SetMessage("Could not open '" + requestedProject + "'");
+    }
+    else if (!CommandLine::HasFlag("-launcher"))
+    {
+        for (const std::filesystem::path& recent : m_ProjectLauncher.GetRecent())
+        {
+            // A stale entry is skipped rather than reported: the point of the
+            // list is to find a project that is still there.
+            if (Project::IsProject(recent) && OpenProject(recent))
+                break;
+        }
+    }
 }
 
 void Editor::OnDetach() {}
@@ -983,6 +1003,13 @@ void Editor::DrawMainMenuBar()
         }
         if (ImGui::MenuItem("Project Manager..."))
             CloseProject();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Reload Shaders", "Ctrl+Shift+R"))
+        {
+            // Compiles every loaded shader from source and rebuilds the pipelines
+            // built from it, without restarting.
+            ShaderCache::Get().ReloadAll();
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))
             Application::Get().Close();
