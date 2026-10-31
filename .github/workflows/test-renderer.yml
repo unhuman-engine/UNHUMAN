@@ -87,14 +87,31 @@ jobs:
           # VK_ICD_FILENAMES forces Vulkan to use the Lavapipe software driver
           # timeout 10s kills the engine with exit 124; treat that as pass.
           export VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          # A validation error is a defect, not a note to read past: the engine
+          # stops on the first one with a non-zero exit.
+          export UHE_VALIDATION_FATAL=1
           set +e
-          timeout 10s xvfb-run --auto-servernum ./UHE_EDITOR
+          timeout 10s xvfb-run --auto-servernum ./UHE_EDITOR > editor.log 2>&1
           rc=$?
           set -e
           if [ "$rc" -eq 124 ]; then
+            # Belt and braces: catches a build without the gate, or a message
+            # that reached the log before the process stopped.
+            if grep -qE '\[error\].*Validation layer|UHE_VALIDATION_FATAL' editor.log; then
+              echo "Editor ran, but Vulkan validation reported an error:"
+              grep -m3 -E '\[error\].*Validation layer|UHE_VALIDATION_FATAL' editor.log || true
+              exit 1
+            fi
+            # And this catches the opposite: a run with no layers to report
+            # with, which would otherwise pass by saying nothing.
+            if ! grep -qF "[VALIDATION] enabled" editor.log; then
+              echo "Editor ran, but never enabled validation layers: the run proves nothing."
+              exit 1
+            fi
             echo "Engine survived for 10 seconds. Test passed!"
             exit 0
           else
             echo "Engine crashed or failed with exit code $rc!"
+            tail -n 50 editor.log || true
             exit 1
           fi

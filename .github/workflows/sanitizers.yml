@@ -109,6 +109,11 @@ jobs:
             export ASAN_OPTIONS="detect_leaks=1:detect_stack_use_after_return=1:verify_asan_link_order=0"
           fi
 
+          # A validation error is a defect, not a note to read past. With this
+          # set the engine stops on the first one with a non-zero exit, instead
+          # of rendering 34 broken frames a second and looking healthy.
+          export UHE_VALIDATION_FATAL=1
+
           # Start a virtual X server directly instead of xvfb-run, so the Sandbox
           # is a direct child process we can kill by PID once it reports ready.
           Xvfb :99 -screen 0 1280x720x24 &
@@ -208,5 +213,20 @@ jobs:
             fi
             sleep 1
           done
+
+          # Belt and braces: the gate above fails the process, this catches a
+          # build without it, or a message that reached the log first.
+          if grep -qE '\[error\].*Validation layer|UHE_VALIDATION_FATAL' "$LOG"; then
+            echo "Smoke test FAILED: Vulkan validation reported an error"
+            grep -m3 -E '\[error\].*Validation layer|UHE_VALIDATION_FATAL' "$LOG" || true
+            exit 1
+          fi
+
+          # And this catches the opposite: a run that had no layers to report
+          # with, which would otherwise pass by saying nothing.
+          if ! grep -qF "[VALIDATION] enabled" "$LOG"; then
+            echo "Smoke test FAILED: the run never enabled validation layers"
+            exit 1
+          fi
 
           echo "Sandbox rendered frames and survived the soak under ${{ matrix.sanitizer }}. Smoke test passed!"
