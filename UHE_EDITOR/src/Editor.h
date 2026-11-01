@@ -3,6 +3,7 @@
 
 #include "Panel/SceneHierachyPanel.h"
 #include "Panel/ProfilerPanel.h"
+#include "Panel/ScriptsPanel.h"
 #include "Panel/ProjectLauncherPanel.h"
 #include "UHE/Renderer/EditorCamera.h"
 #include "Panel/ContentBrowserPanel.h"
@@ -103,6 +104,7 @@ namespace UHE
 		SceneHierarchyPanel m_SceneHireacyPanel;
 		ContentBrowserPanel m_ContentBrowserPanel;
 		ProfilerPanel m_ProfilerPanel;
+		ScriptsPanel m_ScriptsPanel;
 		ProjectLauncherPanel m_ProjectLauncher;
 		std::optional<ProjectInfo> m_Project;
 		bool m_ShowLauncher = true;
@@ -120,6 +122,7 @@ namespace UHE
 		bool m_ShowContentBrowser = true;
 		bool m_ShowConsole = true;
 		bool m_ShowProfiler = true;
+		bool m_ShowScripts = true;
 		bool m_ShowSettings = true;
 		bool m_ShowViewport = true;
 		bool m_ShowPreferences = false;

@@ -5,6 +5,7 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #include "UHE/Core/Application.h"
 
@@ -79,5 +80,14 @@ std::string FileDialogs::SelectFolder(const char* title, const std::string& defa
     return ok == TRUE ? std::string(path) : std::string();
 };
 
+
+bool FileDialogs::OpenInDefaultApp(const std::string& path)
+{
+    if (path.empty())
+        return false;
+
+    const HINSTANCE result = ShellExecuteA(nullptr, "open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    return reinterpret_cast<std::intptr_t>(result) > 32; // ShellExecute's legacy "success" range
+}
 } // namespace UHE
 #endif

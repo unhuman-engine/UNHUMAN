@@ -406,6 +406,70 @@ end
         }
     }
 
+    section("editor diagnostics");
+    {
+        // What the editor's Scripts panel reads: one row per attached script,
+        // with the state that tells "running" from "failed", and a per-entity
+        // reload for its Reload button.
+        const std::string healthy = WriteScript("diag-ok.lua", "function OnUpdate(self, dt) end\n");
+        const std::string broken = WriteScript("diag-bad.lua", "function OnUpdate(self, dt) error('nope') end\n");
+
+        Scene scene;
+        Entity good = SpawnScripted(scene, "Alpha", healthy);
+        Entity bad = SpawnScripted(scene, "Beta", broken);
+        Entity plain = scene.CreateEntity("Plain"); // no script at all
+        Start(scene);
+        Step(scene, 0.1f, 2);
+
+        const std::vector<ScriptEngine::InstanceInfo> infos = engine.Instances(scene);
+        check(infos.size() == 2, "one row per attached script");
+
+        auto find = [&infos](const std::string& name) -> const ScriptEngine::InstanceInfo*
+        {
+            for (const auto& info : infos)
+            {
+                if (info.EntityName == name)
+                {
+                    return &info;
+                }
+            }
+            return nullptr;
+        };
+
+        const ScriptEngine::InstanceInfo* alpha = find("Alpha");
+        const ScriptEngine::InstanceInfo* beta = find("Beta");
+        check(alpha != nullptr && beta != nullptr, "both entities are listed by name");
+        check(alpha != nullptr && alpha->Started && !alpha->Errored, "the healthy one reads as running");
+        check(alpha != nullptr && alpha->Path == healthy, "and carries its path");
+        check(beta != nullptr && beta->Errored && !beta->Error.empty(), "the broken one reads as failed");
+        check(alpha != nullptr && alpha->ReloadCount == 0, "nothing has reloaded it yet");
+
+        check(engine.ReloadEntity(scene, static_cast<u32>(good)), "reloading one entity reports success");
+        const std::vector<ScriptEngine::InstanceInfo> afterReload = engine.Instances(scene);
+        for (const auto& info : afterReload)
+        {
+            if (info.EntityName == "Alpha")
+            {
+                check(info.ReloadCount == 1, "and the reload is visible to the panel");
+            }
+        }
+
+        check(!engine.ReloadEntity(scene, static_cast<u32>(plain)), "an entity with no script is not reloaded");
+
+        // Retargeting the component (what "Attach to selected entity" does) gives
+        // the entity a fresh instance on the next step.
+        bad.GetComponent<ScriptComponent>().ScriptPath = healthy;
+        bad.GetComponent<ScriptComponent>().RuntimeIndex = 0xFFFFFFFFu;
+        Step(scene, 0.1f, 2);
+        for (const auto& info : engine.Instances(scene))
+        {
+            if (info.EntityName == "Beta")
+            {
+                check(!info.Errored && info.Started, "a retargeted script starts clean");
+            }
+        }
+    }
+
     section("teardown");
     {
         Scene scene;

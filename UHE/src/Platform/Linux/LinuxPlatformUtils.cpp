@@ -5,6 +5,8 @@
 #include <memory>
 #include <string>
 #include <array>
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace UHE {
     namespace {
@@ -42,6 +44,23 @@ namespace UHE {
         const std::string dialogTitle = title != nullptr ? title : "Select Folder";
         return RunZenity("--file-selection --directory --title=\"" + dialogTitle + "\"" +
                          StartingDirectory(defaultPath));
+    }
+
+    bool FileDialogs::OpenInDefaultApp(const std::string& path) {
+        if (path.empty()) return false;
+
+        // fork/exec rather than system(): the path never reaches a shell, so a
+        // quote or a semicolon in a filename stays part of the filename.
+        const pid_t child = fork();
+        if (child < 0) return false;
+        if (child == 0) {
+            execlp("xdg-open", "xdg-open", path.c_str(), static_cast<char*>(nullptr));
+            _exit(127); // no opener installed: report failure to the parent
+        }
+
+        int status = 0;
+        if (waitpid(child, &status, 0) < 0) return false;
+        return WIFEXITED(status) && WEXITSTATUS(status) == 0;
     }
 }
 #endif

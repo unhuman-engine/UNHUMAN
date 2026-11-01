@@ -24,6 +24,7 @@ What a script is given, and what happens around it:
 | Rigid bodies | `HasRigidBody`, `Get`/`SetLinearVelocity`, `Get`/`SetAngularVelocity`, `ApplyForce` | What makes a script a controller rather than a cutscene |
 | Engine API | `Log.{info,warn,error}`, `Input.IsKeyPressed`, `Input.IsMouseButtonPressed`, `Input.GetMousePosition` | Input checks for a window first, so a headless run answers `false` instead of asking GLFW about a null context |
 | Hot reload | `ScriptEngine::Tick` | Source mtimes polled four times a second from the scene step; an edit recompiles and re-runs `OnCreate`. The editor and the sandbox enable it, **File > Reload Scripts** forces it |
+| Editor view | `Editor/src/Panel/ScriptsPanel.{h,cpp}` | One row per attached script, fed by `ScriptEngine::Instances(Scene&)`; `ReloadEntity` backs the per-row Reload button |
 | Errors | every call is a protected call | Logged with the chunk name and a traceback, the instance is disabled, the frame continues |
 
 Deviations from the design below, all deliberate:
@@ -47,6 +48,24 @@ Deviations from the design below, all deliberate:
 A working example ships with the editor's assets
 (`UHE_EDITOR/assets/scripts/orbit.lua`): attach it to an entity with the inspector
 and it orbits the origin, logging where it is.
+
+## In the editor
+
+The editor is where a script is created, attached and watched, so the workflow
+does not require leaving it:
+
+| Action | Where |
+|---|---|
+| Create a script | **New Script** in the Content Browser: writes a `.lua` with the three hooks into the folder being browsed, under a free name |
+| Attach one to an entity | Right-click a `.lua` → **Attach to selected entity**. It adds the component, or retargets it, and stores the path project-relative so the scene stays portable |
+| See and change it | **Properties → Script (Lua)**: path, enabled toggle, the instance's state, and Reload / Open buttons |
+| See every script at once | The **Scripts** panel: one row per attached script with entity, file, state (`running` / `error` / `waiting`), the failure text in place, and per-row Reload / Open |
+| Force a recompile | **File > Reload Scripts** (the Scripts panel's **Reload All** does the same) |
+| Edit live | Hot reload is on in the editor: save the file and the instance restarts from `OnCreate` |
+
+An example ships with the editor's assets,
+`UHE_EDITOR/assets/scripts/orbit.lua` -- attach it to any entity and it orbits
+the origin.
 
 What the harness proves (`tests/scripting`, 53 checks, no GPU): the sandbox, the
 lifecycle order, `self` state across frames, the entity API, a controller loop
@@ -214,9 +233,10 @@ re-run `OnCreate`; script logs and errors reach the editor console through the
 normal log sink). Still open: reflection-driven component access, coroutines with
 a frame budget and an instruction watchdog.
 
-Phase 3, editor and events: **script inspector DONE** (path, enabled toggle) and
-entity create/destroy from script is DONE (`Spawn`, `Find`, `Destroy`). Still
-open: event hooks (`OnEvent`), API annotation export, debugger attach.
+Phase 3, editor and events: **script inspector and Scripts panel DONE**, entity
+create/destroy from script DONE (`Spawn`, `Find`, `Destroy`), and attach-from-
+Content-Browser DONE. Still open: event hooks (`OnEvent`), API annotation export,
+debugger attach.
 
 Phase 4, shipping: bytecode caching in the cook step, the module becoming
 optional for non-script builds, and profiler integration.

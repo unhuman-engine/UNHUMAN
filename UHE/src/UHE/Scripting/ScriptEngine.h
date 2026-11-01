@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 struct lua_State;
 
@@ -88,6 +89,25 @@ public:
 
     /// Recompiles and restarts every instance of \p scene, changed or not.
     void ReloadAll(Scene& scene);
+
+    /// Recompiles and restarts one entity's instance.
+    /// \returns false when the entity has no script.
+    bool ReloadEntity(Scene& scene, u32 entityId);
+
+    /// What one attached script is doing, for the editor's Scripts panel.
+    struct InstanceInfo
+    {
+        u32 EntityId = 0;      ///< entt handle as an integer, for selection
+        std::string EntityName;
+        std::string Path;
+        bool Started = false;
+        bool Errored = false;
+        u32 ReloadCount = 0;
+        std::string Error;     ///< the last failure, empty while healthy
+    };
+
+    /// \returns one entry per instance belonging to \p scene, in entity order.
+    [[nodiscard]] std::vector<InstanceInfo> Instances(Scene& scene) const;
 
     // ── Diagnostics ──────────────────────────────────────────────────────────
 

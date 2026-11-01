@@ -55,6 +55,44 @@ void Editor::OnAttach()
     m_EditorCamera = EditorCamera(45.0f, 1.766f, 0.1f, 1000.0f);
     m_SceneHireacyPanel.SetContext(m_ActiveScene);
 
+    // "Attach to selected entity" in the Content Browser: the panel knows the
+    // file, the hierarchy knows the entity, and the editor is where they meet.
+    m_ContentBrowserPanel.SetOnAttachScript(
+        [this](const std::filesystem::path& script)
+        {
+            Entity selected = m_SceneHireacyPanel.GetSelectedEntity();
+            if (!selected || !m_ActiveScene)
+            {
+                UHE_CORE_WARN("Attach script: select an entity in the hierarchy first");
+                return;
+            }
+
+            // Store it the way the engine resolves it: project-relative when the
+            // script lives inside the project, so a scene stays portable.
+            std::string path = script.string();
+            std::error_code ec;
+            const std::filesystem::path relative =
+                std::filesystem::relative(script, m_ContentBrowserPanel.GetBaseDirectory(), ec);
+            if (!ec && !relative.empty() && relative.native().rfind("..", 0) != 0)
+            {
+                path = relative.generic_string();
+            }
+
+            if (selected.HasComponent<ScriptComponent>())
+            {
+                auto& component = selected.GetComponent<ScriptComponent>();
+                component.ScriptPath = path;
+                component.RuntimeIndex = 0xFFFFFFFFu; // the new path gets a fresh instance
+            }
+            else
+            {
+                selected.AddComponent<ScriptComponent>().ScriptPath = path;
+            }
+
+            ScriptEngine::Get().ReloadEntity(*m_ActiveScene, static_cast<u32>(selected));
+            UHE_CORE_INFO("Attached script '{0}' to '{1}'", path, selected.GetComponent<TagComponent>().Tag);
+        });
+
     auto rootPath = FileSystem::Get().GetRootPath();
     m_IconPlay = Texture2D::Create((rootPath / "assets/icon/play.png").string());
     m_IconPause = Texture2D::Create((rootPath / "assets/icon/pause.png").string());
@@ -729,6 +767,7 @@ namespace
         ImGui::DockBuilderDockWindow("Content Browser", bottomLeft);
         ImGui::DockBuilderDockWindow("Console", bottomRight);
         ImGui::DockBuilderDockWindow("Profiler", bottomRight);
+        ImGui::DockBuilderDockWindow("Scripts", bottomRight);
         ImGui::DockBuilderFinish(dockspaceId);
     }
 } // namespace
@@ -814,6 +853,10 @@ void Editor::OnImGuiRender()
 
     if (m_ShowProfiler)
         m_ProfilerPanel.OnImGuiRender();
+
+    m_ScriptsPanel.SetContext(m_ActiveScene.get());
+    if (m_ShowScripts)
+        m_ScriptsPanel.OnImGuiRender(m_ShowScripts);
 
     ImGuiWindowFlags viewportFlags = 0;
     std::string viewportName = "Viewport";
@@ -1062,6 +1105,7 @@ void Editor::DrawMainMenuBar()
         EditorUI::ToggleMenuItem("Content Browser", &m_ShowContentBrowser);
         EditorUI::ToggleMenuItem("Console", &m_ShowConsole);
         EditorUI::ToggleMenuItem("Profiler", &m_ShowProfiler);
+        EditorUI::ToggleMenuItem("Scripts", &m_ShowScripts);
         EditorUI::ToggleMenuItem("Settings", &m_ShowSettings);
         EditorUI::ToggleMenuItem("Viewport", &m_ShowViewport);
         ImGui::Separator();

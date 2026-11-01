@@ -64,6 +64,7 @@ struct ScriptEngine::Impl
         sol::protected_function OnDestroy;
         bool Started = false;
         bool Errored = false;
+        u32 ReloadCount = 0;
     };
 
     sol::state Lua;
@@ -402,6 +403,7 @@ void RestartInstance(ScriptEngine::Impl& impl, u32 id)
         return;
     }
 
+    ++instance.ReloadCount;
     UHE_CORE_INFO("[script] reloaded {0} for {1}", instance.Path, DescribeEntity(*instance.Scene_, instance.Entity));
     StartInstance(impl, instance);
 }
@@ -1039,6 +1041,72 @@ void ScriptEngine::Tick(Scene& scene)
     {
         RestartInstance(*m_Impl, id);
     }
+}
+
+bool ScriptEngine::ReloadEntity(Scene& scene, u32 entityId)
+{
+    if (!m_Impl->Initialized)
+    {
+        return false;
+    }
+
+    const entt::entity handle = static_cast<entt::entity>(entityId);
+    if (!scene.GetRegistry().valid(handle) || !scene.GetRegistry().all_of<ScriptComponent>(handle))
+    {
+        return false;
+    }
+
+    ScriptComponent& component = scene.GetRegistry().get<ScriptComponent>(handle);
+    Impl::Instance* instance = EnsureInstance(*m_Impl, scene, handle, component);
+    if (instance == nullptr)
+    {
+        return false;
+    }
+
+    // A failed load left the instance errored and never started; restarting it
+    // has to clear that, or the editor's Reload button would do nothing.
+    RestartInstance(*m_Impl, component.RuntimeIndex);
+    return true;
+}
+
+std::vector<ScriptEngine::InstanceInfo> ScriptEngine::Instances(Scene& scene) const
+{
+    std::vector<InstanceInfo> infos;
+    if (!m_Impl->Initialized)
+    {
+        return infos;
+    }
+
+    // Walk the scene rather than the instance map so the editor sees the order
+    // it draws entities in, and so a component with no instance yet still shows.
+    auto view = scene.GetRegistry().view<ScriptComponent>();
+    for (const entt::entity handle : view)
+    {
+        const ScriptComponent& component = view.get<ScriptComponent>(handle);
+
+        InstanceInfo info;
+        info.EntityId = static_cast<u32>(handle);
+        info.Path = component.ScriptPath;
+        {
+            Entity entity{handle, &scene};
+            info.EntityName = entity.HasComponent<TagComponent>() ? entity.GetComponent<TagComponent>().Tag
+                                                                  : std::string("<entity>");
+        }
+
+        const auto it = m_Impl->Instances.find(component.RuntimeIndex);
+        if (it != m_Impl->Instances.end() && it->second.Scene_ == &scene && it->second.Entity == handle)
+        {
+            info.Started = it->second.Started;
+            info.Errored = it->second.Errored;
+            info.ReloadCount = it->second.ReloadCount;
+            if (it->second.Errored)
+            {
+                info.Error = m_Impl->LastError;
+            }
+        }
+        infos.push_back(std::move(info));
+    }
+    return infos;
 }
 
 void ScriptEngine::ReloadAll(Scene& scene)

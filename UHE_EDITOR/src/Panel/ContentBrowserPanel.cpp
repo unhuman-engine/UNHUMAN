@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <system_error>
 
@@ -206,6 +207,9 @@ void ContentBrowserPanel::DrawGrid(
     if (clicked)
       m_SelectedPath = path;
 
+    if (!isDirectory)
+      DrawFileContextMenu(path);
+
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip("%s\n%s", path.filename().string().c_str(), path.string().c_str());
       if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && isDirectory)
@@ -267,6 +271,9 @@ void ContentBrowserPanel::DrawList(
       if (isDirectory && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
         m_CurrentDirectory = path;
     }
+    if (!isDirectory)
+      DrawFileContextMenu(path);
+
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s", path.string().c_str());
 
@@ -297,6 +304,67 @@ void ContentBrowserPanel::DrawList(
   }
 
   ImGui::EndTable();
+}
+
+void ContentBrowserPanel::DrawFileContextMenu(const std::filesystem::path& path) {
+  if (!ImGui::BeginPopupContextItem())
+    return;
+
+  const bool isScript = path.extension() == ".lua";
+  if (isScript) {
+    if (ImGui::MenuItem("Attach to selected entity")) {
+      if (m_OnAttachScript)
+        m_OnAttachScript(path);
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Adds (or retargets) a Script component on the entity selected in the hierarchy.");
+    if (ImGui::MenuItem("Open in editor")) {
+      FileDialogs::OpenInDefaultApp(path.string());
+    }
+    ImGui::Separator();
+  }
+
+  if (ImGui::MenuItem("Reveal path")) {
+    ImGui::SetClipboardText(path.string().c_str());
+  }
+  ImGui::EndPopup();
+}
+
+void ContentBrowserPanel::CreateScript() {
+  // A starter file with the three hooks, under a name that is not taken.
+  static constexpr const char* kTemplate =
+      "-- Attached to an entity with a Script component.\n"
+      "-- The engine runs these three; `self` is the entity.\n"
+      "\n"
+      "function OnCreate(self)\n"
+      "    -- once, before the first update\n"
+      "end\n"
+      "\n"
+      "function OnUpdate(self, dt)\n"
+      "    -- every step; dt is the frame's seconds\n"
+      "end\n"
+      "\n"
+      "function OnDestroy(self)\n"
+      "    -- when the entity goes away\n"
+      "end\n";
+
+  std::error_code ec;
+  std::filesystem::path target = m_CurrentDirectory / "NewScript.lua";
+  for (int index = 1; std::filesystem::exists(target, ec) && index < 1000; ++index) {
+    target = m_CurrentDirectory / ("NewScript" + std::to_string(index) + ".lua");
+  }
+
+  std::ofstream file(target, std::ios::trunc);
+  if (!file) {
+    UHE_CORE_WARN("Could not create '{0}'", target.string());
+    return;
+  }
+  file << kTemplate;
+  file.close();
+
+  m_SelectedPath = target;
+  m_TextureCache.clear();
+  UHE_CORE_INFO("Created script '{0}'", target.string());
 }
 
 void ContentBrowserPanel::OnImGuiRender() {
@@ -339,14 +407,23 @@ void ContentBrowserPanel::OnImGuiRender() {
     const float availW = ImGui::GetContentRegionAvail().x;
     const float listButtonW = 62.0f;
     const float importButtonW = 74.0f;
+    // The search field gives up its width to every button on this row, or the
+    // last one lands outside the panel and is simply not there.
+    const float scriptButtonW = 84.0f;
     EditorUI::SearchField("##ContentSearch", m_SearchBuffer, sizeof(m_SearchBuffer),
-                          "Search assets...", std::max(80.0f, availW - listButtonW - importButtonW - 12.0f));
+                          "Search assets...",
+                          std::max(80.0f, availW - listButtonW - importButtonW - scriptButtonW - 30.0f));
     ImGui::SameLine(0.0f, 6.0f);
     if (ImGui::Button(m_ListMode ? "Grid" : "List", ImVec2(listButtonW, 0.0f)))
       m_ListMode = !m_ListMode;
     ImGui::SameLine(0.0f, 6.0f);
     if (ImGui::Button("Import", ImVec2(importButtonW, 0.0f)))
       ImportFromDialog();
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ImGui::Button("New Script", ImVec2(scriptButtonW, 0.0f)))
+      CreateScript();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Creates a .lua with the OnCreate/OnUpdate/OnDestroy hooks in this folder.");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Copy a file from outside the project into this folder");
 
