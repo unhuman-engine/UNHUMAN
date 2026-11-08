@@ -161,6 +161,16 @@ private:
     // per frame from the RelationshipComponent tree.
     void UpdateWorldTransformCache();
 
+    // Advances every AnimatorComponent, including the animation graph. Shared
+    // by the editor and runtime update paths so both see identical behaviour.
+    void StepAnimators(Timestep ts);
+
+    // Starts/stops AudioSourceComponents and mirrors their options to the live
+    // voice. Editor mode only honours explicit Play buttons; runtime also runs
+    // Autoplay sources.
+    void UpdateAudioSources(Timestep ts, bool runtime);
+    void StopAudioSources();
+
     void RenderSprites(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
     void RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
     void RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);

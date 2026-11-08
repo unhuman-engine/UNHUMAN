@@ -682,6 +682,10 @@ void SceneHierarchyPanel::DrawComponents(Entity entity) {
       m_SelectionContext.AddComponent<AnimatorComponent>();
       ImGui::CloseCurrentPopup();
     }
+    if (match("Audio Source") && ImGui::MenuItem("Audio Source")) {
+      m_SelectionContext.AddComponent<AudioSourceComponent>();
+      ImGui::CloseCurrentPopup();
+    }
     ImGui::Separator();
     if (match("Directional Light") && ImGui::MenuItem("Directional Light")) {
       m_SelectionContext.AddComponent<DirectionalLightComponent>();
@@ -1207,6 +1211,42 @@ void SceneHierarchyPanel::DrawComponents(Entity entity) {
                 ImGui::TextDisabled("Model has no animations.");
             }
         }
+      });
+
+  ::UHE::DrawComponents<AudioSourceComponent>(
+      "Audio Source", entity, [](AudioSourceComponent &audio) {
+        ImGui::InputText("Sound", &audio.SoundPath);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Project-relative path, e.g. Assets/Audio/engine.wav");
+
+        ImGui::DragFloat("Volume", &audio.Volume, 0.01f, 0.0f, 4.0f);
+        ImGui::DragFloat("Pitch", &audio.Pitch, 0.01f, 0.05f, 4.0f);
+        ImGui::Checkbox("Loop", &audio.Loop);
+        ImGui::Checkbox("Mute", &audio.Muted);
+        ImGui::Checkbox("Autoplay (Play mode)", &audio.Autoplay);
+
+        ImGui::Checkbox("Spatial 3D", &audio.Spatial);
+        if (audio.Spatial) {
+          ImGui::DragFloat("Min Distance", &audio.MinDistance, 0.05f, 0.0f, 10000.0f);
+          ImGui::DragFloat("Max Distance", &audio.MaxDistance, 0.5f, 0.0f, 100000.0f);
+          ImGui::DragFloat("Rolloff", &audio.Rolloff, 0.01f, 0.0f, 4.0f);
+          ImGui::TextDisabled("Position follows the entity transform.");
+        } else {
+          ImGui::SliderFloat("Pan", &audio.Pan, -1.0f, 1.0f);
+        }
+
+        if (ImGui::Button("Play")) {
+          audio.PlayRequested = true;
+          audio.RuntimeAutoStarted = true; // do not double-start in Play mode
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop"))
+          audio.StopRequested = true;
+        ImGui::SameLine();
+        if (audio.RuntimePlaying)
+          ImGui::TextColored(EditorTheme::Success(), "playing");
+        else
+          ImGui::TextDisabled("stopped");
       });
 }
 

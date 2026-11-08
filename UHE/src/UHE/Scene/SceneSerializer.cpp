@@ -214,6 +214,25 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::EndMap;
     }
 
+    // Audio source
+    if (entity.HasComponent<AudioSourceComponent>())
+    {
+        auto& audio = entity.GetComponent<AudioSourceComponent>();
+        out << YAML::Key << "AudioSourceComponent" << YAML::BeginMap;
+        out << YAML::Key << "SoundPath" << YAML::Value << audio.SoundPath;
+        out << YAML::Key << "Volume" << YAML::Value << audio.Volume;
+        out << YAML::Key << "Pitch" << YAML::Value << audio.Pitch;
+        out << YAML::Key << "Pan" << YAML::Value << audio.Pan;
+        out << YAML::Key << "Loop" << YAML::Value << audio.Loop;
+        out << YAML::Key << "Spatial" << YAML::Value << audio.Spatial;
+        out << YAML::Key << "Autoplay" << YAML::Value << audio.Autoplay;
+        out << YAML::Key << "Muted" << YAML::Value << audio.Muted;
+        out << YAML::Key << "MinDistance" << YAML::Value << audio.MinDistance;
+        out << YAML::Key << "MaxDistance" << YAML::Value << audio.MaxDistance;
+        out << YAML::Key << "Rolloff" << YAML::Value << audio.Rolloff;
+        out << YAML::EndMap;
+    }
+
     // Animator
     if (entity.HasComponent<AnimatorComponent>())
     {
@@ -228,7 +247,53 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::Key << "RootMotion" << YAML::Value << ac.RootMotion;
         out << YAML::Key << "CrossFadeDuration" << YAML::Value << ac.CrossFadeDuration;
         out << YAML::Key << "SkinIndex" << YAML::Value << ac.SkinIndex;
-        out << YAML::EndMap;
+
+        // State-machine graph (editor-authored; runtime state is not persisted).
+        out << YAML::Key << "Graph" << YAML::BeginMap;
+        out << YAML::Key << "Enabled" << YAML::Value << ac.Graph.Enabled;
+        out << YAML::Key << "EntryState" << YAML::Value << ac.Graph.EntryState;
+
+        out << YAML::Key << "States" << YAML::BeginSeq;
+        for (const AnimationGraphState& state : ac.Graph.States)
+        {
+            out << YAML::BeginMap;
+            out << YAML::Key << "Name" << YAML::Value << state.Name;
+            out << YAML::Key << "Clip" << YAML::Value << state.Clip;
+            out << YAML::Key << "Position" << YAML::Value << state.EditorPosition;
+            out << YAML::Key << "Speed" << YAML::Value << state.Speed;
+            out << YAML::Key << "Loop" << YAML::Value << state.Loop;
+            out << YAML::EndMap;
+        }
+        out << YAML::EndSeq;
+
+        out << YAML::Key << "Transitions" << YAML::BeginSeq;
+        for (const AnimationGraphTransition& transition : ac.Graph.Transitions)
+        {
+            out << YAML::BeginMap;
+            out << YAML::Key << "From" << YAML::Value << transition.From;
+            out << YAML::Key << "To" << YAML::Value << transition.To;
+            out << YAML::Key << "Parameter" << YAML::Value << transition.Parameter;
+            out << YAML::Key << "Condition" << YAML::Value << static_cast<int>(transition.Condition);
+            out << YAML::Key << "Threshold" << YAML::Value << transition.Threshold;
+            out << YAML::Key << "Duration" << YAML::Value << transition.Duration;
+            out << YAML::Key << "HasExitTime" << YAML::Value << transition.HasExitTime;
+            out << YAML::Key << "ExitTime" << YAML::Value << transition.ExitTime;
+            out << YAML::EndMap;
+        }
+        out << YAML::EndSeq;
+
+        out << YAML::Key << "Parameters" << YAML::BeginSeq;
+        for (const AnimationGraphParameter& parameter : ac.Graph.Parameters)
+        {
+            out << YAML::BeginMap;
+            out << YAML::Key << "Name" << YAML::Value << parameter.Name;
+            out << YAML::Key << "Value" << YAML::Value << parameter.Value;
+            out << YAML::EndMap;
+        }
+        out << YAML::EndSeq;
+        out << YAML::EndMap; // Graph
+
+        out << YAML::EndMap; // AnimatorComponent
     }
 
     // DirectionalLight
@@ -623,6 +688,24 @@ bool SceneSerializer::Deserialize(const std::string& filepath)
             sc.Enabled = scriptNode["Enabled"] ? scriptNode["Enabled"].as<bool>() : true;
         }
 
+        // Audio source
+        auto audioNode = entityNode["AudioSourceComponent"];
+        if (audioNode)
+        {
+            auto& audio = entity.AddComponent<AudioSourceComponent>();
+            audio.SoundPath = audioNode["SoundPath"] ? audioNode["SoundPath"].as<std::string>() : std::string();
+            audio.Volume = audioNode["Volume"] ? audioNode["Volume"].as<float>() : 1.0f;
+            audio.Pitch = audioNode["Pitch"] ? audioNode["Pitch"].as<float>() : 1.0f;
+            audio.Pan = audioNode["Pan"] ? audioNode["Pan"].as<float>() : 0.0f;
+            audio.Loop = audioNode["Loop"] ? audioNode["Loop"].as<bool>() : false;
+            audio.Spatial = audioNode["Spatial"] ? audioNode["Spatial"].as<bool>() : false;
+            audio.Autoplay = audioNode["Autoplay"] ? audioNode["Autoplay"].as<bool>() : false;
+            audio.Muted = audioNode["Muted"] ? audioNode["Muted"].as<bool>() : false;
+            audio.MinDistance = audioNode["MinDistance"] ? audioNode["MinDistance"].as<float>() : 1.0f;
+            audio.MaxDistance = audioNode["MaxDistance"] ? audioNode["MaxDistance"].as<float>() : 100.0f;
+            audio.Rolloff = audioNode["Rolloff"] ? audioNode["Rolloff"].as<float>() : 1.0f;
+        }
+
         // Animator
         auto acNode = entityNode["AnimatorComponent"];
         if (acNode)
@@ -639,6 +722,67 @@ bool SceneSerializer::Deserialize(const std::string& filepath)
             ac.CrossFadeDuration =
                 acNode["CrossFadeDuration"] ? acNode["CrossFadeDuration"].as<float>() : 0.25f;
             ac.SkinIndex = acNode["SkinIndex"] ? acNode["SkinIndex"].as<int>() : 0;
+
+            if (YAML::Node graphNode = acNode["Graph"])
+            {
+                AnimationGraph& graph = ac.Graph;
+                graph.Enabled = graphNode["Enabled"] ? graphNode["Enabled"].as<bool>() : false;
+                graph.EntryState = graphNode["EntryState"] ? graphNode["EntryState"].as<int>() : 0;
+
+                if (YAML::Node states = graphNode["States"])
+                {
+                    for (const YAML::Node& stateNode : states)
+                    {
+                        AnimationGraphState state;
+                        state.Name = stateNode["Name"] ? stateNode["Name"].as<std::string>() : "State";
+                        state.Clip = stateNode["Clip"] ? stateNode["Clip"].as<std::string>() : std::string();
+                        state.EditorPosition =
+                            stateNode["Position"] ? stateNode["Position"].as<glm::vec2>() : glm::vec2(0.0f);
+                        state.Speed = stateNode["Speed"] ? stateNode["Speed"].as<f32>() : 1.0f;
+                        state.Loop = stateNode["Loop"] ? stateNode["Loop"].as<bool>() : true;
+                        graph.States.push_back(std::move(state));
+                    }
+                }
+
+                if (YAML::Node transitions = graphNode["Transitions"])
+                {
+                    for (const YAML::Node& transitionNode : transitions)
+                    {
+                        AnimationGraphTransition transition;
+                        transition.From = transitionNode["From"] ? transitionNode["From"].as<int>() : -1;
+                        transition.To = transitionNode["To"] ? transitionNode["To"].as<int>() : -1;
+                        transition.Parameter = transitionNode["Parameter"]
+                                                   ? transitionNode["Parameter"].as<std::string>()
+                                                   : std::string();
+                        transition.Condition = transitionNode["Condition"]
+                                                   ? static_cast<AnimGraphCondition>(
+                                                         transitionNode["Condition"].as<int>())
+                                                   : AnimGraphCondition::Greater;
+                        transition.Threshold =
+                            transitionNode["Threshold"] ? transitionNode["Threshold"].as<f32>() : 0.5f;
+                        transition.Duration =
+                            transitionNode["Duration"] ? transitionNode["Duration"].as<f32>() : 0.2f;
+                        transition.HasExitTime =
+                            transitionNode["HasExitTime"] ? transitionNode["HasExitTime"].as<bool>() : false;
+                        transition.ExitTime =
+                            transitionNode["ExitTime"] ? transitionNode["ExitTime"].as<f32>() : 1.0f;
+                        graph.Transitions.push_back(std::move(transition));
+                    }
+                }
+
+                if (YAML::Node parameters = graphNode["Parameters"])
+                {
+                    for (const YAML::Node& parameterNode : parameters)
+                    {
+                        AnimationGraphParameter parameter;
+                        parameter.Name =
+                            parameterNode["Name"] ? parameterNode["Name"].as<std::string>() : std::string();
+                        parameter.Value = parameterNode["Value"] ? parameterNode["Value"].as<f32>() : 0.0f;
+                        graph.Parameters.push_back(std::move(parameter));
+                    }
+                }
+            }
+
             if (entity.HasComponent<Model3DComponent>())
             {
                 auto& mc = entity.GetComponent<Model3DComponent>();

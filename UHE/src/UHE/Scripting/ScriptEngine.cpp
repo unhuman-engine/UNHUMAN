@@ -5,6 +5,7 @@
 #include "UHE/Core/Log.h"
 #include "UHE/Core/input.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
+#include "UHE/Renderer3D/AnimationStateMachine.h"
 #include "UHE/Scene/Components.h"
 #include "UHE/Scene/Entity.h"
 #include "UHE/Scene/Scene.h"
@@ -730,6 +731,112 @@ void BindApi(ScriptEngine::Impl& impl)
                              }
                              bodies->ActivateBody(bodyId);
                              bodies->AddForce(bodyId, ToJolt(glm::vec3(x, y, z)));
+                         });
+
+    // ── animation graph parameters ─────────────────────────────────────────
+    methods.set_function("HasAnimator", [&impl](sol::table self)
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return false;
+                             Entity entity{handle, scene};
+                             return entity.HasComponent<AnimatorComponent>() &&
+                                    entity.GetComponent<AnimatorComponent>().Animator != nullptr;
+                         });
+
+    methods.set_function("SetAnimFloat", [&impl](sol::table self, const std::string& name, float value)
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return;
+                             Entity entity{handle, scene};
+                             if (!entity.HasComponent<AnimatorComponent>())
+                                 return;
+
+                             AnimationGraph& graph = entity.GetComponent<AnimatorComponent>().Graph;
+                             if (graph.FindParameter(name) < 0)
+                                 graph.Parameters.push_back({name, value});
+                             else
+                                 graph.SetParameter(name, value);
+                         });
+
+    methods.set_function("GetAnimFloat", [&impl](sol::table self, const std::string& name) -> float
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return 0.0f;
+                             Entity entity{handle, scene};
+                             if (!entity.HasComponent<AnimatorComponent>())
+                                 return 0.0f;
+                             return entity.GetComponent<AnimatorComponent>().Graph.GetParameter(name);
+                         });
+
+    methods.set_function("SetAnimTrigger", [&impl](sol::table self, const std::string& name)
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return;
+                             Entity entity{handle, scene};
+                             if (!entity.HasComponent<AnimatorComponent>())
+                                 return;
+
+                             AnimationGraph& graph = entity.GetComponent<AnimatorComponent>().Graph;
+                             if (graph.FindParameter(name) < 0)
+                                 graph.Parameters.push_back({name, 1.0f});
+                             else
+                                 graph.SetParameter(name, 1.0f);
+                         });
+
+    // Direct state jump: useful for robots whose controller already decided
+    // the state, bypassing transition conditions for one frame.
+    methods.set_function("SetAnimState", [&impl](sol::table self, const std::string& stateName)
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return;
+                             Entity entity{handle, scene};
+                             if (!entity.HasComponent<AnimatorComponent>())
+                                 return;
+
+                             AnimatorComponent& anim = entity.GetComponent<AnimatorComponent>();
+                             for (const AnimationGraphState& state : anim.Graph.States)
+                             {
+                                 if (state.Name == stateName)
+                                 {
+                                     if (anim.GraphRuntime && anim.Animator)
+                                         anim.GraphRuntime->Enter(stateName, *anim.Animator, 0.0f);
+                                     if (!state.Clip.empty())
+                                         anim.CurrentAnimationName = state.Clip;
+                                     return;
+                                 }
+                             }
+                         });
+
+    methods.set_function("PlayAnimation", [&impl](sol::table self, const std::string& clip, float fade)
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return;
+                             Entity entity{handle, scene};
+                             if (!entity.HasComponent<AnimatorComponent>())
+                                 return;
+
+                             AnimatorComponent& anim = entity.GetComponent<AnimatorComponent>();
+                             if (!anim.Animator)
+                                 return;
+
+                             if (anim.Animator->HasAnimation() && fade > 0.0f)
+                                 anim.Animator->CrossFade(clip, fade);
+                             else
+                                 anim.Animator->PlayAnimation(clip);
+                             anim.CurrentAnimationName = clip;
+                             anim.IsPlaying = true;
                          });
 
     impl.EntityMethods = methods;

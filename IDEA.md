@@ -57,11 +57,11 @@ It is a long-running project — started years ago, rewritten more than once, ac
 | JobSystem + TaskGraph | Implemented and documented |
 | Rendering | Deferred-ish single-pass renderer, PBR-ish shading, MSDF text |
 | glTF | Node hierarchy, shared-mesh instancing, non-indexed geometry and meshoptimizer pass all land (#29 tier 0 + most of tier 1). Still open: `COLOR_0` vertex colour, `KHR_texture_transform`, sampler wrap/filter on load, mipmaps on the model path, `alphaMode: BLEND` ordering |
-| Audio | miniaudio integration landed; assets/voices/buses not designed in yet |
+| Audio | miniaudio voices with volume/pitch/pan/loop and spatial falloff; `AudioSource` component, mixer panel and content-browser preview; buses still open |
 | Assets | Path-based, no registry, `AssestsManager` naming debt |
 | Render graph | Compiles, resolves and executes every frame in `VulkanDevice::EndFrameGraph()`; carries the ImGui pass only. Scene rendering still records via immediate submit — plan at `docs/plans/PLAN-render-graph-scene-pass.md` |
 | CI | Builds + headless Lavapipe smoke + sanitizer workflows; no in-tree unit tests |
-| Editor | ImGui editor, docking, gizmos, drag-drop; command palette, toast notifications, viewport HUD (tool/snap badges, orientation gizmo, camera speed), transform undo/redo |
+| Editor | ImGui editor, docking, gizmos, drag-drop; command palette, toast notifications, viewport HUD, transform undo/redo, animation state-machine graph editor, audio mixer |
 
 ## Direction of travel
 

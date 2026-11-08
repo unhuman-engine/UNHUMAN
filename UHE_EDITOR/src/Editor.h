@@ -3,6 +3,8 @@
 #include "imgui.h"
 
 #include "Panel/SceneHierachyPanel.h"
+#include "Panel/AnimationGraphPanel.h"
+#include "Panel/AudioPanel.h"
 #include "Panel/ProfilerPanel.h"
 #include "Panel/ScriptsPanel.h"
 #include "Panel/ProjectLauncherPanel.h"
@@ -124,6 +126,8 @@ namespace UHE
 		bool m_SnapEnabled = false;
 
 		SceneHierarchyPanel m_SceneHireacyPanel;
+		AnimationGraphPanel m_AnimationGraphPanel;
+		AudioPanel m_AudioPanel;
 		ContentBrowserPanel m_ContentBrowserPanel;
 		ProfilerPanel m_ProfilerPanel;
 		ScriptsPanel m_ScriptsPanel;
@@ -147,6 +151,8 @@ namespace UHE
 		bool m_ShowConsole = true;
 		bool m_ShowProfiler = true;
 		bool m_ShowScripts = true;
+		bool m_ShowAnimationGraph = true;
+		bool m_ShowAudio = true;
 		bool m_ShowSettings = true;
 		bool m_ShowViewport = true;
 		bool m_ShowPreferences = false;

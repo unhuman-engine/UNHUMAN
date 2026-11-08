@@ -3,6 +3,7 @@
 #include <box2d/types.h>
 #include "SceneCamera.h"
 #include "UHE/Animation/Animation2D/SpriteAnimation.h"
+#include "UHE/Animation/AnimationGraph.h"
 #include "UHE/Core/Core.h"
 #include "UHE/Core/Timestep.h"
 #include "UHE/Core/UUID.h"
@@ -152,6 +153,51 @@ struct UHE_API ScriptComponent
     explicit ScriptComponent(std::string path) : ScriptPath(std::move(path)) {}
 };
 
+struct UHE_API AudioSourceComponent
+{
+    std::string SoundPath; // project-relative asset path
+    float Volume = 1.0f;
+    float Pitch = 1.0f;
+    float Pan = 0.0f; // -1 left .. +1 right; ignored when Spatial
+    bool Loop = false;
+    bool Spatial = false;
+    bool Autoplay = false;
+    bool Muted = false;
+    float MinDistance = 1.0f;
+    float MaxDistance = 100.0f;
+    float Rolloff = 1.0f;
+
+    // Runtime-only playback state (never serialized).
+    u32 RuntimeHandle = 0;
+    bool RuntimePlaying = false;
+    bool RuntimeAutoStarted = false;
+    bool PlayRequested = false;
+    bool StopRequested = false;
+
+    AudioSourceComponent() = default;
+    AudioSourceComponent(const AudioSourceComponent& other)
+        : SoundPath(other.SoundPath), Volume(other.Volume), Pitch(other.Pitch), Pan(other.Pan), Loop(other.Loop),
+          Spatial(other.Spatial), Autoplay(other.Autoplay), Muted(other.Muted), MinDistance(other.MinDistance),
+          MaxDistance(other.MaxDistance), Rolloff(other.Rolloff)
+    {
+    }
+    AudioSourceComponent& operator=(const AudioSourceComponent& other)
+    {
+        SoundPath = other.SoundPath;
+        Volume = other.Volume;
+        Pitch = other.Pitch;
+        Pan = other.Pan;
+        Loop = other.Loop;
+        Spatial = other.Spatial;
+        Autoplay = other.Autoplay;
+        Muted = other.Muted;
+        MinDistance = other.MinDistance;
+        MaxDistance = other.MaxDistance;
+        Rolloff = other.Rolloff;
+        return *this;
+    }
+};
+
 struct UHE_API RigidBody2DComponent{
     enum class BodyType
     {
@@ -191,6 +237,12 @@ struct UHE_API AnimatorComponent
     bool RootMotion = false;
     f32 CrossFadeDuration = 0.25f; ///< Cross-fade blend duration when changing clips
     i32 SkinIndex = 0;               ///< Active skin joint set index
+
+    // State-machine graph. When enabled it decides which clip plays and can
+    // cross-fade between states; CurrentAnimationName becomes an output.
+    AnimationGraph Graph;
+    std::shared_ptr<RD3d::AnimationStateMachine> GraphRuntime; ///< compiled, rebuilt on edit
+    u64 GraphRuntimeHash = 0;                                  ///< hash of the graph the runtime was built from
 
     AnimatorComponent() = default;
     AnimatorComponent(const AnimatorComponent&) = default;

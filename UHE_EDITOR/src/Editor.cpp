@@ -14,6 +14,7 @@
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Scripting/ScriptEngine.h"
+#include "UHE/Audio/AudioEngine.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 #include "Platform/Vulkan/VulkanDevice.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
@@ -56,6 +57,12 @@ void Editor::OnAttach()
     m_ActiveScene = CreateRef<Scene>();
     m_EditorCamera = EditorCamera(45.0f, 1.766f, 0.1f, 1000.0f);
     m_SceneHireacyPanel.SetContext(m_ActiveScene);
+
+    // A scene loaded before the first ImGui frame resizes the viewport would
+    // otherwise create cameras with a 0x0 viewport (a zero aspect asserts in
+    // glm::perspective). Seed a sensible size; the first frame refines it.
+    if (m_ViewPortSize.x <= 0.0f || m_ViewPortSize.y <= 0.0f)
+        m_ViewPortSize = {1280.0f, 720.0f};
 
     // "Attach to selected entity" in the Content Browser: the panel knows the
     // file, the hierarchy knows the entity, and the editor is where they meet.
@@ -246,6 +253,30 @@ void Editor::OnUpdate(UHE::Timestep ts)
         cmd.EndRenderPass();
     }
 
+    // The editor camera is the listener while editing; playing uses the scene's
+    // primary camera so 3D audio follows what the player sees.
+    glm::vec3 listenerPosition = m_EditorCamera.GetPosition();
+    glm::vec3 listenerForward = m_EditorCamera.GetForwardDirection();
+    glm::vec3 listenerUp = m_EditorCamera.GetUpDirection();
+
+    if (runtimeScene && m_ActiveScene)
+    {
+        Entity cameraEntity = m_ActiveScene->GetPrimaryCameraEntity();
+        if (cameraEntity && cameraEntity.HasComponent<TransformComponent>())
+        {
+            const glm::mat4 world = m_ActiveScene->GetWorldSpaceTransformMatrix(cameraEntity);
+            listenerPosition = glm::vec3(world[3]);
+            const glm::vec3 forward = -glm::vec3(world[2]);
+            const glm::vec3 up = glm::vec3(world[1]);
+            if (glm::length(forward) > 0.0001f)
+                listenerForward = glm::normalize(forward);
+            if (glm::length(up) > 0.0001f)
+                listenerUp = glm::normalize(up);
+        }
+    }
+
+    Audio::AudioEngine::SetListenerPosition(listenerPosition, listenerForward, listenerUp);
+
     // The swapchain scope belongs to the frame graph now (§14 step 5): the
     // ImGui pass declares it Undefined→ColorAttachment→Present and the
     // executor owns that scope. The legacy empty-swapchain Begin/EndRenderPass
@@ -396,6 +427,16 @@ bool Editor::CreateEntityFromAsset(const std::filesystem::path& assetPath)
             Notify(NotificationCenter::Kind::Error, "Could not load texture", storedPath);
         }
         m_SceneHireacyPanel.SetSelectedEntity(sprite);
+        return true;
+    }
+
+    if (extension == ".wav" || extension == ".ogg")
+    {
+        Entity audioEntity = m_ActiveScene->CreateEntity(name);
+        auto& audio = audioEntity.AddComponent<AudioSourceComponent>();
+        audio.SoundPath = storedPath;
+        m_SceneHireacyPanel.SetSelectedEntity(audioEntity);
+        Notify(NotificationCenter::Kind::Success, "Added audio source", name);
         return true;
     }
 
@@ -1068,6 +1109,10 @@ namespace
         ImGui::DockBuilderDockWindow("Console", bottomRight);
         ImGui::DockBuilderDockWindow("Profiler", bottomRight);
         ImGui::DockBuilderDockWindow("Scripts", bottomRight);
+        ImGui::DockBuilderDockWindow("Audio", bottomRight);
+        // The graph needs canvas space: share the central node with the
+        // viewport rather than squeezing into a bottom tab.
+        ImGui::DockBuilderDockWindow("Animation Graph", centerTop);
         ImGui::DockBuilderFinish(dockspaceId);
     }
 } // namespace
@@ -1117,7 +1162,10 @@ void Editor::OnImGuiRender()
     const f32 previousMinWidth = style.WindowMinSize.x;
     style.WindowMinSize.x = 220.0f;
 
-    const ImGuiID dockspaceId = ImGui::GetID("UHE_DockSpace_v2");
+    // v3: adds Animation Graph and Audio to the default docking layout. A new
+    // id makes existing ini layouts rebuild once instead of leaving the new
+    // panels floating.
+    const ImGuiID dockspaceId = ImGui::GetID("UHE_DockSpace_v3");
     if (m_ResetLayout || ImGui::DockBuilderGetNode(dockspaceId) == nullptr)
     {
         BuildDefaultLayout(dockspaceId, ImGui::GetContentRegionAvail());
@@ -1162,6 +1210,12 @@ void Editor::OnImGuiRender()
     m_ScriptsPanel.SetContext(m_ActiveScene.get());
     if (m_ShowScripts)
         m_ScriptsPanel.OnImGuiRender(m_ShowScripts);
+
+    if (m_ShowAnimationGraph)
+        m_AnimationGraphPanel.OnImGuiRender(m_ShowAnimationGraph, m_SceneHireacyPanel.GetSelectedEntity());
+
+    if (m_ShowAudio)
+        m_AudioPanel.OnImGuiRender(m_ShowAudio);
 
     ImGuiWindowFlags viewportFlags = 0;
     std::string viewportName = "Viewport";
@@ -1536,6 +1590,8 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
     add("Toggle Console", "View", "", true, [this] { m_ShowConsole = !m_ShowConsole; });
     add("Toggle Profiler", "View", "", true, [this] { m_ShowProfiler = !m_ShowProfiler; });
     add("Toggle Scripts", "View", "", true, [this] { m_ShowScripts = !m_ShowScripts; });
+    add("Toggle Animation Graph", "View", "", true, [this] { m_ShowAnimationGraph = !m_ShowAnimationGraph; });
+    add("Toggle Audio", "View", "", true, [this] { m_ShowAudio = !m_ShowAudio; });
     add("Toggle Settings", "View", "", true, [this] { m_ShowSettings = !m_ShowSettings; });
     add("Toggle Viewport", "View", "", true, [this] { m_ShowViewport = !m_ShowViewport; });
     add("Toggle Viewport Overlay", "View", "", true, [this] { m_ShowViewportOverlay = !m_ShowViewportOverlay; });
@@ -1679,6 +1735,8 @@ void Editor::DrawMainMenuBar()
         EditorUI::ToggleMenuItem("Console", &m_ShowConsole);
         EditorUI::ToggleMenuItem("Profiler", &m_ShowProfiler);
         EditorUI::ToggleMenuItem("Scripts", &m_ShowScripts);
+        EditorUI::ToggleMenuItem("Animation Graph", &m_ShowAnimationGraph);
+        EditorUI::ToggleMenuItem("Audio", &m_ShowAudio);
         EditorUI::ToggleMenuItem("Settings", &m_ShowSettings);
         EditorUI::ToggleMenuItem("Viewport", &m_ShowViewport);
         ImGui::Separator();

@@ -3,6 +3,7 @@
 #include "EditorUI.h"
 #include "UHE/AssestsManager/AssetImport.h"
 #include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/Audio/AudioEngine.h"
 #include "UHE/Utils/PlatfromUtils.h"
 #include "imgui.h"
 #include "uhepch.h"
@@ -320,6 +321,21 @@ void ContentBrowserPanel::DrawFileContextMenu(const std::filesystem::path& path)
       ImGui::SetTooltip("Adds (or retargets) a Script component on the entity selected in the hierarchy.");
     if (ImGui::MenuItem("Open in editor")) {
       FileDialogs::OpenInDefaultApp(path.string());
+    }
+    ImGui::Separator();
+  }
+
+  const std::string extension = ToLower(path.extension().string());
+  const bool isAudio = extension == ".wav" || extension == ".ogg";
+  if (isAudio) {
+    if (ImGui::MenuItem("Play (2D)")) {
+      Audio::SoundOptions options;
+      Audio::AudioEngine::Play(path.string(), options);
+    }
+    if (ImGui::MenuItem("Play (3D at origin)")) {
+      Audio::SoundOptions options;
+      options.Spatial = true;
+      Audio::AudioEngine::Play(path.string(), options);
     }
     ImGui::Separator();
   }
