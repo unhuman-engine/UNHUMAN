@@ -61,7 +61,7 @@ It is a long-running project — started years ago, rewritten more than once, ac
 | Assets | Path-based, no registry, `AssestsManager` naming debt |
 | Render graph | Compiles, resolves and executes every frame in `VulkanDevice::EndFrameGraph()`; carries the ImGui pass only. Scene rendering still records via immediate submit — plan at `docs/plans/PLAN-render-graph-scene-pass.md` |
 | CI | Builds + headless Lavapipe smoke + sanitizer workflows; no in-tree unit tests |
-| Editor | ImGui editor, docking, gizmos, drag-drop; entity hierarchy is single-parent only (#17) |
+| Editor | ImGui editor, docking, gizmos, drag-drop; command palette, toast notifications, viewport HUD (tool/snap badges, orientation gizmo, camera speed), transform undo/redo |
 
 ## Direction of travel
 
