@@ -63,7 +63,6 @@ namespace UHE {
 		void Resize(uint32_t width, uint32_t height);
 		int ReadPixel(uint32_t attachmentIndex, int x, int y);
 
-		void ClearAttachment(uint32_t attachmentIndex, int value);
 
 		void* GetColorAttachmentRendererID(uint32_t index = 0) const;
 

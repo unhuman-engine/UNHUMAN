@@ -158,17 +158,7 @@ namespace UHE{
 				}
 
 				m_Window->OnUpdate();
-				
-				{
-					UHE_PROFILE_SCOPE("TracyDummyTestWork");
-					float result = 0.0f;
-					for (int i = 0; i < 100000; i++) {
-						result += std::sin((float)i) * std::cos((float)i);
-					}
-					if (result == 0.12345f) { // Prevent compiler optimization
-						UHE_CORE_INFO("Dummy work result: {}", result);
-					}
-				}
+
 			}
 			UHE_PROFILE_FRAMEMARK;
 		}

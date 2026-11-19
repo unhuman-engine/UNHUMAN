@@ -9,7 +9,6 @@ file(GLOB_RECURSE UHE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor/stb_image/*.cpp"
 )
 
-list(FILTER UHE_SOURCES EXCLUDE REGEX "src/UHE/Renderer2D/Renderer2D.cpp")
 list(FILTER UHE_SOURCES EXCLUDE REGEX "src/UHE/Renderer/Shader.cpp")
 
 if(WIN32)

@@ -133,11 +133,6 @@ int Framebuffer::ReadPixel(uint32_t attachmentIndex, int x, int y)
     return pixelData;
 }
 
-void Framebuffer::ClearAttachment(uint32_t attachmentIndex, int value)
-{
-    // TODO: Implement clearing specific attachment
-}
-
 void* Framebuffer::GetColorAttachmentRendererID(uint32_t index) const
 {
     if (index < m_ColorAttachments.size())

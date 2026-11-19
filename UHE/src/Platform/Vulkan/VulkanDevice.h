@@ -77,6 +77,8 @@ public:
     // EndFrameGraph() after recording.
     [[nodiscard]] VulkanRenderGraph& GetFrameGraph() { return m_FrameGraph; }
     [[nodiscard]] bool FrameSkipped() const override { return m_FrameSkipped; }
+    /// Recreates the swapchain after the next present (\copydoc RHIDevice::OnFramebufferResized).
+    void OnFramebufferResized() override { m_FramebufferResized = true; }
 
     // Set by VulkanCommandBuffer::BeginRenderPass when a frame's legacy scene
     // pass rendered directly into the swapchain (leaving it in the Present

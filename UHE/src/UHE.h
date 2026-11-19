@@ -29,7 +29,7 @@
 #include "UHE/Renderer/Texture.h"
 
 #include "UHE/Renderer2D/OrthographicCamera.h"
-#include "UHE/Renderer2D/Renderer2D.h"
+#include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer2D/SubTexture2D.h"
 
 // Entry point ---

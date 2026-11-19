@@ -42,6 +42,11 @@ public:
      */
     [[nodiscard]] virtual bool FrameSkipped() const { return false; }
 
+    /// Tells the device the window's framebuffer changed size. A presentation
+    /// engine is not required to report the old swapchain as out of date (many
+    /// Wayland compositors never do), so the device must not rely on that alone.
+    virtual void OnFramebufferResized() {}
+
     /// Blocks the CPU until every piece of GPU work submitted by this device has completed.
     virtual void WaitIdle() = 0;
     /// Rewinds the per-frame command buffers so they can be recorded again.
