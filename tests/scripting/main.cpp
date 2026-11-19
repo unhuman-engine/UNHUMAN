@@ -406,6 +406,33 @@ end
         }
     }
 
+    section("a malformed scene is refused, not thrown");
+    {
+        const auto write = [](const std::string& name, const std::string& text)
+        {
+            const std::filesystem::path path = g_ScriptDir / name;
+            std::ofstream(path, std::ios::trunc) << text;
+            return path.string();
+        };
+        // A camera missing the fields the deserializer reads with as<T>().
+        const std::string missingField = write("missing_field.unhuman", R"(Scene: Untitled
+Entities:
+  - Entity: 42
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+)");
+        const std::string notYaml = write("not_yaml.unhuman", "Scene: [unclosed\n  - {");
+        const std::string wrongType = write("wrong_type.unhuman", "Scene: Untitled\nEntities:\n  - Entity: not-a-number\n");
+
+        Ref<Scene> scene = CreateRef<Scene>();
+        check(!SceneSerializer(scene).Deserialize(missingField), "a missing component field returns false");
+        check(!SceneSerializer(CreateRef<Scene>()).Deserialize(notYaml), "a file that is not YAML returns false");
+        check(!SceneSerializer(CreateRef<Scene>()).Deserialize(wrongType), "a mistyped entity id returns false");
+        check(!SceneSerializer(CreateRef<Scene>()).Deserialize((g_ScriptDir / "absent.unhuman").string()),
+              "a missing file returns false");
+    }
+
     section("editor diagnostics");
     {
         // What the editor's Scripts panel reads: one row per attached script,

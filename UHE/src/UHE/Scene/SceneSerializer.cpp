@@ -417,6 +417,25 @@ void SceneSerializer::Serialize(const std::string& filepath)
 
 bool SceneSerializer::Deserialize(const std::string& filepath)
 {
+    // yaml-cpp reports malformed input and every missing or mistyped field
+    // (`node["X"].as<T>()`) by throwing. Contain all of it here.
+    try
+    {
+        return DeserializeUnchecked(filepath);
+    }
+    catch (const YAML::Exception& e)
+    {
+        UHE_CORE_ERROR("Could not load scene '{0}': {1}", filepath, e.what());
+    }
+    catch (const std::exception& e)
+    {
+        UHE_CORE_ERROR("Could not load scene '{0}': {1}", filepath, e.what());
+    }
+    return false;
+}
+
+bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
+{
     std::ifstream stream(filepath);
     if (!stream.is_open())
         return false;

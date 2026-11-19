@@ -865,12 +865,22 @@ void Editor::OpenScene(const std::filesystem::path& path, bool notify)
 
     if (!filepath.empty())
     {
+        // Load into a fresh scene and switch only on success: switching first
+        // left a failed open showing an empty scene bound to this path, which
+        // the next save would have written over the user's file.
+        Ref<Scene> loaded = CreateRef<Scene>();
+        SceneSerializer serializer(loaded);
+        if (!serializer.Deserialize(filepath))
+        {
+            Notify(NotificationCenter::Kind::Error, "Could not open scene",
+                   path.filename().string() + " (see the console for why)");
+            return;
+        }
+
         OnSceneStop();
-        m_ActiveScene = CreateRef<Scene>();
+        m_ActiveScene = loaded;
         m_ActiveScene->OnViewportResize((u32)m_ViewPortSize.x, (u32)m_ViewPortSize.y);
         m_SceneHireacyPanel.SetContext(m_ActiveScene);
-        SceneSerializer serializer(m_ActiveScene);
-        serializer.Deserialize(filepath);
         m_CurrentScenePath = path;
         m_UndoStack.clear();
         m_RedoStack.clear();
