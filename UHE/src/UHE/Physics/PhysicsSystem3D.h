@@ -28,6 +28,7 @@ public:
     PhysicsSystem3D& operator=(const PhysicsSystem3D&) = delete;
 
     static void Init();
+    /// @brief Unregisters Jolt and joins the shared worker pool; destroy every scene first.
     static void Shutdown();
 
     void InitializeScene();
@@ -47,7 +48,7 @@ public:
 private:
     JPH::PhysicsSystem* m_PhysicsSystem = nullptr;
     JPH::TempAllocatorImpl* m_TempAllocator = nullptr;
-    JPH::JobSystemThreadPool* m_JobSystem = nullptr;
+    JPH::JobSystemThreadPool* m_JobSystem = nullptr; ///< @brief The shared pool, borrowed.
 
     void* m_BPLayerInterface = nullptr;
     void* m_BroadPhaseLayerFilter = nullptr;
