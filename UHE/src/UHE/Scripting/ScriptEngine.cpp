@@ -65,6 +65,10 @@ struct ScriptEngine::Impl
         sol::protected_function OnDestroy;
         bool Started = false;
         bool Errored = false;
+        /// Released while a hook was running: stopped, invisible to every query,
+        /// and erased once the outermost hook returns.
+        bool Dead = false;
+        std::string Error; // why this instance errored, for the editor
         u32 ReloadCount = 0;
     };
 
@@ -75,6 +79,11 @@ struct ScriptEngine::Impl
     std::string LastError;
     u32 NextInstanceId = 1;
     std::unordered_map<u32, Instance> Instances;
+    /// How many script calls are on the C++ stack. An instance cannot be erased
+    /// while this is non-zero: the running hook may be its own (a script that
+    /// destroys its entity), and sol reads the protected_function after the call.
+    u32 HookDepth = 0;
+    std::vector<u32> PendingRelease;
     sol::table EntityMethods;
     sol::function Traceback;
     /// The scene the running instance belongs to: `Spawn` and `Find` are called
@@ -167,6 +176,11 @@ bool HasWindow()
 
 std::string DescribeEntity(Scene& scene, entt::entity handle)
 {
+    // A hook may have destroyed its own entity by the time its error is reported.
+    if (!scene.GetRegistry().valid(handle))
+    {
+        return "<destroyed entity>";
+    }
     Entity entity{handle, &scene};
     if (entity.HasComponent<TagComponent>())
     {
@@ -247,19 +261,87 @@ sol::protected_function HookOf(ScriptEngine::Impl& impl, const sol::environment&
 }
 
 /// Reports a failed protected call, with the chunk name and a traceback.
-void ReportFailure(ScriptEngine::Impl& impl, const std::string& what, const sol::protected_function_result& result)
+/// \returns the message it logged, or an empty string when the call succeeded.
+std::string ReportFailure(ScriptEngine::Impl& impl, const std::string& what,
+                          const sol::protected_function_result& result)
 {
-    std::string message = "script error";
     if (result.valid())
+    {
+        return {};
+    }
+
+    const sol::error error = result;
+    impl.LastError = what + ": " + error.what();
+    UHE_CORE_ERROR("[script] {0}: {1}", what, error.what());
+    return impl.LastError;
+}
+
+/// Disables an instance and records why, both for it and as the engine's last error.
+void MarkErrored(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instance, const std::string& message)
+{
+    instance.Errored = true;
+    instance.Error = message;
+    impl.LastError = message;
+}
+
+/// Erases every instance released while a hook was running.
+void FlushReleased(ScriptEngine::Impl& impl)
+{
+    // Erasing destroys sol references, which never calls back into a script,
+    // so the list cannot grow while this runs.
+    for (const u32 id : impl.PendingRelease)
+    {
+        impl.Instances.erase(id);
+    }
+    impl.PendingRelease.clear();
+}
+
+/// Brackets every call into a script. While one is on the stack an instance
+/// is never erased, only marked dead: the hook that is running may belong to
+/// it (`self:Destroy()` in OnUpdate), and sol still reads the
+/// protected_function it was called through after the call returns.
+class HookScope
+{
+public:
+    explicit HookScope(ScriptEngine::Impl& impl) : m_Impl(impl) { ++m_Impl.HookDepth; }
+    ~HookScope()
+    {
+        if (--m_Impl.HookDepth == 0)
+        {
+            FlushReleased(m_Impl);
+        }
+    }
+    HookScope(const HookScope&) = delete;
+    HookScope& operator=(const HookScope&) = delete;
+
+private:
+    ScriptEngine::Impl& m_Impl;
+};
+
+void StopInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instance);
+
+/// Stops an instance (OnDestroy) and removes it, now or, when a script call is
+/// on the stack, once the outermost one returns. A dead instance is already
+/// stopped, so releasing it twice is a no-op.
+void ReleaseInstance(ScriptEngine::Impl& impl, u32 id)
+{
+    const auto it = impl.Instances.find(id);
+    if (it == impl.Instances.end() || it->second.Dead)
     {
         return;
     }
 
-    const sol::error error = result;
-    message = error.what();
-
-    impl.LastError = what + ": " + message;
-    UHE_CORE_ERROR("[script] {0}: {1}", what, message);
+    // Held across the whole release, not just OnDestroy: the script may release
+    // this same instance again (an OnDestroy that destroys its own entity), and
+    // `it` must stay valid until the erase this scope performs on exit.
+    HookScope scope(impl);
+    StopInstance(impl, it->second);
+    if (it->second.Dead)
+    {
+        return;
+    }
+    it->second.Dead = true;
+    impl.PendingRelease.push_back(id);
 }
 
 /// Compiles and runs one instance's source, then collects its hooks.
@@ -276,7 +358,9 @@ bool LoadInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instan
     // The chunk runs in its own environment, so two scripts' globals cannot
     // collide and only what the script defines is visible to the engine.
     sol::environment env(impl.Lua, sol::create, impl.Lua.globals());
-    sol::load_result loaded = impl.Lua.load(source, "@" + resolved);
+    // Text only: Lua does not verify precompiled bytecode, and a crafted binary
+    // chunk can corrupt the VM, which would make the sandbox meaningless.
+    sol::load_result loaded = impl.Lua.load(source, "@" + resolved, sol::load_mode::text);
     if (!loaded.valid())
     {
         const sol::error loadError = loaded;
@@ -291,7 +375,11 @@ bool LoadInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instan
         chunk.set_error_handler(impl.Traceback);
     }
 
-    const sol::protected_function_result ran = chunk();
+    sol::protected_function_result ran;
+    {
+        HookScope scope(impl);
+        ran = chunk();
+    }
     if (!ran.valid())
     {
         const sol::error runError = ran;
@@ -315,22 +403,29 @@ ScriptEngine::Impl::Instance* EnsureInstance(ScriptEngine::Impl& impl, Scene& sc
 {
     if (component.ScriptPath.empty())
     {
+        if (component.RuntimeIndex != kInvalidInstance)
+        {
+            ReleaseInstance(impl, component.RuntimeIndex);
+        }
         component.RuntimeIndex = kInvalidInstance;
         return nullptr;
     }
 
     const auto existing = impl.Instances.find(component.RuntimeIndex);
-    if (existing != impl.Instances.end() && existing->second.Scene_ == &scene &&
+    if (existing != impl.Instances.end() && !existing->second.Dead && existing->second.Scene_ == &scene &&
         existing->second.Entity == handle && existing->second.Path == component.ScriptPath)
     {
         return &existing->second;
     }
 
-    // A component that was copied, retargeted or whose instance was torn down
-    // gets a fresh instance: state belongs to the instance, not to the component.
-    if (existing != impl.Instances.end())
+    // A component whose path changed gets a fresh instance: state belongs to
+    // the instance, not to the component. The old one is stopped first, so its
+    // OnDestroy runs like any other end of life. An instance that belongs to
+    // another entity or scene (the component was copied) is left alone: it is
+    // still that entity's script.
+    if (existing != impl.Instances.end() && existing->second.Scene_ == &scene && existing->second.Entity == handle)
     {
-        impl.Instances.erase(existing);
+        ReleaseInstance(impl, existing->first);
     }
 
     const u32 id = impl.NextInstanceId++;
@@ -343,9 +438,8 @@ ScriptEngine::Impl::Instance* EnsureInstance(ScriptEngine::Impl& impl, Scene& sc
     std::string error;
     if (!LoadInstance(impl, instance, error))
     {
-        instance.Errored = true;
-        impl.LastError = DescribeEntity(scene, handle) + " (" + component.ScriptPath + "): " + error;
-        UHE_CORE_ERROR("[script] {0} ({1}): {2}", DescribeEntity(scene, handle), component.ScriptPath, error);
+        MarkErrored(impl, instance, DescribeEntity(scene, handle) + " (" + component.ScriptPath + "): " + error);
+        UHE_CORE_ERROR("[script] {0}", instance.Error);
     }
     return &instance;
 }
@@ -359,25 +453,36 @@ void StartInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& insta
         return;
     }
 
-    const sol::protected_function_result result = instance.OnCreate(instance.Self);
+    sol::protected_function_result result;
+    {
+        HookScope scope(impl);
+        result = instance.OnCreate(instance.Self);
+    }
     if (!result.valid())
     {
-        ReportFailure(impl, DescribeEntity(*instance.Scene_, instance.Entity) + " OnCreate", result);
-        instance.Errored = true;
+        MarkErrored(impl, instance,
+                    ReportFailure(impl, DescribeEntity(*instance.Scene_, instance.Entity) + " OnCreate", result));
     }
 }
 
 void StopInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instance)
 {
-    if (instance.Started && !instance.Errored && instance.OnDestroy.valid())
+    // Cleared before OnDestroy runs: an OnDestroy that destroys its own entity
+    // comes back here, and must not run OnDestroy a second time.
+    const bool wasStarted = instance.Started;
+    instance.Started = false;
+    if (wasStarted && !instance.Errored && instance.OnDestroy.valid())
     {
-        const sol::protected_function_result result = instance.OnDestroy(instance.Self);
+        sol::protected_function_result result;
+        {
+            HookScope scope(impl);
+            result = instance.OnDestroy(instance.Self);
+        }
         if (!result.valid())
         {
             ReportFailure(impl, DescribeEntity(*instance.Scene_, instance.Entity) + " OnDestroy", result);
         }
     }
-    instance.Started = false;
 }
 
 /// Recompiles one instance and runs its lifecycle again, which is the whole of
@@ -385,22 +490,26 @@ void StopInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instan
 void RestartInstance(ScriptEngine::Impl& impl, u32 id)
 {
     const auto it = impl.Instances.find(id);
-    if (it == impl.Instances.end())
+    if (it == impl.Instances.end() || it->second.Dead)
     {
         return;
     }
 
     ScriptEngine::Impl::Instance& instance = it->second;
     StopInstance(impl, instance);
+    if (instance.Dead)
+    {
+        return; // its OnDestroy destroyed the entity
+    }
 
     instance.Errored = false;
+    instance.Error.clear();
     std::string error;
     if (!LoadInstance(impl, instance, error))
     {
-        instance.Errored = true;
-        impl.LastError = DescribeEntity(*instance.Scene_, instance.Entity) + " (" + instance.Path + "): " + error;
-        UHE_CORE_ERROR("[script] {0} ({1}): {2}", DescribeEntity(*instance.Scene_, instance.Entity), instance.Path,
-                       error);
+        MarkErrored(impl, instance,
+                    DescribeEntity(*instance.Scene_, instance.Entity) + " (" + instance.Path + "): " + error);
+        UHE_CORE_ERROR("[script] {0}", instance.Error);
         return;
     }
 
@@ -933,14 +1042,29 @@ void ScriptEngine::Shutdown()
         return;
     }
 
-    for (auto& [id, instance] : m_Impl->Instances)
+    std::vector<u32> ids;
+    ids.reserve(m_Impl->Instances.size());
+    for (const auto& [id, instance] : m_Impl->Instances)
     {
-        (void)id;
-        StopInstance(*m_Impl, instance);
+        (void)instance;
+        ids.push_back(id);
+    }
+    for (const u32 id : ids)
+    {
+        ReleaseInstance(*m_Impl, id);
     }
     m_Impl->Instances.clear();
+    m_Impl->PendingRelease.clear();
     m_Impl->EntityMethods = sol::table();
     m_Impl->Traceback = sol::function();
+    m_Impl->ActiveScene = nullptr;
+
+    // Close the VM here, not when the static ScriptEngine dies at exit: by then
+    // sol's own statics (the usertype names its finalizers read) are already
+    // destroyed, and closing the state reads freed memory. Every reference into
+    // the old state is released above, so replacing it is safe; Init() opens
+    // the libraries again on the fresh one.
+    m_Impl->Lua = sol::state();
     m_Impl->Initialized = false;
 }
 
@@ -950,7 +1074,16 @@ lua_State* ScriptEngine::State() const { return m_Impl->Initialized ? m_Impl->Lu
 
 const std::string& ScriptEngine::LastError() const { return m_Impl->LastError; }
 
-u32 ScriptEngine::InstanceCount() const { return static_cast<u32>(m_Impl->Instances.size()); }
+u32 ScriptEngine::InstanceCount() const
+{
+    u32 count = 0;
+    for (const auto& [id, instance] : m_Impl->Instances)
+    {
+        (void)id;
+        count += instance.Dead ? 0u : 1u;
+    }
+    return count;
+}
 
 u32 ScriptEngine::ErroredInstanceCount() const
 {
@@ -958,7 +1091,7 @@ u32 ScriptEngine::ErroredInstanceCount() const
     for (const auto& [id, instance] : m_Impl->Instances)
     {
         (void)id;
-        count += instance.Errored ? 1u : 0u;
+        count += (instance.Errored && !instance.Dead) ? 1u : 0u;
     }
     return count;
 }
@@ -970,7 +1103,11 @@ bool ScriptEngine::Run(const std::string& source, const std::string& chunkName)
         return false;
     }
 
-    sol::protected_function_result result = m_Impl->Lua.safe_script(source, sol::script_pass_on_error);
+    sol::protected_function_result result;
+    {
+        HookScope scope(*m_Impl);
+        result = m_Impl->Lua.safe_script(source, sol::script_pass_on_error, chunkName, sol::load_mode::text);
+    }
     if (!result.valid())
     {
         ReportFailure(*m_Impl, chunkName, result);
@@ -1040,7 +1177,7 @@ void ScriptEngine::Update(Scene& scene, Timestep ts)
 
         ScriptComponent& component = scene.GetRegistry().get<ScriptComponent>(handle);
         Impl::Instance* instance = EnsureInstance(*m_Impl, scene, handle, component);
-        if (instance == nullptr || instance->Errored || !component.Enabled)
+        if (instance == nullptr || instance->Dead || instance->Errored || !component.Enabled)
         {
             continue;
         }
@@ -1056,11 +1193,18 @@ void ScriptEngine::Update(Scene& scene, Timestep ts)
             continue;
         }
 
-        const sol::protected_function_result result = instance->OnUpdate(instance->Self, ts.GetSeconds());
-        if (!result.valid())
+        sol::protected_function_result result;
         {
-            ReportFailure(*m_Impl, DescribeEntity(scene, handle) + " OnUpdate", result);
-            instance->Errored = true;
+            // The script may destroy its own entity here. The instance then
+            // stays allocated (dead) until this scope closes, so `instance`
+            // is still valid below.
+            HookScope scope(*m_Impl);
+            result = instance->OnUpdate(instance->Self, ts.GetSeconds());
+            if (!result.valid())
+            {
+                MarkErrored(*m_Impl, *instance,
+                            ReportFailure(*m_Impl, DescribeEntity(scene, handle) + " OnUpdate", result));
+            }
         }
     }
 }
@@ -1072,15 +1216,17 @@ void ScriptEngine::OnSceneStop(Scene& scene)
         return;
     }
 
-    for (auto it = m_Impl->Instances.begin(); it != m_Impl->Instances.end();)
+    std::vector<u32> ids;
+    for (const auto& [id, instance] : m_Impl->Instances)
     {
-        if (it->second.Scene_ != &scene)
+        if (instance.Scene_ == &scene)
         {
-            ++it;
-            continue;
+            ids.push_back(id);
         }
-        StopInstance(*m_Impl, it->second);
-        it = m_Impl->Instances.erase(it);
+    }
+    for (const u32 id : ids)
+    {
+        ReleaseInstance(*m_Impl, id);
     }
 
     if (m_Impl->ActiveScene == &scene)
@@ -1097,12 +1243,13 @@ void ScriptEngine::OnEntityDestroyed(Scene& scene, u32 entityId)
     }
 
     const entt::entity handle = static_cast<entt::entity>(entityId);
-    for (auto it = m_Impl->Instances.begin(); it != m_Impl->Instances.end(); ++it)
+    for (const auto& [id, instance] : m_Impl->Instances)
     {
-        if (it->second.Scene_ == &scene && it->second.Entity == handle)
+        if (!instance.Dead && instance.Scene_ == &scene && instance.Entity == handle)
         {
-            StopInstance(*m_Impl, it->second);
-            m_Impl->Instances.erase(it);
+            // Copy the id: releasing may erase the element this loop reads.
+            const u32 found = id;
+            ReleaseInstance(*m_Impl, found);
             return;
         }
     }
@@ -1134,7 +1281,7 @@ void ScriptEngine::Tick(Scene& scene)
     std::vector<u32> changed;
     for (const auto& [id, instance] : m_Impl->Instances)
     {
-        if (instance.Scene_ != &scene || instance.ResolvedPath.empty())
+        if (instance.Dead || instance.Scene_ != &scene || instance.ResolvedPath.empty())
         {
             continue;
         }
@@ -1201,14 +1348,15 @@ std::vector<ScriptEngine::InstanceInfo> ScriptEngine::Instances(Scene& scene) co
         }
 
         const auto it = m_Impl->Instances.find(component.RuntimeIndex);
-        if (it != m_Impl->Instances.end() && it->second.Scene_ == &scene && it->second.Entity == handle)
+        if (it != m_Impl->Instances.end() && !it->second.Dead && it->second.Scene_ == &scene &&
+            it->second.Entity == handle)
         {
             info.Started = it->second.Started;
             info.Errored = it->second.Errored;
             info.ReloadCount = it->second.ReloadCount;
             if (it->second.Errored)
             {
-                info.Error = m_Impl->LastError;
+                info.Error = it->second.Error;
             }
         }
         infos.push_back(std::move(info));
@@ -1226,7 +1374,7 @@ void ScriptEngine::ReloadAll(Scene& scene)
     std::vector<u32> ids;
     for (const auto& [id, instance] : m_Impl->Instances)
     {
-        if (instance.Scene_ == &scene)
+        if (!instance.Dead && instance.Scene_ == &scene)
         {
             ids.push_back(id);
         }

@@ -403,7 +403,7 @@ void Scene::DestroyEntity(Entity entity)
 {
     std::unordered_set<u64> visited;
     auto destroyRecursive = [&](Entity e, auto& self) -> void {
-        if (!e) return;
+        if (!e || !m_registry.valid(e)) return;
         u64 uuid = e.GetUUID();
         if (visited.find(uuid) != visited.end()) return;
         visited.insert(uuid);
@@ -413,6 +413,9 @@ void Scene::DestroyEntity(Entity entity)
         if (e.HasComponent<ScriptComponent>())
         {
             ScriptEngine::Get().OnEntityDestroyed(*this, static_cast<u32>(static_cast<entt::id_type>(e)));
+            // OnDestroy may have destroyed this entity itself (self:Destroy()),
+            // through a nested DestroyEntity that already did the rest.
+            if (!m_registry.valid(e)) return;
         }
 
         // Issue #17 lifetime fix: destroy the script instance (OnDestroy + delete)

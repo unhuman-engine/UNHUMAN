@@ -483,8 +483,112 @@ function OnUpdate(self, dt) end
         check(engine.InstanceCount() == 0, "stopping the scene releases it");
     }
 
+    section("an instance that ends while its own hook runs");
+    {
+        // "Counter" counts OnDestroy calls on its x position: script envs are
+        // separate, so a shared global cannot.
+        const std::string countDestroy = R"(
+function OnDestroy(self) Find("Counter"):Translate(1, 0, 0) end
+)";
+        Scene scene;
+        scene.CreateEntity("Counter");
+        SpawnScripted(scene, "SelfDestroyUpdate", WriteScript("self_destroy_update.lua", countDestroy + R"(
+function OnUpdate(self, dt) self:Destroy() end
+)"));
+        SpawnScripted(scene, "SelfDestroyThenError", WriteScript("self_destroy_error.lua", countDestroy + R"(
+function OnUpdate(self, dt) self:Destroy(); error("after destroy") end
+)"));
+        SpawnScripted(scene, "SelfDestroyInOnDestroy", WriteScript("self_destroy_ondestroy.lua", R"(
+function OnDestroy(self)
+    Find("Counter"):Translate(1, 0, 0)
+    self:Destroy()
+end
+)"));
+        Start(scene);
+        check(engine.InstanceCount() == 3, "three scripted entities");
+
+        // Under ASan this is the use-after-free regression: the instance whose
+        // OnUpdate is running is released from inside that call.
+        Step(scene, 0.016f, 2);
+        check(!HasEntity(scene, "SelfDestroyUpdate"), "self:Destroy() in OnUpdate destroys the entity");
+        check(!HasEntity(scene, "SelfDestroyThenError"), "and so does one that errors afterwards");
+        check(std::abs(PositionOf(scene, "Counter").x - 2.0f) < 1e-4f, "each ran OnDestroy exactly once");
+        check(engine.InstanceCount() == 1, "both instances are released once the hook returns");
+
+        Entity last = [&]
+        {
+            auto view = scene.GetRegistry().view<TagComponent>();
+            for (const entt::entity handle : view)
+            {
+                if (view.get<TagComponent>(handle).Tag == "SelfDestroyInOnDestroy")
+                {
+                    return Entity{handle, &scene};
+                }
+            }
+            return Entity{};
+        }();
+        scene.DestroyEntity(last);
+        check(!HasEntity(scene, "SelfDestroyInOnDestroy"), "an OnDestroy that destroys its own entity ends it");
+        check(std::abs(PositionOf(scene, "Counter").x - 3.0f) < 1e-4f, "without running OnDestroy twice");
+        check(engine.InstanceCount() == 0, "and its instance is released");
+        engine.OnSceneStop(scene);
+    }
+
+    section("changing a script's path");
+    {
+        Scene scene;
+        scene.CreateEntity("Counter");
+        Entity entity = SpawnScripted(scene, "Retargeted", WriteScript("path_old.lua", R"(
+function OnDestroy(self) Find("Counter"):Translate(1, 0, 0) end
+)"));
+        const std::string next = WriteScript("path_new.lua", R"(
+function OnCreate(self) Find("Counter"):Translate(0, 1, 0) end
+)");
+        Start(scene);
+        Step(scene, 0.016f);
+        entity.GetComponent<ScriptComponent>().ScriptPath = next;
+        Step(scene, 0.016f);
+        const glm::vec3 counter = PositionOf(scene, "Counter");
+        check(std::abs(counter.x - 1.0f) < 1e-4f, "the old script's OnDestroy runs");
+        check(std::abs(counter.y - 1.0f) < 1e-4f, "and the new script starts");
+        check(engine.InstanceCount() == 1, "one instance remains");
+        engine.OnSceneStop(scene);
+    }
+
+    section("bytecode is refused");
+    {
+        Scene scene;
+        // The signature Lua uses to recognize a precompiled chunk.
+        SpawnScripted(scene, "Binary", WriteScript("binary.lua", std::string("\x1bLua\x54\x00", 6) + "payload"));
+        Start(scene);
+        check(engine.ErroredInstanceCount() == 1, "a binary chunk does not load");
+        check(engine.LastError().find("binary") != std::string::npos, "and the error says why");
+        check(!engine.Run(std::string("\x1bLua\x54\x00", 6), "binary_run"), "Run refuses one too");
+        engine.OnSceneStop(scene);
+    }
+
+    section("each errored instance keeps its own error");
+    {
+        Scene scene;
+        SpawnScripted(scene, "FailsFirst", WriteScript("fails_first.lua", "function OnCreate(self) error('first') end\n"));
+        SpawnScripted(scene, "FailsSecond", WriteScript("fails_second.lua", "function OnCreate(self) error('second') end\n"));
+        Start(scene);
+        for (const ScriptEngine::InstanceInfo& info : engine.Instances(scene))
+        {
+            const std::string expected = info.EntityName == "FailsFirst" ? "first" : "second";
+            check(info.Errored && info.Error.find(expected) != std::string::npos,
+                  info.EntityName + " reports its own error");
+        }
+        engine.OnSceneStop(scene);
+    }
+
     engine.Shutdown();
     check(!engine.IsInitialized(), "the engine shuts down");
+    // Shutdown closes the VM; the static engine dying at exit must not touch
+    // it again (under ASan that was a use-after-free in sol's finalizers).
+    engine.Init();
+    check(engine.Run("assert(math.floor(2.5) == 2)", "reinit"), "it initializes again on a fresh VM");
+    engine.Shutdown();
 
     Physics::PhysicsSystem3D::Shutdown();
 
