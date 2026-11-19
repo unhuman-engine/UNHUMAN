@@ -103,7 +103,16 @@ here. Follow them; if a rule is wrong, change it here first.
 ## Tests and CI
 
 - CPU-side unit tests are standalone programs under `tests/`, run by
-  `ctest -L unit`. Add one when a change is pure logic.
+  `ctest -L unit`. Add one when a change is pure logic. CI runs them in
+  `build-linux.yml` (Release) and under ASan and TSan in `sanitizers.yml`:
+  building a harness is not running it, and a harness that stopped linking
+  once went unnoticed for that reason.
+- **The `.spv` artifacts are shared by every build directory.** They sit next
+  to the shader sources, and Slang's output differs slightly between an ASan or
+  TSan build and a plain one. After building a different configuration, the
+  `shader` test compares against the other build's artifacts and fails its
+  byte-identical checks; run that configuration's `uhe_shaderc --force` first.
+  CI builds one fresh tree per job, so it is not affected.
 - Anything that touches the device is covered by the Sandbox smoke instead: it
   logs `[SMOKE-READY] first frame rendered` once frame 1 has been submitted and
   presented, and CI waits for that line rather than a wall clock.
