@@ -450,6 +450,16 @@ void VulkanDevice::Begin()
         RecreateSwapchain();
         m_FrameSkipped = true; // §9.1.4: recreate + skip, never spin
     }
+    else if (acquireResult == vk::Result::eTimeout || acquireResult == vk::Result::eNotReady)
+    {
+        // Not an error: the presentation engine had no image for us within the
+        // timeout (a compositor may withhold them while the window is hidden).
+        // Nothing was acquired and no semaphore will be signalled, so skip the
+        // frame exactly like the out-of-date case, without recreating.
+        UHE_CORE_WARN("VulkanDevice::Begin: no swapchain image within {0} ms, skipping the frame",
+                      kAcquireTimeoutNs / 1'000'000);
+        m_FrameSkipped = true;
+    }
     else if (acquireResult != vk::Result::eSuccess && acquireResult != vk::Result::eSuboptimalKHR)
     {
         throw std::runtime_error("Failed to acquire swap chain image!");
