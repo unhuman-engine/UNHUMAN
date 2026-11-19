@@ -157,7 +157,8 @@ changes — not before the render graph itself works.
 |---|---|---|---|
 | 1 | Entity hierarchy v2: root/children in entt + editor tree (today a model entity has exactly one parent, no root-child concept) | #17 | `TODO` |
 | 2 | Animation & audio visualization — needs a lib decision (OpenTimelineIO is a *video editor* format; check whether it fits before committing) | #24 | `UNDECIDED` |
-| 3 | Scripting host — Lua 5.4 with sol2: sandboxed VM, `ScriptComponent` with OnCreate/OnUpdate/OnDestroy, entity and rigid-body bindings, hot reload. No native FFI, no coroutines yet | #28 | `IN PROGRESS` — phase 1 done, see [scripting.md](architecture/scripting.md) |
+| 3 | Scripting host — Lua 5.4 with sol2: sandboxed VM, `ScriptComponent` with OnCreate/OnUpdate/OnDestroy, entity and rigid-body bindings, hot reload, instruction budget, isolated globals. No native FFI, no coroutines yet | #28 | `IN PROGRESS` — phase 1 done, see [scripting.md](architecture/scripting.md) |
+| 4 | In-app console: cvars + commands (`UHE/Core/Console`), command line in the editor's Console panel with history and Tab completion | #44 | `DONE` |
 
 ---
 

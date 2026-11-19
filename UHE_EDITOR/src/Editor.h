@@ -84,7 +84,12 @@ namespace UHE
 		void ReloadShaders();
 		void ReloadScripts();
 
-		// Transform undo/redo. The baseline is refreshed on selection changes;
+        /// @brief Adds the editor's cvars and commands to the in-app console.
+        void RegisterConsoleEntries();
+        /// @brief Removes them again; the console outlives the editor layer.
+        void UnregisterConsoleEntries();
+
+        // Transform undo/redo. The baseline is refreshed on selection changes;
 		// a completed edit (mouse released, gizmo idle) pushes it once.
 		void PollTransformUndo();
 		void ResetTransformBaseline();

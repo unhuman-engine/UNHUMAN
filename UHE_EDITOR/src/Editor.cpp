@@ -1,31 +1,32 @@
 #include "Editor.h"
-#include "EditorTheme.h"
-#include "EditorUI.h"
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <cmath>
+#include <cstdio>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
+#include <string>
+#include <vector>
+#include "EditorTheme.h"
+#include "EditorUI.h"
 #include "ImGuizmo.h"
+#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
+#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
+#include "Platform/Vulkan/VulkanDevice.h"
 #include "UHE/AssetsManager/AssetImport.h"
 #include "UHE/AssetsManager/Project.h"
 #include "UHE/AssetsManager/VfsSystem.h"
+#include "UHE/Audio/AudioEngine.h"
 #include "UHE/Core/CommandLine.h"
+#include "UHE/Core/Console.h"
 #include "UHE/Math/Math.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/ShaderCache.h"
-#include "UHE/Scripting/ScriptEngine.h"
-#include "UHE/Audio/AudioEngine.h"
 #include "UHE/Renderer3D/Renderer3D.h"
-#include "Platform/Vulkan/VulkanDevice.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
-
-#include <cctype>
-#include <cmath>
-#include <cstdio>
-#include <string>
-#include <vector>
-#include <algorithm>
+#include "UHE/Scripting/ScriptEngine.h"
 
 ImVec2 m_ViewportPos;
 ImVec2 m_ViewportSize;
@@ -130,9 +131,76 @@ void Editor::OnAttach()
                 break;
         }
     }
+
+    RegisterConsoleEntries();
 }
 
-void Editor::OnDetach() {}
+void Editor::OnDetach()
+{
+    UnregisterConsoleEntries();
+}
+
+namespace
+{
+/// @brief Every console entry the editor owns, so OnDetach removes exactly these.
+constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "scene.stats", "clear"};
+} // namespace
+
+void Editor::RegisterConsoleEntries()
+{
+    Console& console = Console::Get();
+
+    console.RegisterVar("script.budget", static_cast<i32>(ScriptEngine::kDefaultInstructionBudget / 1'000'000),
+                        "million Lua instructions one script call may run; 0 = unlimited",
+                        [](const Console::Value& value)
+                        {
+                            const i32 millions = std::max(0, std::get<i32>(value));
+                            ScriptEngine::Get().SetInstructionBudget(static_cast<u64>(millions) * 1'000'000);
+                        });
+
+    console.RegisterCommand("sim.tickrate", "sim.tickrate [hz]: print or set the active scene's fixed tick rate",
+                            [this](const std::vector<std::string>& args) -> std::string
+                            {
+                                if (!m_ActiveScene)
+                                    return "no active scene";
+                                SimulationClock& clock = m_ActiveScene->GetSimulationClock();
+                                if (!args.empty())
+                                {
+                                    int hz = 0;
+                                    const std::string& text = args.front();
+                                    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), hz);
+                                    if (ec != std::errc() || end != text.data() + text.size() || hz <= 0 || hz > 10'000)
+                                        return "tick rate must be 1..10000 Hz";
+                                    clock.SetTickRate(static_cast<u32>(hz));
+                                }
+                                char text[64];
+                                std::snprintf(text, sizeof(text), "sim.tickrate = %.0f Hz", 1.0 / clock.GetFixedStep());
+                                return text;
+                            });
+
+    console.RegisterCommand("scene.stats", "entity count and simulation tick of the active scene",
+                            [this](const std::vector<std::string>&) -> std::string
+                            {
+                                if (!m_ActiveScene)
+                                    return "no active scene";
+                                const auto entities = m_ActiveScene->GetRegistry().view<TagComponent>().size();
+                                return std::to_string(entities) + " entities, tick " +
+                                       std::to_string(m_ActiveScene->GetSimulationClock().GetTickIndex());
+                            });
+
+    console.RegisterCommand("clear", "clear the console log",
+                            [](const std::vector<std::string>&)
+                            {
+                                UHE::Log::GetImGuiSink()->Clear();
+                                return std::string();
+                            });
+}
+
+void Editor::UnregisterConsoleEntries()
+{
+    for (const char* name : kEditorConsoleEntries)
+        Console::Get().Unregister(name);
+}
 
 void Editor::OnUpdate(UHE::Timestep ts)
 {
@@ -950,6 +1018,82 @@ std::filesystem::path Editor::ProjectAssetPath() const
     return m_Project ? m_Project->AssetPath : std::filesystem::path();
 }
 
+namespace
+{
+/// @brief Lines entered in the console, oldest first, for Up/Down recall.
+std::vector<std::string> s_ConsoleHistory;
+/// @brief Position while browsing the history; -1 when editing a new line.
+int s_ConsoleHistoryPos = -1;
+
+/**
+ * @brief Up/Down walk the history; Tab completes the name being typed.
+ */
+int ConsoleInputCallback(ImGuiInputTextCallbackData* data)
+{
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackHistory && !s_ConsoleHistory.empty())
+    {
+        const int last = static_cast<int>(s_ConsoleHistory.size()) - 1;
+        if (data->EventKey == ImGuiKey_UpArrow)
+            s_ConsoleHistoryPos = s_ConsoleHistoryPos < 0 ? last : std::max(0, s_ConsoleHistoryPos - 1);
+        else if (data->EventKey == ImGuiKey_DownArrow && s_ConsoleHistoryPos >= 0)
+            s_ConsoleHistoryPos = s_ConsoleHistoryPos >= last ? -1 : s_ConsoleHistoryPos + 1;
+
+        data->DeleteChars(0, data->BufTextLen);
+        if (s_ConsoleHistoryPos >= 0)
+            data->InsertChars(0, s_ConsoleHistory[s_ConsoleHistoryPos].c_str());
+    }
+    else if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion)
+    {
+        const std::string typed(data->Buf, data->BufTextLen);
+        if (typed.find(' ') != std::string::npos)
+            return 0; // only the name completes
+        const std::vector<std::string> names = UHE::Console::Get().Complete(typed);
+        if (names.size() == 1)
+        {
+            data->DeleteChars(0, data->BufTextLen);
+            data->InsertChars(0, (names.front() + " ").c_str());
+        }
+        else if (!names.empty())
+        {
+            std::string list;
+            for (const std::string& name : names)
+                list += name + "  ";
+            UHE_CORE_INFO("{}", list);
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief The command line under the log: runs a line through UHE::Console and
+ * logs both the line and its result, so they land in the log like any output.
+ */
+void DrawConsoleInput()
+{
+    static char s_Line[512] = "";
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory |
+                                      ImGuiInputTextFlags_CallbackCompletion;
+    if (ImGui::InputTextWithHint("##ConsoleInput", "> command or variable (help, Tab completes)", s_Line,
+                                 sizeof(s_Line), flags, &ConsoleInputCallback))
+    {
+        const std::string line = s_Line;
+        s_Line[0] = '\0';
+        s_ConsoleHistoryPos = -1;
+        if (!UHE::Console::Tokenize(line).empty())
+        {
+            if (s_ConsoleHistory.empty() || s_ConsoleHistory.back() != line)
+                s_ConsoleHistory.push_back(line);
+            UHE_CORE_INFO("> {}", line);
+            const std::string result = UHE::Console::Get().Execute(line);
+            if (!result.empty())
+                UHE_CORE_INFO("{}", result);
+        }
+        ImGui::SetKeyboardFocusHere(-1); // keep typing after Enter
+    }
+}
+} // namespace
+
 void DrawConsolePanel()
 {
     UHE_PROFILE_FUNCTION();
@@ -1062,7 +1206,9 @@ void DrawConsolePanel()
 
     ImGui::Separator();
 
-    ImGui::BeginChild("##ConsoleLogRegion", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    // Leave one row under the log for the command line.
+    const float inputHeight = ImGui::GetFrameHeightWithSpacing();
+    ImGui::BeginChild("##ConsoleLogRegion", ImVec2(0, -inputHeight), false, ImGuiWindowFlags_HorizontalScrollbar);
     for (const auto* entry : visible)
         ImGui::TextColored(colors[levelIndex(entry->Level)], "%s", entry->Message.c_str());
 
@@ -1071,6 +1217,8 @@ void DrawConsolePanel()
     if (s_AutoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f)
         ImGui::SetScrollHereY(1.0f);
     ImGui::EndChild();
+
+    DrawConsoleInput();
 
     ImGui::End();
 }
