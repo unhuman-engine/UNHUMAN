@@ -63,6 +63,11 @@ if(NOT TARGET slang::slang)
     find_package(slang REQUIRED CONFIG PATHS "${SLANG_DIR}" NO_DEFAULT_PATH)
 endif()
 target_link_libraries(uhe_shaderc PRIVATE slang::slang)
+# Runs during the build, so the Slang runtime must be in place first
+# (UHE/CMakeLists.txt, uhe_slang_runtime).
+if(TARGET uhe_slang_runtime)
+    add_dependencies(uhe_shaderc uhe_slang_runtime)
+endif()
 
 # Runs on every build that touched a shader (or the variant list), and compiles
 # nothing when it did not: up-to-dateness is decided per source and variant by

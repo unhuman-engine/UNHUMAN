@@ -122,10 +122,27 @@ else()
     set(SLANG_BIN_DIR "${SLANG_DIR}/lib")
 endif()
 
-# Copy Slang shared libraries to output directory
-add_custom_command(TARGET UHE POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    "${SLANG_BIN_DIR}"
-    "$<TARGET_FILE_DIR:UHE>"
+# Slang's shared libraries next to the binaries. One target owns the copy and
+# everything that loads Slang at run time depends on it: the engine, and
+# uhe_shaderc, which RUNS during the build (uhe_shaders). As a POST_BUILD step of
+# UHE alone, a fresh parallel build could start uhe_shaderc before the copy
+# existed ("cannot open libslang-compiler.so"); two copies into one directory
+# would race each other instead.
+# The destination is spelled out rather than $<TARGET_FILE_DIR:UHE>, which
+# would make this target depend on UHE and close a cycle. It is the binary
+# directory the top-level CMakeLists.txt assigns, per config when there are
+# several (Visual Studio).
+get_property(UHE_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(UHE_MULTI_CONFIG)
+    set(UHE_SLANG_RUNTIME_DEST
+        "${CMAKE_SOURCE_DIR}/bin/$<CONFIG>-${SYS_NAME}-${ARCH}${UHE_SANITIZER_TAG}")
+else()
+    set(UHE_SLANG_RUNTIME_DEST "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+endif()
+add_custom_target(uhe_slang_runtime
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${SLANG_BIN_DIR}" "${UHE_SLANG_RUNTIME_DEST}"
+    COMMENT "Copying the Slang runtime next to the binaries"
+    VERBATIM
 )
+add_dependencies(UHE uhe_slang_runtime)
 set_target_properties(UHE PROPERTIES DEBUG_POSTFIX d)

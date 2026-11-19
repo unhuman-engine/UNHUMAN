@@ -49,6 +49,9 @@ if(MSVC)
 endif()
 
 target_link_libraries(shader_test PRIVATE slang::slang)
+# The harness loads Slang at run time; wait for its runtime copy
+# (UHE/CMakeLists.txt). Defined later in the tree, resolved at generate time.
+add_dependencies(shader_test uhe_slang_runtime)
 
 # The slang package target is normally registered by UHE/CMakeLists.txt; find
 # it here too, because tests/ is processed before UHE in the root CMakeLists.
