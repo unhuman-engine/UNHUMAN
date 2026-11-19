@@ -95,7 +95,8 @@ void Editor::OnAttach()
             std::error_code ec;
             const std::filesystem::path relative =
                 std::filesystem::relative(script, m_ContentBrowserPanel.GetBaseDirectory(), ec);
-            if (!ec && !relative.empty() && relative.native().rfind("..", 0) != 0)
+            // Compare path elements, not native() text: that is wchar_t on Windows.
+            if (!ec && !relative.empty() && *relative.begin() != "..")
             {
                 path = relative.generic_string();
             }
