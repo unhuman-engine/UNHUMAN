@@ -37,8 +37,8 @@ working tree.
 | Claim | Evidence |
 |---|---|
 | The job system and task graph exist and work | `UHE/src/UHE/Jobsystem/{Jobsystem,Taskgraph}.{h,cpp}`, commit `c271467` |
-| The render-graph backend is an empty stub | `UHE/src/Platform/Vulkan/RenderGraph/RenderGraphVulkan.{h,cpp}` has no bodies and no callers |
-| The shader manager is an empty stub | `UHE/src/Platform/Vulkan/ShaderSystem/VulkanShaderManager.{h,cpp}` declares `Init` and `ShutDown` with no callers |
+| The render-graph backend exists | `UHE/src/Platform/Vulkan/RenderGraph/VulkanRenderGraph{,Builder,Compiler,Executor}.{h,cpp}`; the old `RenderGraphVulkan` stub is gone |
+| The shader stubs are gone | `VulkanShaderManager` and `Asset::ShaderManager` were deleted; `Renderer/ShaderCache` is the shader system |
 | Stub sources are compiled into the binary | `UHE/CMakeLists.txt:6` uses a recursive glob over `UHE/src` |
 | The compute pipeline object is unused | `VulkanComputePipeline.{h,cpp}` is referenced nowhere else |
 | The descriptor backend is modernized but the frontend is not | issue #14 |

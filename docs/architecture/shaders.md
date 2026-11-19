@@ -1,8 +1,8 @@
 # Shaders
 
 **Status:** IMPLEMENTED — offline compilation, SPIR-V reflection and hot reload
-are in the tree and covered by `tests/shader`. `UHE/src/Platform/Vulkan/ShaderSystem/VulkanShaderManager.*`
-is still an unrelated empty stub; the live path is the one below.
+are in the tree and covered by `tests/shader`. Compile errors reach the editor
+as toasts. The old `VulkanShaderManager` stub is deleted; the live path is the one below.
 
 **Issues:** #29 (materials), #7 (renderer checklist).
 

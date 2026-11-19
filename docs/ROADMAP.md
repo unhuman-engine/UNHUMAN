@@ -43,11 +43,11 @@ stubs make every "is this implemented?" question cost a file read.
 | Task | Where | Issue | Status |
 |---|---|---|---|
 | Docs reorganisation: `docs/` tree, index, this roadmap, filename typo fix, stale TODO mirrors | `docs/**`, `IDEA.md`, `readme.md` | #12 | `DONE` (uncommitted) |
-| Fix `IsEnable("")` in semaphore detection → timeline semaphores are **never** on today | `UHE/src/Platform/Vulkan/VulkanSemaphore.cpp:11` | #2 | `TODO` |
-| `VulkanBinaryFence.h:12` re-declares `VulkanBinarySemaphore` (ODR/redefinition if both headers land in one TU) | `UHE/src/Platform/Vulkan/VulkanBinaryFence.h` | #2 | `TODO` |
-| Delete or wire the dead `requiredDeviceExtension` member | `UHE/src/Platform/Vulkan/VulkanLogicalDevice.h:40-43` | #2 | `TODO` |
+| Fix `IsEnable("")` in semaphore detection → timeline semaphores are **never** on today | `UHE/src/Platform/Vulkan/VulkanSemaphore.cpp:11` | #2 | `DONE` (selection goes through `GetSyncTier()`) |
+| `VulkanBinaryFence.h:12` re-declares `VulkanBinarySemaphore` (ODR/redefinition if both headers land in one TU) | `UHE/src/Platform/Vulkan/VulkanBinaryFence.h` | #2 | `DONE` |
+| Delete or wire the dead `requiredDeviceExtension` member | `UHE/src/Platform/Vulkan/VulkanLogicalDevice.h:40-43` | #2 | `DONE` (deleted; #40) |
 | Barrier `oldLayout` is hardcoded `Undefined` (illegal after first use) | `UHE/src/Platform/Vulkan/VulkanCommandBuffer.cpp:100,149,181` | #2, #4 | `TODO` |
-| Delete dead stubs: `RenderGraph/JobSystem.*` (superseded by `UHE/Jobsystem`), decide on `RenderGraph/RenderGraphVulkan.*` + `ShaderSystem/VulkanShaderManager.*` | `UHE/src/Platform/Vulkan/{RenderGraph,ShaderSystem}/` | #4, #7 | `TODO` |
+| Delete dead stubs: `RenderGraph/JobSystem.*` (superseded by `UHE/Jobsystem`), decide on `RenderGraph/RenderGraphVulkan.*` + `ShaderSystem/VulkanShaderManager.*` | `UHE/src/Platform/Vulkan/{RenderGraph,ShaderSystem}/` | #4, #7 | `DONE` (all deleted; `ShaderCache` replaces the shader stubs) |
 | CI "Now" list (§12.1–12.5 of the CI doc): concurrency+permissions+SHA pinning, caching, format/warnings gates, CTest+`UHE_TESTS`+`ci` preset, vendor CMake fixes in-tree instead of CI rewriting them | `.github/workflows/**`, `ci/` | #9, #10 | `TODO` |
 | Renderer checklist truth-up — `add job system` is done (`c271467`), close it in #7 | #7, [backlog/renderer.md](backlog/renderer.md) | #7 | `TODO` |
 | Tracking hygiene: `.worktrees/` ignored (done); `imgui.ini` is tracked *and* in `.gitignore` (ignore is a no-op — `git rm --cached` or drop the line) | `.gitignore` | — | `IN PROGRESS` |
