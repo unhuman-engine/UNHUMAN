@@ -42,12 +42,24 @@ public:
      */
     [[nodiscard]] virtual bool FrameSkipped() const { return false; }
 
+    /// Tells the device the window's framebuffer changed size. A presentation
+    /// engine is not required to report the old swapchain as out of date (many
+    /// Wayland compositors never do), so the device must not rely on that alone.
+    virtual void OnFramebufferResized() {}
+
     /// Blocks the CPU until every piece of GPU work submitted by this device has completed.
     virtual void WaitIdle() = 0;
     /// Rewinds the per-frame command buffers so they can be recorded again.
     virtual void ResetCommandBuffers() = 0;
     /// \returns the index of the frame currently in flight (0 .. frames-in-flight - 1).
     [[nodiscard]] virtual u32 GetCurrentFrameIndex() const = 0;
+
+    /// \returns the format the swapchain images were created with.
+    ///
+    /// A pass that renders straight into the swapchain has one attachment in
+    /// this format, and a pipeline has to be created for the pass it is bound
+    /// in, so a scene pipeline that also serves such a pass needs it.
+    [[nodiscard]] virtual TextureFormat GetSwapchainFormat() = 0;
 
     // ── Resource creation ────────────────────────────────────────────────────
 
@@ -68,6 +80,22 @@ public:
 
     /// Reads a single pixel (RGBA8) back from \p handle into \p outData. Stalls the pipeline.
     virtual void ReadPixel(TextureHandle handle, int x, int y, void* outData) = 0;
+
+    /**
+     * @brief Non-blocking pixel read, for picking under the mouse every frame.
+     *
+     * Queues a copy of texel (\p x, \p y) of \p handle into this frame's
+     * command buffer, and writes the newest pixel whose frame has finished on
+     * the GPU (a few frames old) into \p outData. Nothing waits.
+     *
+     * @return false while no request has completed yet (outData untouched).
+     * @note The default falls back to the blocking ReadPixel.
+     */
+    virtual bool ReadPixelAsync(TextureHandle handle, int x, int y, void* outData)
+    {
+        ReadPixel(handle, x, y, outData);
+        return true;
+    }
 
     // ── Resource destruction ─────────────────────────────────────────────────
 

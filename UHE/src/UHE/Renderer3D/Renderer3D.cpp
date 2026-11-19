@@ -1,11 +1,13 @@
 #include "uhepch.h"
+#include <array>
 #include "Renderer3D.h"
 #include <glm/gtc/matrix_transform.hpp>
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Renderer.h"
-#include "UHE/Renderer/SlangCompiler.h"
+#include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Renderer/ShaderResources.h"
 #include "UHE/Renderer3D/MaterialGPU.h"
 
 namespace UHE
@@ -19,6 +21,11 @@ namespace
 // overflow with the default material rather than reading out of bounds. Slot 0
 // is reserved for that default and is never handed to a model.
 constexpr uint32_t kMaxMaterialsPerFrame = 2048;
+constexpr uint32_t kMaxLightsPerFrame = 1024;
+constexpr uint32_t kMaxBonesPerFrame = 4096;
+// The device keeps this many frames in flight (VulkanDevice::MAX_FRAMES_IN_FLIGHT,
+// the same count Renderer2D double-buffers its vertex buffers for).
+constexpr uint32_t kFramesInFlight = 2;
 
 } // namespace
 
@@ -26,6 +33,9 @@ struct Renderer3DData
 {
     RHI::ShaderHandle VertexShader;
     RHI::ShaderHandle FragmentShader;
+    /// The same source with `UHE_NO_ENTITY_ID`: for the pass that renders into
+    /// one attachment and so has no picking target to write.
+    RHI::ShaderHandle FragmentShaderNoId;
     RHI::PipelineHandle ModelPipeline;
     // Same shaders and layout, cull mode None. Cull mode is baked into the
     // pipeline, so a doubleSided material cannot be drawn with ModelPipeline -
@@ -36,10 +46,41 @@ struct Renderer3DData
     RHI::ShaderHandle GridFragmentShader;
     RHI::PipelineHandle GridPipeline;
 
+    // The editor draws the scene into its own framebuffer, which is a colour
+    // target plus the entity-id target; the game path draws it straight into
+    // the swapchain, which is one attachment in the swapchain's own format. A
+    // pipeline has to match the pass it is bound in, so those passes get their
+    // own variants rather than the two-attachment RGBA8 one above.
+    RHI::PipelineHandle ModelPipelineSwapchain;
+    RHI::PipelineHandle ModelPipelineSwapchainDoubleSided;
+    RHI::PipelineHandle GridPipelineSwapchain;
+    bool SwapchainTarget = false;
+
+    /// Push constant bytes the pipelines were built with, read from the shader's
+    /// reflection. Compared against the host struct before every upload, so a
+    /// shader and a struct that drift apart are reported instead of writing past
+    /// the block.
+    u32 PushConstantSize = 0;
+
     glm::mat4 ViewProjection;
     glm::vec3 CameraPosition;
     std::vector<RD3d::LightData> CurrentLights;
     Ref<Texture2D> WhiteTexture;
+
+    // The light, bone and material buffers are host-visible and written with a
+    // plain memcpy while the GPU may still be reading the previous frame's
+    // copy. One set per frame in flight; BeginScene selects this frame's set
+    // into the fields below, which every other function uses.
+    struct FrameBuffers
+    {
+        RHI::BufferHandle Light = nullptr;
+        uint32_t LightIndex = 0;
+        RHI::BufferHandle Bone = nullptr;
+        uint32_t BoneIndex = 0;
+        RHI::BufferHandle Material = nullptr;
+        uint32_t MaterialIndex = 0;
+    };
+    std::array<FrameBuffers, kFramesInFlight> Frames{};
 
     RHI::BufferHandle LightStorageBufferHandle = nullptr;
     uint32_t LightStorageBufferIndex = 0;
@@ -66,41 +107,115 @@ void Renderer3D::Init()
 {
     auto& device = Renderer::GetDevice();
 
-    std::string shaderPath = (FileSystem::Get().GetRootPath() / "assets/shaders/Basic3D.slang").string();
-    auto compiledShaders = SlangCompiler::CompileToSPIRV(shaderPath);
+    // Shaders and the pipelines built from them: created together, and re-created
+    // together when a shader changes on disk.
+    CreateShaderResources();
 
-    if (compiledShaders.find(RHI::ShaderStage::Vertex) != compiledShaders.end())
+    // A shader edit invalidates the bytes every pipeline above was built from, so
+    // the pipelines have to be rebuilt with them. Registered once: Init runs once
+    // per engine start and the listener outlives it.
+    static bool listenerRegistered = false;
+    if (!listenerRegistered)
     {
-        RHI::ShaderDesc vsDesc{};
-        vsDesc.stage = RHI::ShaderStage::Vertex;
-        vsDesc.spirvData = (const uint8_t*)compiledShaders[RHI::ShaderStage::Vertex].data();
-        vsDesc.spirvSize = compiledShaders[RHI::ShaderStage::Vertex].size();
-        s_Data3D.VertexShader = device.CreateShader(vsDesc);
+        listenerRegistered = true;
+        ShaderCache::Get().AddReloadListener([](ShaderCache::Handle) { Renderer3D::ReloadShaders(); });
     }
 
-    if (compiledShaders.find(RHI::ShaderStage::Fragment) != compiledShaders.end())
+    s_Data3D.WhiteTexture = Texture2D::Create(1, 1);
+
+    for (auto& frame : s_Data3D.Frames)
     {
-        RHI::ShaderDesc fsDesc{};
-        fsDesc.stage = RHI::ShaderStage::Fragment;
-        fsDesc.spirvData = (const uint8_t*)compiledShaders[RHI::ShaderStage::Fragment].data();
-        fsDesc.spirvSize = compiledShaders[RHI::ShaderStage::Fragment].size();
-        s_Data3D.FragmentShader = device.CreateShader(fsDesc);
+        RHI::BufferDesc desc;
+        desc.size = sizeof(RD3d::LightData) * kMaxLightsPerFrame;
+        desc.usage = RHI::BufferUsage::Storage;
+        desc.hostVisible = true;
+        frame.Light = device.CreateBuffer(desc);
+        frame.LightIndex = device.GetBufferBindlessIndex(frame.Light);
+
+        RHI::BufferDesc boneBufferDesc{};
+        boneBufferDesc.size = sizeof(glm::mat4) * kMaxBonesPerFrame;
+        boneBufferDesc.usage = RHI::BufferUsage::Storage;
+        boneBufferDesc.hostVisible = true;
+        frame.Bone = device.CreateBuffer(boneBufferDesc);
+        frame.BoneIndex = device.GetBufferBindlessIndex(frame.Bone);
+
+        RHI::BufferDesc materialBufferDesc{};
+        materialBufferDesc.size = sizeof(RD3d::MaterialGPU) * kMaxMaterialsPerFrame;
+        materialBufferDesc.usage = RHI::BufferUsage::Storage;
+        materialBufferDesc.hostVisible = true;
+        frame.Material = device.CreateBuffer(materialBufferDesc);
+        // The material array lives in its own bindless namespace (shader
+        // binding 2), separate from the light/bone arrays of binding 0.
+        frame.MaterialIndex = device.GetMaterialBufferBindlessIndex(frame.Material);
     }
+    SelectFrameBuffers();
+    s_Data3D.MaterialBufferOffset = 1; // Slot 0 is the default material, written each BeginScene.
+}
+
+void Renderer3D::Shutdown()
+{
+    auto& device = Renderer::GetDevice();
+    DestroyShaderResources();
+    for (auto& frame : s_Data3D.Frames)
+    {
+        device.DestroyBuffer(frame.Light);
+        device.DestroyBuffer(frame.Bone);
+        device.DestroyBuffer(frame.Material);
+        frame = {};
+    }
+    s_Data3D.LightStorageBufferHandle = nullptr;
+    s_Data3D.BoneStorageBufferHandle = nullptr;
+    s_Data3D.MaterialStorageBufferHandle = nullptr;
+
+    s_Data3D.WhiteTexture.reset();
+
+}
+
+void Renderer3D::CreateShaderResources()
+{
+    auto& device = Renderer::GetDevice();
+    ShaderCache& library = ShaderCache::Get();
+
+    const std::filesystem::path shaderDir = FileSystem::Get().GetRootPath() / "assets/shaders";
+
+    // "no_entity_id" is Basic3D.slang with UHE_NO_ENTITY_ID: the swapchain pass has
+    // a single colour attachment, and a fragment output with no matching
+    // attachment is invalid.
+    const ShaderCache::Handle modelHandle = library.Load((shaderDir / "Basic3D.slang").string());
+    const ShaderCache::Handle modelNoIdHandle =
+        library.Load((shaderDir / "Basic3D.slang").string(), "no_entity_id");
+    const ShaderCache::Handle gridHandle = library.Load((shaderDir / "Grid.slang").string());
+
+    const ShaderCache::Shader* model = library.Get(modelHandle);
+    const ShaderCache::Shader* modelNoId = library.Get(modelNoIdHandle);
+    const ShaderCache::Shader* grid = library.Get(gridHandle);
+    if (model == nullptr || modelNoId == nullptr || grid == nullptr)
+    {
+        UHE_CORE_ERROR("Renderer3D: a scene shader failed to load; the scene will not draw");
+        return;
+    }
+
+    s_Data3D.VertexShader = CreateStageShader(device, *model, RHI::ShaderStage::Vertex, "Basic3D.vertex");
+    s_Data3D.FragmentShader = CreateStageShader(device, *model, RHI::ShaderStage::Fragment, "Basic3D.fragment");
+    s_Data3D.FragmentShaderNoId =
+        CreateStageShader(device, *modelNoId, RHI::ShaderStage::Fragment, "Basic3D.fragment.noEntityId");
+    s_Data3D.GridVertexShader = CreateStageShader(device, *grid, RHI::ShaderStage::Vertex, "Grid.vertex");
+    s_Data3D.GridFragmentShader = CreateStageShader(device, *grid, RHI::ShaderStage::Fragment, "Grid.fragment");
 
     RHI::GraphicsPipelineDesc pipeDesc{};
     pipeDesc.vertexShader = s_Data3D.VertexShader;
     pipeDesc.fragmentShader = s_Data3D.FragmentShader;
-    // Location 5 (a_Tangent) must match VertexInput in Basic3D.slang.
-    pipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"}, {RHI::ShaderDataType::Float3, "a_Normal"},
-                             {RHI::ShaderDataType::Float2, "a_TexCoord"}, {RHI::ShaderDataType::Float4, "a_Tangent"},
-                             {RHI::ShaderDataType::Int4, "a_Joints"},     {RHI::ShaderDataType::Float4, "a_Weights"},
-                             {RHI::ShaderDataType::Float4, "a_Color"}};
+    // Read out of the SPIR-V, not copied from the shader by hand: the vertex
+    // layout is the module's own input list in location order, and the push
+    // constant range is the block size the module declares.
+    pipeDesc.vertexLayout = ReflectedVertexLayout(*model);
+    pipeDesc.pushConstantSize = ReflectedPushConstantSize(*model);
+    s_Data3D.PushConstantSize = pipeDesc.pushConstantSize;
 
     // Push constants only carry where things live (camera, bones, lights, and
-    // the material's buffer location); the material's VALUES moved to the
-    // per-material storage buffer because this block was at the 256-byte
-    // device limit with no room for one more field.
-    pipeDesc.pushConstantSize = 192;
+    // the material's buffer location); the material's VALUES live in the
+    // per-material storage buffer, because this block is at the 256-byte device
+    // limit with no room for one more field.
     pipeDesc.blendMode = RHI::BlendMode::Alpha;
     pipeDesc.depthTest = true;
     pipeDesc.depthWrite = true;
@@ -118,34 +233,13 @@ void Renderer3D::Init()
     doubleSidedDesc.debugName = "ModelPipeline.DoubleSided";
     s_Data3D.ModelPipelineDoubleSided = device.CreateGraphicsPipeline(doubleSidedDesc);
 
-    // Initialize Grid Pipeline
-    std::string gridShaderPath = (FileSystem::Get().GetRootPath() / "assets/shaders/Grid.slang").string();
-    auto compiledGridShaders = SlangCompiler::CompileToSPIRV(gridShaderPath);
-
-    if (compiledGridShaders.find(RHI::ShaderStage::Vertex) != compiledGridShaders.end())
-    {
-        RHI::ShaderDesc vsDesc{};
-        vsDesc.stage = RHI::ShaderStage::Vertex;
-        vsDesc.spirvData = (const uint8_t*)compiledGridShaders[RHI::ShaderStage::Vertex].data();
-        vsDesc.spirvSize = compiledGridShaders[RHI::ShaderStage::Vertex].size();
-        s_Data3D.GridVertexShader = device.CreateShader(vsDesc);
-    }
-
-    if (compiledGridShaders.find(RHI::ShaderStage::Fragment) != compiledGridShaders.end())
-    {
-        RHI::ShaderDesc fsDesc{};
-        fsDesc.stage = RHI::ShaderStage::Fragment;
-        fsDesc.spirvData = (const uint8_t*)compiledGridShaders[RHI::ShaderStage::Fragment].data();
-        fsDesc.spirvSize = compiledGridShaders[RHI::ShaderStage::Fragment].size();
-        s_Data3D.GridFragmentShader = device.CreateShader(fsDesc);
-    }
-
     RHI::GraphicsPipelineDesc gridPipeDesc{};
     gridPipeDesc.vertexShader = s_Data3D.GridVertexShader;
     gridPipeDesc.fragmentShader = s_Data3D.GridFragmentShader;
-    gridPipeDesc.vertexLayout = {}; // Empty vertex layout, using gl_VertexIndex
-
-    gridPipeDesc.pushConstantSize = sizeof(glm::mat4) * 2; // viewProj + inverseViewProj
+    // The grid generates its vertices from gl_VertexIndex, so the module declares
+    // no vertex inputs and reflection returns an empty layout.
+    gridPipeDesc.vertexLayout = ReflectedVertexLayout(*grid);
+    gridPipeDesc.pushConstantSize = ReflectedPushConstantSize(*grid); // viewProj + inverseViewProj
     gridPipeDesc.blendMode = RHI::BlendMode::Alpha;
     gridPipeDesc.depthTest = true;
     gridPipeDesc.depthWrite = true;
@@ -156,51 +250,68 @@ void Renderer3D::Init()
 
     s_Data3D.GridPipeline = device.CreateGraphicsPipeline(gridPipeDesc);
 
-    s_Data3D.WhiteTexture = Texture2D::Create(1, 1);
+    // Swapchain variants: one colour attachment, in the swapchain's format. The
+    // fragment shader still writes Location 1 (the entity id), which is simply
+    // unused in a pass that has no second attachment -- legal, unlike binding a
+    // two-attachment pipeline into a one-attachment pass.
+    RHI::GraphicsPipelineDesc swapchainDesc = pipeDesc;
+    swapchainDesc.colorAttachmentCount = 1;
+    swapchainDesc.colorFormats[0] = device.GetSwapchainFormat();
+    swapchainDesc.fragmentShader = s_Data3D.FragmentShaderNoId;
+    swapchainDesc.debugName = "ModelPipeline.Swapchain";
+    s_Data3D.ModelPipelineSwapchain = device.CreateGraphicsPipeline(swapchainDesc);
 
-    RHI::BufferDesc desc;
-    desc.size = sizeof(RD3d::LightData) * 1024; // Limit to 1024 lights
-    desc.usage = RHI::BufferUsage::Storage;
-    desc.hostVisible = true;
-    s_Data3D.LightStorageBufferHandle = device.CreateBuffer(desc);
-    s_Data3D.LightStorageBufferIndex = device.GetBufferBindlessIndex(s_Data3D.LightStorageBufferHandle);
+    RHI::GraphicsPipelineDesc swapchainDoubleSidedDesc = swapchainDesc;
+    swapchainDoubleSidedDesc.cullMode = RHI::CullMode::None;
+    swapchainDoubleSidedDesc.debugName = "ModelPipeline.Swapchain.DoubleSided";
+    s_Data3D.ModelPipelineSwapchainDoubleSided = device.CreateGraphicsPipeline(swapchainDoubleSidedDesc);
 
-    RHI::BufferDesc boneBufferDesc{};
-    boneBufferDesc.size = sizeof(glm::mat4) * 4096; // Support up to 4096 bones per frame
-    boneBufferDesc.usage = RHI::BufferUsage::Storage;
-    boneBufferDesc.hostVisible = true;
-    s_Data3D.BoneStorageBufferHandle = device.CreateBuffer(boneBufferDesc);
-    s_Data3D.BoneStorageBufferIndex = device.GetBufferBindlessIndex(s_Data3D.BoneStorageBufferHandle);
-
-    RHI::BufferDesc materialBufferDesc{};
-    materialBufferDesc.size = sizeof(RD3d::MaterialGPU) * kMaxMaterialsPerFrame;
-    materialBufferDesc.usage = RHI::BufferUsage::Storage;
-    materialBufferDesc.hostVisible = true;
-    s_Data3D.MaterialStorageBufferHandle = device.CreateBuffer(materialBufferDesc);
-    // The material array lives in its own bindless namespace (shader binding
-    // 2), separate from the light/bone arrays of binding 0.
-    s_Data3D.MaterialStorageBufferIndex = device.GetMaterialBufferBindlessIndex(s_Data3D.MaterialStorageBufferHandle);
-    s_Data3D.MaterialBufferOffset = 1; // Slot 0 is the default material, written each BeginScene.
+    RHI::GraphicsPipelineDesc gridSwapchainDesc = gridPipeDesc;
+    gridSwapchainDesc.colorAttachmentCount = 1;
+    gridSwapchainDesc.colorFormats[0] = device.GetSwapchainFormat();
+    gridSwapchainDesc.debugName = "GridPipeline.Swapchain";
+    s_Data3D.GridPipelineSwapchain = device.CreateGraphicsPipeline(gridSwapchainDesc);
 }
 
-void Renderer3D::Shutdown()
+void Renderer3D::DestroyShaderResources()
 {
     auto& device = Renderer::GetDevice();
+
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipeline);
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineDoubleSided);
+    device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineSwapchain);
+    device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineSwapchainDoubleSided);
+    device.DestroyGraphicsPipeline(s_Data3D.GridPipeline);
+    device.DestroyGraphicsPipeline(s_Data3D.GridPipelineSwapchain);
     device.DestroyShader(s_Data3D.VertexShader);
     device.DestroyShader(s_Data3D.FragmentShader);
-
-    device.DestroyGraphicsPipeline(s_Data3D.GridPipeline);
+    device.DestroyShader(s_Data3D.FragmentShaderNoId);
     device.DestroyShader(s_Data3D.GridVertexShader);
     device.DestroyShader(s_Data3D.GridFragmentShader);
 
-    device.DestroyBuffer(s_Data3D.LightStorageBufferHandle);
-    device.DestroyBuffer(s_Data3D.BoneStorageBufferHandle);
-    device.DestroyBuffer(s_Data3D.MaterialStorageBufferHandle);
+    // Nulled, not left dangling: a second destroy of the same handle would free
+    // someone else's object.
+    s_Data3D.ModelPipeline = nullptr;
+    s_Data3D.ModelPipelineDoubleSided = nullptr;
+    s_Data3D.ModelPipelineSwapchain = nullptr;
+    s_Data3D.ModelPipelineSwapchainDoubleSided = nullptr;
+    s_Data3D.GridPipeline = nullptr;
+    s_Data3D.GridPipelineSwapchain = nullptr;
+    s_Data3D.VertexShader = nullptr;
+    s_Data3D.FragmentShader = nullptr;
+    s_Data3D.FragmentShaderNoId = nullptr;
+    s_Data3D.GridVertexShader = nullptr;
+    s_Data3D.GridFragmentShader = nullptr;
+}
 
-    s_Data3D.WhiteTexture.reset();
+void Renderer3D::ReloadShaders()
+{
+    // Frames already queued reference the modules and pipelines being replaced.
+    Renderer::GetDevice().WaitIdle();
 
+    DestroyShaderResources();
+    CreateShaderResources();
+    UHE_CORE_INFO("Renderer3D: pipelines rebuilt from the reloaded shaders");
 }
 
 void Renderer3D::BeginScene(const EditorCamera& camera, const std::vector<RD3d::LightData>& lights)
@@ -208,12 +319,8 @@ void Renderer3D::BeginScene(const EditorCamera& camera, const std::vector<RD3d::
     UHE_PROFILE_FUNCTION();
     s_Data3D.ViewProjection = camera.GetViewProjection();
     s_Data3D.CameraPosition = camera.GetPosition();
-    s_Data3D.CurrentLights = lights;
-    if (!lights.empty())
-    {
-        Renderer::GetDevice().GetCurrentCommandBuffer().UpdateBuffer(s_Data3D.LightStorageBufferHandle, lights.data(),
-                                                                     lights.size() * sizeof(RD3d::LightData));
-    }
+    SelectFrameBuffers();
+    UploadLights(lights);
     s_Data3D.BoneBufferOffset = 0;
 
     RestartMaterialRegion();
@@ -225,15 +332,41 @@ void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform,
     UHE_PROFILE_FUNCTION();
     s_Data3D.ViewProjection = camera.GetProjection() * glm::inverse(transform);
     s_Data3D.CameraPosition = glm::vec3(transform[3]);
-    s_Data3D.CurrentLights = lights;
-    if (!lights.empty())
-    {
-        Renderer::GetDevice().GetCurrentCommandBuffer().UpdateBuffer(s_Data3D.LightStorageBufferHandle, lights.data(),
-                                                                     lights.size() * sizeof(RD3d::LightData));
-    }
+    SelectFrameBuffers();
+    UploadLights(lights);
     s_Data3D.BoneBufferOffset = 0;
 
     RestartMaterialRegion();
+}
+
+void Renderer3D::SelectFrameBuffers()
+{
+    const auto& frame = s_Data3D.Frames[Renderer::GetDevice().GetCurrentFrameIndex() % kFramesInFlight];
+    s_Data3D.LightStorageBufferHandle = frame.Light;
+    s_Data3D.LightStorageBufferIndex = frame.LightIndex;
+    s_Data3D.BoneStorageBufferHandle = frame.Bone;
+    s_Data3D.BoneStorageBufferIndex = frame.BoneIndex;
+    s_Data3D.MaterialStorageBufferHandle = frame.Material;
+    s_Data3D.MaterialStorageBufferIndex = frame.MaterialIndex;
+}
+
+void Renderer3D::UploadLights(const std::vector<RD3d::LightData>& lights)
+{
+    s_Data3D.CurrentLights = lights;
+    if (s_Data3D.CurrentLights.size() > kMaxLightsPerFrame)
+    {
+        // The buffer refuses an oversized upload outright, which would leave
+        // every light stale; draw the first kMaxLightsPerFrame instead.
+        UHE_CORE_WARN("Renderer3D: {0} lights, only the first {1} are drawn", s_Data3D.CurrentLights.size(),
+                      kMaxLightsPerFrame);
+        s_Data3D.CurrentLights.resize(kMaxLightsPerFrame);
+    }
+    if (!s_Data3D.CurrentLights.empty())
+    {
+        Renderer::GetDevice().GetCurrentCommandBuffer().UpdateBuffer(
+            s_Data3D.LightStorageBufferHandle, s_Data3D.CurrentLights.data(),
+            s_Data3D.CurrentLights.size() * sizeof(RD3d::LightData));
+    }
 }
 
 void Renderer3D::RestartMaterialRegion()
@@ -252,12 +385,14 @@ void Renderer3D::RestartMaterialRegion()
 
 void Renderer3D::EndScene() {}
 
+void Renderer3D::SetSwapchainTarget(bool enabled) { s_Data3D.SwapchainTarget = enabled; }
+
 void Renderer3D::DrawGrid()
 {
     UHE_PROFILE_FUNCTION();
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
-    cmd.BindPipeline(s_Data3D.GridPipeline);
+    cmd.BindPipeline(s_Data3D.SwapchainTarget ? s_Data3D.GridPipelineSwapchain : s_Data3D.GridPipeline);
 
     struct GridPushConstants
     {
@@ -279,7 +414,15 @@ Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator* ani
     if (animator && animator->HasAnimation())
     {
         const auto& matrices = animator->GetFinalBoneMatrices();
-        if (!matrices.empty())
+        if (!matrices.empty() && s_Data3D.BoneBufferOffset + matrices.size() > kMaxBonesPerFrame)
+        {
+            // Out of room this frame. The upload would be refused while the
+            // binding still pointed past the buffer; draw this model unskinned.
+            UHE_CORE_WARN("Renderer3D: bone buffer full ({0} matrices this frame), a skinned model draws in "
+                          "bind pose",
+                          kMaxBonesPerFrame);
+        }
+        else if (!matrices.empty())
         {
             uint64_t size = matrices.size() * sizeof(glm::mat4);
             auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
@@ -375,13 +518,23 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
     static_assert(sizeof(PushConstants) == 192, "PushConstants must stay byte-identical to the Slang struct");
     static_assert(offsetof(PushConstants, materialBufferIndex) == 168,
                   "materialBufferIndex offset must match the Slang layout");
+
+    // The pipeline's range came from the shader's reflection, so this is where a
+    // host struct that drifted from the Slang one shows up -- before the upload
+    // writes past the block the pipeline was built with.
+    if (s_Data3D.PushConstantSize != sizeof(PushConstants))
+    {
+        UHE_CORE_ERROR("Renderer3D: push constants are {0} bytes in the shader and {1} in the host struct",
+                       s_Data3D.PushConstantSize, sizeof(PushConstants));
+    }
+
     pc.viewProj = s_Data3D.ViewProjection;
     pc.model = transform;
     pc.cameraPos = glm::vec4(s_Data3D.CameraPosition, 1.0f);
     pc.entityID = entityID;
     pc.enableLighting = s_Data3D.EnableLighting ? 1 : 0;
     pc.lightBufferIndex = s_Data3D.LightStorageBufferIndex;
-    pc.numLights = static_cast<int>(std::min<size_t>(s_Data3D.CurrentLights.size(), 1024));
+    pc.numLights = static_cast<int>(std::min<size_t>(s_Data3D.CurrentLights.size(), kMaxLightsPerFrame));
     pc.boneBufferIndex = boneBufferIndex;
     pc.boneOffset = boneOffset;
     pc.materialBufferIndex = (materialBinding.BufferIndex >= 0) ? materialBinding.BufferIndex
@@ -422,7 +575,10 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
         // Cull mode lives in the pipeline, so a doubleSided material needs the
         // variant bound rather than a state change.
         const bool doubleSided = material && material->DoubleSided;
-        cmd.BindPipeline(doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline);
+        cmd.BindPipeline(
+            s_Data3D.SwapchainTarget
+                ? (doubleSided ? s_Data3D.ModelPipelineSwapchainDoubleSided : s_Data3D.ModelPipelineSwapchain)
+                : (doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline));
 
         cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
 

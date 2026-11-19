@@ -17,6 +17,7 @@
 #include <map>
 #include <tuple>
 #include "MeshoptDecode.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/Renderer.h"
 #include "fastgltf/core.hpp"
@@ -121,11 +122,14 @@ glm::mat4 Model::NodeLocalTransform(const fastgltf::Node& node)
 
 bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOptions& options)
 {
-    if (!std::filesystem::exists(filepath))
+    // Models referenced by scenes and components store project-relative paths.
+    const std::filesystem::path resolved = ResolveAssetPath(filepath.string());
+    if (!std::filesystem::exists(resolved))
     {
         UHE_CORE_ERROR("File not Found {0}", filepath.string());
         return false;
     }
+    const std::filesystem::path& modelPath = resolved;
 
     Destroy();
     m_Options = options;
@@ -137,14 +141,14 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
                                 fastgltf::Options::LoadExternalBuffers | fastgltf::Options::LoadExternalImages |
                                 fastgltf::Options::GenerateMeshIndices;
 
-    auto gltfFile = fastgltf::MappedGltfFile::FromPath(filepath);
+    auto gltfFile = fastgltf::MappedGltfFile::FromPath(modelPath);
     if (!gltfFile)
     {
         UHE_CORE_ERROR("Failed to open/map glTF file: {0}", fastgltf::getErrorMessage(gltfFile.error()));
         return false;
     }
 
-    auto assetResult = parser.loadGltf(gltfFile.get(), filepath.parent_path(), gltfOption);
+    auto assetResult = parser.loadGltf(gltfFile.get(), modelPath.parent_path(), gltfOption);
     if (assetResult.error() != fastgltf::Error::None)
     {
         UHE_CORE_ERROR("Failed to parse glTF data: {0}", fastgltf::getErrorMessage(assetResult.error()));
@@ -175,7 +179,7 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
     }
     m_HasUnsupportedExtensions = !m_UnsupportedExtensionNames.empty();
 
-    LoadMaterials(asset, filepath);
+    LoadMaterials(asset, modelPath);
 
     ParseSkins(asset);
     ParseAnimations(asset);

@@ -1,7 +1,7 @@
 #include "uhepch.h"
 #include "WindowsWindow.h"
 
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/Log.h"
 #include "UHE/Events/ApplicationEvent.h"
 #include "UHE/Events/KeyEvent.h"
@@ -86,6 +86,26 @@ void WindowsWindow::Init(const WindowProps &props) {
   glfwSetWindowCloseCallback(m_Window, [](GLFWwindow *window) {
     WindowData &data = *(WindowData *)glfwGetWindowUserPointer(window);
     WindowCloseEvent event;
+    data.EventCallback(event);
+  });
+  // Files dropped from the OS file explorer. GLFW reports the paths; the cursor
+  // position at drop time tells the editor which panel received them.
+  glfwSetDropCallback(m_Window, [](GLFWwindow *window, int count, const char **paths) {
+    WindowData &data = *(WindowData *)glfwGetWindowUserPointer(window);
+    if (count <= 0 || paths == nullptr)
+      return;
+
+    std::vector<std::string> files;
+    files.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+      if (paths[i] != nullptr)
+        files.emplace_back(paths[i]);
+    }
+
+    double cursorX = 0.0, cursorY = 0.0;
+    glfwGetCursorPos(window, &cursorX, &cursorY);
+
+    WindowFileDropEvent event(std::move(files), static_cast<float>(cursorX), static_cast<float>(cursorY));
     data.EventCallback(event);
   });
   glfwSetKeyCallback(m_Window, [](GLFWwindow *window, int key, int scancode,

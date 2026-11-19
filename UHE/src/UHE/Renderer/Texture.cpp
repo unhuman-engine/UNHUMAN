@@ -1,13 +1,16 @@
 #include "uhepch.h"
 #include "Texture.h"
 #include "UHE/Renderer/Renderer.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "Platform/Vulkan/VulkanTexture2D.h"
 
 namespace UHE {
 
     Ref<Texture2D> Texture2D::Create(const std::string& path, const RHI::SamplerDesc& sampler)
     {
-        return CreateRef<VulkanTexture2D>(path, sampler);
+        // Content hands in project-relative paths ("Textures/wall.png"); resolve
+        // them against the project/engine mounts before hitting the file system.
+        return CreateRef<VulkanTexture2D>(ResolveAssetPath(path).string(), sampler);
     }
 
     Ref<Texture2D> Texture2D::Create(u32 width, u32 height, const RHI::SamplerDesc& sampler)

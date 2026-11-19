@@ -87,6 +87,27 @@ jobs:
           called_from_lib:libtracy
           EOF
 
+      # The unit tests under the same sanitizer as the smoke run. They cover
+      # the code the smoke run barely reaches (script lifetimes, the job
+      # system, scene teardown, asset retries) and need no GPU.
+      - name: Unit tests (${{ matrix.sanitizer }})
+        shell: bash
+        run: |
+          EXCLUDE=()
+          if [ "${{ matrix.sanitizer }}" = "thread" ]; then
+            export TSAN_OPTIONS="second_deadlock_stack=1:halt_on_error=1:suppressions=$PWD/tsan.supp"
+            # Lua raises errors with setjmp/longjmp, which TSan cannot follow
+            # ("can't find longjmp buf" on the first script error). The script
+            # VM is main-thread only by contract, so TSan has nothing to check
+            # there; ASan still runs the scripting harness.
+            EXCLUDE=(-E '^scripting$')
+          else
+            export ASAN_OPTIONS="detect_leaks=1:detect_stack_use_after_return=1"
+            # Process-lifetime vendor tables only; see the file for each entry.
+            export LSAN_OPTIONS="suppressions=$PWD/tests/lsan.supp"
+          fi
+          ctest --test-dir build_san -L unit --output-on-failure "${EXCLUDE[@]}"
+
       - name: Run sandbox smoke test (Lavapipe, headless)
         shell: bash
         run: |
@@ -108,6 +129,11 @@ jobs:
             # makes libasan not the first DSO and otherwise aborts at startup.
             export ASAN_OPTIONS="detect_leaks=1:detect_stack_use_after_return=1:verify_asan_link_order=0"
           fi
+
+          # A validation error is a defect, not a note to read past. With this
+          # set the engine stops on the first one with a non-zero exit, instead
+          # of rendering 34 broken frames a second and looking healthy.
+          export UHE_VALIDATION_FATAL=1
 
           # Start a virtual X server directly instead of xvfb-run, so the Sandbox
           # is a direct child process we can kill by PID once it reports ready.
@@ -208,5 +234,20 @@ jobs:
             fi
             sleep 1
           done
+
+          # Belt and braces: the gate above fails the process, this catches a
+          # build without it, or a message that reached the log first.
+          if grep -qE '\[error\].*Validation layer|UHE_VALIDATION_FATAL' "$LOG"; then
+            echo "Smoke test FAILED: Vulkan validation reported an error"
+            grep -m3 -E '\[error\].*Validation layer|UHE_VALIDATION_FATAL' "$LOG" || true
+            exit 1
+          fi
+
+          # And this catches the opposite: a run that had no layers to report
+          # with, which would otherwise pass by saying nothing.
+          if ! grep -qF "[VALIDATION] enabled" "$LOG"; then
+            echo "Smoke test FAILED: the run never enabled validation layers"
+            exit 1
+          fi
 
           echo "Sandbox rendered frames and survived the soak under ${{ matrix.sanitizer }}. Smoke test passed!"

@@ -1,23 +1,32 @@
 #include "Editor.h"
-#include "EditorTheme.h"
-#include "EditorUI.h"
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <cmath>
+#include <cstdio>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
-#include "ImGuizmo.h"
-#include "UHE/AssestsManager/VfsSystem.h"
-#include "UHE/Math/Math.h"
-#include "UHE/RHI/RHICommandBuffer.h"
-#include "UHE/Renderer3D/Renderer3D.h"
-#include "Platform/Vulkan/VulkanDevice.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
-
-#include <cctype>
-#include <cstdio>
 #include <string>
 #include <vector>
+#include "EditorTheme.h"
+#include "EditorUI.h"
+#include "ImGuizmo.h"
+#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
+#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
+#include "Platform/Vulkan/VulkanDevice.h"
+#include "UHE/AssetsManager/AssetImport.h"
+#include "UHE/AssetsManager/Project.h"
+#include "UHE/AssetsManager/VfsSystem.h"
+#include "UHE/Audio/AudioEngine.h"
+#include "UHE/Core/CommandLine.h"
+#include "UHE/Core/Console.h"
+#include "UHE/Math/Math.h"
+#include "UHE/RHI/RHICommandBuffer.h"
+#include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Scripting/ScriptEngine.h"
 
 ImVec2 m_ViewportPos;
 ImVec2 m_ViewportSize;
@@ -34,6 +43,23 @@ void Editor::OnAttach()
 {
     EditorTheme::LoadSelected(); // pick up the persisted theme before first frame
 
+    // Shader and script edits show up without a restart while the editor is open;
+    // a game build leaves this off, since it ships no sources to watch.
+    ShaderCache::Get().SetHotReloadEnabled(true);
+    ScriptEngine::Get().SetHotReloadEnabled(true);
+
+    // A shader edit that does not compile keeps the last good version drawing;
+    // say so on screen, not only in the log.
+    ShaderCache::Get().AddFailureListener(
+        [this](ShaderCache::Handle handle, const std::string& error)
+        {
+            const ShaderCache::Shader* shader = ShaderCache::Get().Get(handle);
+            const std::string name =
+                shader ? std::filesystem::path(shader->SourcePath).filename().string() : std::string("shader");
+            const std::string firstLine = error.substr(0, error.find('\n'));
+            Notify(NotificationCenter::Kind::Error, name + " failed to compile", firstLine);
+        });
+
     FramebufferSpecification fbSpec;
     fbSpec.Attachments = {FramebufferTextureFormat::RGBA8, FramebufferTextureFormat::RED_INTEGER,
                           FramebufferTextureFormat::Depth};
@@ -45,17 +71,154 @@ void Editor::OnAttach()
     m_EditorCamera = EditorCamera(45.0f, 1.766f, 0.1f, 1000.0f);
     m_SceneHireacyPanel.SetContext(m_ActiveScene);
 
+    // A scene loaded before the first ImGui frame resizes the viewport would
+    // otherwise create cameras with a 0x0 viewport (a zero aspect asserts in
+    // glm::perspective). Seed a sensible size; the first frame refines it.
+    if (m_ViewPortSize.x <= 0.0f || m_ViewPortSize.y <= 0.0f)
+        m_ViewPortSize = {1280.0f, 720.0f};
+
+    // "Attach to selected entity" in the Content Browser: the panel knows the
+    // file, the hierarchy knows the entity, and the editor is where they meet.
+    m_ContentBrowserPanel.SetOnAttachScript(
+        [this](const std::filesystem::path& script)
+        {
+            Entity selected = m_SceneHireacyPanel.GetSelectedEntity();
+            if (!selected || !m_ActiveScene)
+            {
+                UHE_CORE_WARN("Attach script: select an entity in the hierarchy first");
+                return;
+            }
+
+            // Store it the way the engine resolves it: project-relative when the
+            // script lives inside the project, so a scene stays portable.
+            std::string path = script.string();
+            std::error_code ec;
+            const std::filesystem::path relative =
+                std::filesystem::relative(script, m_ContentBrowserPanel.GetBaseDirectory(), ec);
+            if (!ec && !relative.empty() && relative.native().rfind("..", 0) != 0)
+            {
+                path = relative.generic_string();
+            }
+
+            if (selected.HasComponent<ScriptComponent>())
+            {
+                auto& component = selected.GetComponent<ScriptComponent>();
+                component.ScriptPath = path;
+                component.RuntimeIndex = 0xFFFFFFFFu; // the new path gets a fresh instance
+            }
+            else
+            {
+                selected.AddComponent<ScriptComponent>().ScriptPath = path;
+            }
+
+            ScriptEngine::Get().ReloadEntity(*m_ActiveScene, static_cast<u32>(selected));
+            UHE_CORE_INFO("Attached script '{0}' to '{1}'", path, selected.GetComponent<TagComponent>().Tag);
+            Notify(NotificationCenter::Kind::Success, "Script attached",
+                   selected.GetComponent<TagComponent>().Tag + " -> " + path);
+        });
+
     auto rootPath = FileSystem::Get().GetRootPath();
     m_IconPlay = Texture2D::Create((rootPath / "assets/icon/play.png").string());
     m_IconPause = Texture2D::Create((rootPath / "assets/icon/pause.png").string());
     m_IconStop = Texture2D::Create((rootPath / "assets/icon/stop.png").string());
+
+    // An explicit -project wins. Otherwise the most recent project that is still
+    // on disk is reopened, so relaunching the editor lands back in the project
+    // that was open rather than making the user find it again. `-launcher` asks
+    // for the manager instead, and File > Project Manager... returns to it from
+    // inside a project.
+    const std::string requestedProject = CommandLine::GetValue("-project");
+    if (!requestedProject.empty())
+    {
+        if (!OpenProject(requestedProject))
+            m_ProjectLauncher.SetMessage("Could not open '" + requestedProject + "'");
+    }
+    else if (!CommandLine::HasFlag("-launcher"))
+    {
+        for (const std::filesystem::path& recent : m_ProjectLauncher.GetRecent())
+        {
+            // A stale entry is skipped rather than reported: the point of the
+            // list is to find a project that is still there.
+            if (Project::IsProject(recent) && OpenProject(recent))
+                break;
+        }
+    }
+
+    RegisterConsoleEntries();
 }
 
-void Editor::OnDetach() {}
+void Editor::OnDetach()
+{
+    UnregisterConsoleEntries();
+}
+
+namespace
+{
+/// @brief Every console entry the editor owns, so OnDetach removes exactly these.
+constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "scene.stats", "clear"};
+} // namespace
+
+void Editor::RegisterConsoleEntries()
+{
+    Console& console = Console::Get();
+
+    console.RegisterVar("script.budget", static_cast<i32>(ScriptEngine::kDefaultInstructionBudget / 1'000'000),
+                        "million Lua instructions one script call may run; 0 = unlimited",
+                        [](const Console::Value& value)
+                        {
+                            const i32 millions = std::max(0, std::get<i32>(value));
+                            ScriptEngine::Get().SetInstructionBudget(static_cast<u64>(millions) * 1'000'000);
+                        });
+
+    console.RegisterCommand("sim.tickrate", "sim.tickrate [hz]: print or set the active scene's fixed tick rate",
+                            [this](const std::vector<std::string>& args) -> std::string
+                            {
+                                if (!m_ActiveScene)
+                                    return "no active scene";
+                                SimulationClock& clock = m_ActiveScene->GetSimulationClock();
+                                if (!args.empty())
+                                {
+                                    int hz = 0;
+                                    const std::string& text = args.front();
+                                    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), hz);
+                                    if (ec != std::errc() || end != text.data() + text.size() || hz <= 0 || hz > 10'000)
+                                        return "tick rate must be 1..10000 Hz";
+                                    clock.SetTickRate(static_cast<u32>(hz));
+                                }
+                                char text[64];
+                                std::snprintf(text, sizeof(text), "sim.tickrate = %.0f Hz", 1.0 / clock.GetFixedStep());
+                                return text;
+                            });
+
+    console.RegisterCommand("scene.stats", "entity count and simulation tick of the active scene",
+                            [this](const std::vector<std::string>&) -> std::string
+                            {
+                                if (!m_ActiveScene)
+                                    return "no active scene";
+                                const auto entities = m_ActiveScene->GetRegistry().view<TagComponent>().size();
+                                return std::to_string(entities) + " entities, tick " +
+                                       std::to_string(m_ActiveScene->GetSimulationClock().GetTickIndex());
+                            });
+
+    console.RegisterCommand("clear", "clear the console log",
+                            [](const std::vector<std::string>&)
+                            {
+                                UHE::Log::GetImGuiSink()->Clear();
+                                return std::string();
+                            });
+}
+
+void Editor::UnregisterConsoleEntries()
+{
+    for (const char* name : kEditorConsoleEntries)
+        Console::Get().Unregister(name);
+}
 
 void Editor::OnUpdate(UHE::Timestep ts)
 {
     UHE_PROFILE_FUNCTION();
+    m_Notifications.Update(ts.GetSeconds());
+    m_SecondsSinceTransformPush += ts.GetSeconds();
     m_CameraController.OnUpdate(ts);
     if (FramebufferSpecification spec = m_Framebuffer->GetSpecification();
         m_ViewPortSize.x > 0.0f && m_ViewPortSize.y > 0.0f && // zero sized framebuffer is invalid
@@ -139,10 +302,11 @@ void Editor::OnUpdate(UHE::Timestep ts)
             m_EditorCamera.OnUpdate(ts);
             if (m_StepRequested)
             {
-                if (graphMode)
-                    m_ActiveScene->OnUpdateRuntimeSimulation(ts);
-                else
-                    m_ActiveScene->OnUpdateRuntime(ts); // simulation + render
+                // Issue #49: a step is exactly one fixed simulation tick, not a
+                // frame of wall time, so stepping is reproducible.
+                m_ActiveScene->StepSimulation();
+                if (!graphMode)
+                    m_ActiveScene->RenderRuntimeScene(ts);
                 m_StepRequested = false;
             }
             else
@@ -169,6 +333,30 @@ void Editor::OnUpdate(UHE::Timestep ts)
     {
         cmd.EndRenderPass();
     }
+
+    // The editor camera is the listener while editing; playing uses the scene's
+    // primary camera so 3D audio follows what the player sees.
+    glm::vec3 listenerPosition = m_EditorCamera.GetPosition();
+    glm::vec3 listenerForward = m_EditorCamera.GetForwardDirection();
+    glm::vec3 listenerUp = m_EditorCamera.GetUpDirection();
+
+    if (runtimeScene && m_ActiveScene)
+    {
+        Entity cameraEntity = m_ActiveScene->GetPrimaryCameraEntity();
+        if (cameraEntity && cameraEntity.HasComponent<TransformComponent>())
+        {
+            const glm::mat4 world = m_ActiveScene->GetWorldSpaceTransformMatrix(cameraEntity);
+            listenerPosition = glm::vec3(world[3]);
+            const glm::vec3 forward = -glm::vec3(world[2]);
+            const glm::vec3 up = glm::vec3(world[1]);
+            if (glm::length(forward) > 0.0001f)
+                listenerForward = glm::normalize(forward);
+            if (glm::length(up) > 0.0001f)
+                listenerUp = glm::normalize(up);
+        }
+    }
+
+    Audio::AudioEngine::SetListenerPosition(listenerPosition, listenerForward, listenerUp);
 
     // The swapchain scope belongs to the frame graph now (§14 step 5): the
     // ImGui pass declares it Undefined→ColorAttachment→Present and the
@@ -245,6 +433,117 @@ void Editor::OnEvent(UHE::Event& e)
     EventDispatcher dispatcher(e);
     dispatcher.Dispatch<MouseButtonPressedEvent>(UHE_BIND_EVENT_FN(Editor::OnMouseButtonPressedEvent));
     dispatcher.Dispatch<KeyPressedEvent>(UHE_BIND_EVENT_FN(Editor::onKeyPressed));
+    dispatcher.Dispatch<WindowFileDropEvent>(UHE_BIND_EVENT_FN(Editor::OnFileDrop));
+}
+
+bool Editor::OnFileDrop(WindowFileDropEvent& e)
+{
+    if (!m_Project)
+    {
+        m_ProjectLauncher.SetMessage("Open a project before importing files");
+        return false;
+    }
+
+    // Everything the user drops is copied into the project first, so a scene can
+    // never reference a file that lives outside it.
+    const std::vector<std::filesystem::path> imported = m_ContentBrowserPanel.ImportFiles(e.GetPaths());
+    if (imported.empty())
+        return false;
+
+    const glm::vec2& viewportMin = m_ViewPortBounds[0];
+    const glm::vec2& viewportMax = m_ViewPortBounds[1];
+    const bool overViewport = e.GetX() >= viewportMin.x && e.GetX() <= viewportMax.x &&
+                              e.GetY() >= viewportMin.y && e.GetY() <= viewportMax.y;
+
+    for (const std::filesystem::path& file : imported)
+    {
+        if (!overViewport)
+            continue; // the Content Browser already shows the imported file
+        CreateEntityFromAsset(file);
+    }
+
+    if (!overViewport)
+    {
+        if (imported.size() == 1)
+            Notify(NotificationCenter::Kind::Success, "Imported file", imported.front().filename().string());
+        else
+            Notify(NotificationCenter::Kind::Success, "Imported files",
+                   std::to_string(imported.size()) + " files added to the project");
+    }
+    return true;
+}
+
+bool Editor::CreateEntityFromAsset(const std::filesystem::path& assetPath)
+{
+    if (!m_ActiveScene || assetPath.empty())
+        return false;
+
+    // Components store project-relative paths so the scene stays portable.
+    const std::string storedPath = m_Project ? MakeAssetRelativePath(assetPath, m_Project->AssetPath)
+                                             : assetPath.generic_string();
+    const std::string extension = assetPath.extension().string();
+    const std::string name = assetPath.stem().string();
+
+    if (extension == ".unhuman")
+    {
+        OpenScene(assetPath);
+        return true;
+    }
+
+    if (extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".bmp" ||
+        extension == ".tga" || extension == ".hdr" || extension == ".ktx2")
+    {
+        Entity sprite = m_ActiveScene->CreateEntity(name);
+        auto& src = sprite.AddComponent<SpriteRendererComponent>();
+        src.TexturePath = storedPath;
+        src.Texture = Texture2D::Create(storedPath);
+        if (src.Texture)
+        {
+            UHE_CORE_INFO("Imported texture '{0}' into the scene", storedPath);
+            Notify(NotificationCenter::Kind::Success, "Added texture", name);
+        }
+        else
+        {
+            UHE_CORE_ERROR("Could not load imported texture '{0}'", storedPath);
+            Notify(NotificationCenter::Kind::Error, "Could not load texture", storedPath);
+        }
+        m_SceneHireacyPanel.SetSelectedEntity(sprite);
+        return true;
+    }
+
+    if (extension == ".wav" || extension == ".ogg")
+    {
+        Entity audioEntity = m_ActiveScene->CreateEntity(name);
+        auto& audio = audioEntity.AddComponent<AudioSourceComponent>();
+        audio.SoundPath = storedPath;
+        m_SceneHireacyPanel.SetSelectedEntity(audioEntity);
+        Notify(NotificationCenter::Kind::Success, "Added audio source", name);
+        return true;
+    }
+
+    if (extension == ".gltf" || extension == ".glb" || extension == ".fbx" || extension == ".obj")
+    {
+        Entity model = m_ActiveScene->CreateEntity(name);
+        auto& mc = model.AddComponent<Model3DComponent>();
+        mc.ModelPath = storedPath;
+        mc.IsLoaded = mc.ModelData && mc.ModelData->loadModel(storedPath);
+        if (mc.IsLoaded)
+        {
+            UHE_CORE_INFO("Imported model '{0}' into the scene", storedPath);
+            Notify(NotificationCenter::Kind::Success, "Added model", name);
+        }
+        else
+        {
+            UHE_CORE_ERROR("Could not load imported model '{0}'", storedPath);
+            Notify(NotificationCenter::Kind::Error, "Could not load model", storedPath);
+        }
+        m_SceneHireacyPanel.SetSelectedEntity(model);
+        return true;
+    }
+
+    UHE_CORE_INFO("Imported '{0}' into the project (no scene entity for this type)", storedPath);
+    Notify(NotificationCenter::Kind::Info, "Imported file", name);
+    return false;
 }
 
 void Editor::OnScreenPlay()
@@ -256,6 +555,9 @@ void Editor::OnScreenPlay()
         m_ActiveScene = Scene::Copy(m_EditorScene);
         m_ActiveScene->OnRuntimeStart();
         m_SceneState = SceneState::Play;
+        m_UndoStack.clear();
+        m_RedoStack.clear();
+        ResetTransformBaseline();
     }
     else if (m_SceneState == SceneState::Paused)
     {
@@ -289,7 +591,223 @@ void Editor::OnSceneStop()
 
     m_ActiveScene = m_EditorScene;
     m_SceneHireacyPanel.SetContext(m_ActiveScene);
+    m_UndoStack.clear();
+    m_RedoStack.clear();
+    ResetTransformBaseline();
 }
+
+void Editor::Notify(NotificationCenter::Kind kind, std::string title, std::string message)
+{
+    m_Notifications.Push(kind, std::move(title), std::move(message));
+}
+
+void Editor::FocusSelectedEntity()
+{
+    if (!m_ActiveScene)
+        return;
+
+    Entity selected = m_SceneHireacyPanel.GetSelectedEntity();
+    if (!selected || !selected.HasComponent<TransformComponent>())
+        return;
+
+    const glm::mat4 world = m_ActiveScene->GetWorldSpaceTransformMatrix(selected);
+    const glm::vec3 position(world[3]);
+    const TransformComponent& transform = selected.GetComponent<TransformComponent>();
+    const float extent = std::max({std::abs(transform.Scale.x), std::abs(transform.Scale.y),
+                                   std::abs(transform.Scale.z)});
+
+    m_EditorCamera.FocusOn(position, glm::clamp(4.0f * extent, 1.5f, 200.0f));
+}
+
+void Editor::DeleteSelectedEntity()
+{
+    if (!m_ActiveScene || m_SceneState != SceneState::Edit)
+        return;
+
+    Entity selected = m_SceneHireacyPanel.GetSelectedEntity();
+    if (!selected)
+        return;
+
+    std::string name = "entity";
+    if (selected.HasComponent<TagComponent>())
+        name = selected.GetComponent<TagComponent>().Tag;
+
+    m_ActiveScene->DestroyEntity(selected);
+    m_SceneHireacyPanel.SetSelectedEntity(Entity());
+    m_HoverdEntity = Entity();
+    ResetTransformBaseline();
+    Notify(NotificationCenter::Kind::Info, "Deleted '" + name + "'", "Ctrl+Z restores transforms only.");
+}
+
+void Editor::ReloadShaders()
+{
+    const u32 failed = ShaderCache::Get().ReloadAll();
+    if (failed == 0)
+    {
+        Notify(NotificationCenter::Kind::Success, "Shaders reloaded",
+               "Every loaded shader was recompiled and its pipelines rebuilt.");
+        return;
+    }
+    // Each failure already raised its own toast through the failure listener.
+    Notify(NotificationCenter::Kind::Warning, "Shaders reloaded with errors",
+           std::to_string(failed) + " shader(s) kept their last good version; see the console.");
+}
+
+void Editor::ReloadScripts()
+{
+    if (!m_ActiveScene)
+    {
+        Notify(NotificationCenter::Kind::Warning, "No scene to reload");
+        return;
+    }
+
+    ScriptEngine::Get().ReloadAll(*m_ActiveScene);
+
+    int total = 0;
+    int errored = 0;
+    for (const ScriptEngine::InstanceInfo& info : ScriptEngine::Get().Instances(*m_ActiveScene))
+    {
+        total++;
+        if (info.Errored)
+            errored++;
+    }
+
+    if (errored > 0)
+        Notify(NotificationCenter::Kind::Warning, "Scripts reloaded with errors",
+               std::to_string(errored) + " of " + std::to_string(total) + " instances failed - see Scripts.");
+    else
+        Notify(NotificationCenter::Kind::Success, "Scripts reloaded",
+               std::to_string(total) + " instance(s) recreated.");
+}
+
+void Editor::ResetTransformBaseline()
+{
+    m_TransformBaselineEntity = 0;
+    m_SecondsSinceTransformPush = 1000.0f;
+}
+
+void Editor::PollTransformUndo()
+{
+    if (!m_ActiveScene || m_SceneState != SceneState::Edit)
+    {
+        ResetTransformBaseline();
+        return;
+    }
+
+    Entity selected = m_SceneHireacyPanel.GetSelectedEntity();
+    if (!selected || !selected.HasComponent<TransformComponent>())
+    {
+        ResetTransformBaseline();
+        return;
+    }
+
+    const u64 entityID = selected.GetUUID();
+    const TransformComponent& transform = selected.GetComponent<TransformComponent>();
+    const TransformSnapshot current{entityID, transform.Translation, transform.Rotation, transform.Scale};
+
+    if (entityID != m_TransformBaselineEntity)
+    {
+        // A different entity became selected: its current transform is the
+        // state a later edit should return to, not a new history entry.
+        m_TransformBaseline = current;
+        m_TransformBaselineEntity = entityID;
+        m_SecondsSinceTransformPush = 1000.0f;
+        return;
+    }
+
+    const bool changed = m_TransformBaseline.Translation != current.Translation ||
+                         m_TransformBaseline.Rotation != current.Rotation ||
+                         m_TransformBaseline.Scale != current.Scale;
+    if (!changed)
+        return;
+
+    // A drag is still in progress: keep the pre-drag baseline so the release
+    // produces exactly one step.
+    if (ImGui::IsAnyMouseDown() || ImGuizmo::IsUsing())
+        return;
+
+    // Typing in a transform field produces a burst of small changes; within a
+    // second of the previous push they collapse into the same history entry.
+    if (m_SecondsSinceTransformPush > 1.0f)
+    {
+        m_UndoStack.push_back(m_TransformBaseline);
+        if (m_UndoStack.size() > 200)
+            m_UndoStack.erase(m_UndoStack.begin());
+        m_RedoStack.clear();
+        m_SecondsSinceTransformPush = 0.0f;
+    }
+
+    m_TransformBaseline = current;
+}
+
+void Editor::UndoTransform()
+{
+    if (!m_ActiveScene || m_UndoStack.empty())
+    {
+        Notify(NotificationCenter::Kind::Info, "Nothing to undo");
+        return;
+    }
+
+    while (!m_UndoStack.empty())
+    {
+        const TransformSnapshot target = m_UndoStack.back();
+        m_UndoStack.pop_back();
+
+        Entity entity = m_ActiveScene->GetEntityWithUUID(target.EntityID);
+        if (!entity || !entity.HasComponent<TransformComponent>())
+            continue; // the entity was deleted after the edit
+
+        TransformComponent& transform = entity.GetComponent<TransformComponent>();
+        m_RedoStack.push_back({target.EntityID, transform.Translation, transform.Rotation, transform.Scale});
+        transform.Translation = target.Translation;
+        transform.Rotation = target.Rotation;
+        transform.Scale = target.Scale;
+
+        m_SceneHireacyPanel.SetSelectedEntity(entity);
+        m_TransformBaseline = target;
+        m_TransformBaselineEntity = target.EntityID;
+        m_SecondsSinceTransformPush = 1000.0f;
+        return;
+    }
+
+    m_RedoStack.clear();
+    Notify(NotificationCenter::Kind::Info, "Nothing to undo");
+}
+
+void Editor::RedoTransform()
+{
+    if (!m_ActiveScene || m_RedoStack.empty())
+    {
+        Notify(NotificationCenter::Kind::Info, "Nothing to redo");
+        return;
+    }
+
+    while (!m_RedoStack.empty())
+    {
+        const TransformSnapshot target = m_RedoStack.back();
+        m_RedoStack.pop_back();
+
+        Entity entity = m_ActiveScene->GetEntityWithUUID(target.EntityID);
+        if (!entity || !entity.HasComponent<TransformComponent>())
+            continue;
+
+        TransformComponent& transform = entity.GetComponent<TransformComponent>();
+        m_UndoStack.push_back({target.EntityID, transform.Translation, transform.Rotation, transform.Scale});
+        transform.Translation = target.Translation;
+        transform.Rotation = target.Rotation;
+        transform.Scale = target.Scale;
+
+        m_SceneHireacyPanel.SetSelectedEntity(entity);
+        m_TransformBaseline = target;
+        m_TransformBaselineEntity = target.EntityID;
+        m_SecondsSinceTransformPush = 1000.0f;
+        return;
+    }
+
+    m_UndoStack.clear();
+    Notify(NotificationCenter::Kind::Info, "Nothing to redo");
+}
+
 
 bool Editor::onKeyPressed(KeyPressedEvent& e)
 {
@@ -314,6 +832,47 @@ bool Editor::onKeyPressed(KeyPressedEvent& e)
             {
                 m_IsViewportFullScreen = !m_IsViewportFullScreen;
             }
+            else if (!controlPressed && !shift)
+            {
+                FocusSelectedEntity();
+            }
+            break;
+        }
+        case Key::P:
+        {
+            if (controlPressed && m_Project)
+                m_CommandPalette.Toggle();
+            break;
+        }
+        case Key::Z:
+        {
+            if (controlPressed)
+            {
+                if (shift)
+                    RedoTransform();
+                else
+                    UndoTransform();
+            }
+            break;
+        }
+        case Key::Y:
+        {
+            if (controlPressed)
+                RedoTransform();
+            break;
+        }
+        case Key::Delete:
+        {
+            if (!controlPressed && !shift)
+                DeleteSelectedEntity();
+            break;
+        }
+        case Key::Escape:
+        {
+            if (m_CommandPalette.IsOpen())
+                m_CommandPalette.Close();
+            else if (m_IsViewportFullScreen)
+                m_IsViewportFullScreen = false;
             break;
         }
         case Key::O:
@@ -364,39 +923,195 @@ bool Editor::onKeyPressed(KeyPressedEvent& e)
     return false;
 }
 
-void Editor::NewScene()
+void Editor::NewScene(bool notify)
 {
     OnSceneStop();
     m_ActiveScene = CreateRef<Scene>();
     m_ActiveScene->OnViewportResize((u32)m_ViewPortSize.x, (u32)m_ViewPortSize.y);
     m_SceneHireacyPanel.SetContext(m_ActiveScene);
     m_CurrentScenePath.clear();
+    m_UndoStack.clear();
+    m_RedoStack.clear();
+    ResetTransformBaseline();
+    if (notify)
+        Notify(NotificationCenter::Kind::Info, "New scene", "Unsaved changes in the previous scene were dropped.");
 }
 
 void Editor::OpenScene()
 {
-    std::string filepath = FileDialogs::OpenFile("UHE Scene (*.unhuman)\0*.unhuman\0");
+    // Scenes live inside the project; start the dialog there.
+    std::string filepath = FileDialogs::OpenFile("UHE Scene (*.unhuman)\0*.unhuman\0", ProjectAssetPath().string());
     if (!filepath.empty())
     {
         OpenScene(filepath);
     }
 }
 
-void Editor::OpenScene(const std::filesystem::path& path)
+void Editor::OpenScene(const std::filesystem::path& path, bool notify)
 {
     std::string filepath = path.string();
 
     if (!filepath.empty())
     {
+        // Load into a fresh scene and switch only on success: switching first
+        // left a failed open showing an empty scene bound to this path, which
+        // the next save would have written over the user's file.
+        Ref<Scene> loaded = CreateRef<Scene>();
+        SceneSerializer serializer(loaded);
+        if (!serializer.Deserialize(filepath))
+        {
+            Notify(NotificationCenter::Kind::Error, "Could not open scene",
+                   path.filename().string() + " (see the console for why)");
+            return;
+        }
+
         OnSceneStop();
-        m_ActiveScene = CreateRef<Scene>();
+        m_ActiveScene = loaded;
         m_ActiveScene->OnViewportResize((u32)m_ViewPortSize.x, (u32)m_ViewPortSize.y);
         m_SceneHireacyPanel.SetContext(m_ActiveScene);
-        SceneSerializer serializer(m_ActiveScene);
-        serializer.Deserialize(filepath);
         m_CurrentScenePath = path;
+        m_UndoStack.clear();
+        m_RedoStack.clear();
+        ResetTransformBaseline();
+        if (notify)
+            Notify(NotificationCenter::Kind::Info, "Scene opened", path.filename().string());
     }
 }
+
+bool Editor::OpenProject(const std::filesystem::path& path)
+{
+    ProjectInfo info;
+    std::string error;
+    if (!Project::Load(path, info, &error))
+    {
+        UHE_CORE_ERROR("Could not open project '{0}': {1}", path.string(), error);
+        Notify(NotificationCenter::Kind::Error, "Could not open project", error.empty() ? path.string() : error);
+        return false;
+    }
+
+    SetProject(std::move(info));
+    return true;
+}
+
+void Editor::SetProject(ProjectInfo info)
+{
+    std::string error;
+    if (!Project::EnsureAssetFolder(info, &error))
+        UHE_CORE_WARN("Project '{0}': {1}", info.Name, error);
+
+    // "game:" -> the project's Assets folder, "engine:" -> the folder shipped
+    // next to the binary. Mounting the project last keeps it ahead of the engine
+    // assets, so a project can shadow an engine file by name.
+    Project::Mount(info, FileSystem::Get().GetRootPath() / "assets");
+
+    m_Project = std::move(info);
+    m_ShowLauncher = false;
+    m_ProjectLauncher.AddRecent(*m_Project);
+    m_ContentBrowserPanel.SetBaseDirectory(m_Project->AssetPath);
+
+    const std::filesystem::path startScene = Project::StartScenePath(*m_Project);
+    std::error_code ec;
+    if (!startScene.empty() && std::filesystem::is_regular_file(startScene, ec))
+        OpenScene(startScene, false);
+    else
+        NewScene(false);
+
+    UHE_CORE_INFO("Opened project '{0}' ({1})", m_Project->Name, m_Project->RootPath.string());
+    Notify(NotificationCenter::Kind::Success, "Project opened", m_Project->Name);
+}
+
+void Editor::CloseProject()
+{
+    m_Project.reset();
+    m_ShowLauncher = true;
+    m_ProjectLauncher.SetMessage("");
+    m_UndoStack.clear();
+    m_RedoStack.clear();
+    ResetTransformBaseline();
+    m_CommandPalette.Close();
+    Notify(NotificationCenter::Kind::Info, "Project closed");
+}
+
+std::filesystem::path Editor::ProjectAssetPath() const
+{
+    return m_Project ? m_Project->AssetPath : std::filesystem::path();
+}
+
+namespace
+{
+/// @brief Lines entered in the console, oldest first, for Up/Down recall.
+std::vector<std::string> s_ConsoleHistory;
+/// @brief Position while browsing the history; -1 when editing a new line.
+int s_ConsoleHistoryPos = -1;
+
+/**
+ * @brief Up/Down walk the history; Tab completes the name being typed.
+ */
+int ConsoleInputCallback(ImGuiInputTextCallbackData* data)
+{
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackHistory && !s_ConsoleHistory.empty())
+    {
+        const int last = static_cast<int>(s_ConsoleHistory.size()) - 1;
+        if (data->EventKey == ImGuiKey_UpArrow)
+            s_ConsoleHistoryPos = s_ConsoleHistoryPos < 0 ? last : std::max(0, s_ConsoleHistoryPos - 1);
+        else if (data->EventKey == ImGuiKey_DownArrow && s_ConsoleHistoryPos >= 0)
+            s_ConsoleHistoryPos = s_ConsoleHistoryPos >= last ? -1 : s_ConsoleHistoryPos + 1;
+
+        data->DeleteChars(0, data->BufTextLen);
+        if (s_ConsoleHistoryPos >= 0)
+            data->InsertChars(0, s_ConsoleHistory[s_ConsoleHistoryPos].c_str());
+    }
+    else if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion)
+    {
+        const std::string typed(data->Buf, data->BufTextLen);
+        if (typed.find(' ') != std::string::npos)
+            return 0; // only the name completes
+        const std::vector<std::string> names = UHE::Console::Get().Complete(typed);
+        if (names.size() == 1)
+        {
+            data->DeleteChars(0, data->BufTextLen);
+            data->InsertChars(0, (names.front() + " ").c_str());
+        }
+        else if (!names.empty())
+        {
+            std::string list;
+            for (const std::string& name : names)
+                list += name + "  ";
+            UHE_CORE_INFO("{}", list);
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief The command line under the log: runs a line through UHE::Console and
+ * logs both the line and its result, so they land in the log like any output.
+ */
+void DrawConsoleInput()
+{
+    static char s_Line[512] = "";
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory |
+                                      ImGuiInputTextFlags_CallbackCompletion;
+    if (ImGui::InputTextWithHint("##ConsoleInput", "> command or variable (help, Tab completes)", s_Line,
+                                 sizeof(s_Line), flags, &ConsoleInputCallback))
+    {
+        const std::string line = s_Line;
+        s_Line[0] = '\0';
+        s_ConsoleHistoryPos = -1;
+        if (!UHE::Console::Tokenize(line).empty())
+        {
+            if (s_ConsoleHistory.empty() || s_ConsoleHistory.back() != line)
+                s_ConsoleHistory.push_back(line);
+            UHE_CORE_INFO("> {}", line);
+            const std::string result = UHE::Console::Get().Execute(line);
+            if (!result.empty())
+                UHE_CORE_INFO("{}", result);
+        }
+        ImGui::SetKeyboardFocusHere(-1); // keep typing after Enter
+    }
+}
+} // namespace
 
 void DrawConsolePanel()
 {
@@ -510,7 +1225,9 @@ void DrawConsolePanel()
 
     ImGui::Separator();
 
-    ImGui::BeginChild("##ConsoleLogRegion", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+    // Leave one row under the log for the command line.
+    const float inputHeight = ImGui::GetFrameHeightWithSpacing();
+    ImGui::BeginChild("##ConsoleLogRegion", ImVec2(0, -inputHeight), false, ImGuiWindowFlags_HorizontalScrollbar);
     for (const auto* entry : visible)
         ImGui::TextColored(colors[levelIndex(entry->Level)], "%s", entry->Message.c_str());
 
@@ -520,18 +1237,22 @@ void DrawConsolePanel()
         ImGui::SetScrollHereY(1.0f);
     ImGui::EndChild();
 
+    DrawConsoleInput();
+
     ImGui::End();
 }
 
 void Editor::SaveSceneAs()
 {
-    std::string filepath = FileDialogs::SaveFile("UHE Scene (*.unhuman)\0.unhuman\0");
+    std::string filepath = FileDialogs::SaveFile("UHE Scene (*.unhuman)\0.unhuman\0", ProjectAssetPath().string());
 
     if (!filepath.empty())
     {
         SceneSerializer serializer(m_ActiveScene);
         serializer.Serialize(filepath);
         m_CurrentScenePath = filepath;
+        Notify(NotificationCenter::Kind::Success, "Scene saved",
+               std::filesystem::path(filepath).filename().string());
     }
 }
 
@@ -565,6 +1286,11 @@ namespace
         ImGui::DockBuilderDockWindow("Content Browser", bottomLeft);
         ImGui::DockBuilderDockWindow("Console", bottomRight);
         ImGui::DockBuilderDockWindow("Profiler", bottomRight);
+        ImGui::DockBuilderDockWindow("Scripts", bottomRight);
+        ImGui::DockBuilderDockWindow("Audio", bottomRight);
+        // The graph needs canvas space: share the central node with the
+        // viewport rather than squeezing into a bottom tab.
+        ImGui::DockBuilderDockWindow("Animation Graph", centerTop);
         ImGui::DockBuilderFinish(dockspaceId);
     }
 } // namespace
@@ -573,6 +1299,21 @@ void Editor::OnImGuiRender()
 {
     UHE_PROFILE_FUNCTION();
     EditorTheme::EnsureApplied();
+
+    // No project yet: the launcher owns the screen, exactly like a real engine
+    // editor. Nothing else is submitted, so no panel can touch a missing asset root.
+    if (m_ShowLauncher && !m_Project)
+    {
+        ProjectInfo opened;
+        if (m_ProjectLauncher.OnImGuiRender(opened))
+            SetProject(std::move(opened));
+        else
+        {
+            m_CommandPalette.Close();
+            m_Notifications.Draw();
+        }
+        return;
+    }
 
     static bool dockspaceOpen = true;
 
@@ -599,7 +1340,10 @@ void Editor::OnImGuiRender()
     const f32 previousMinWidth = style.WindowMinSize.x;
     style.WindowMinSize.x = 220.0f;
 
-    const ImGuiID dockspaceId = ImGui::GetID("UHE_DockSpace_v2");
+    // v3: adds Animation Graph and Audio to the default docking layout. A new
+    // id makes existing ini layouts rebuild once instead of leaving the new
+    // panels floating.
+    const ImGuiID dockspaceId = ImGui::GetID("UHE_DockSpace_v3");
     if (m_ResetLayout || ImGui::DockBuilderGetNode(dockspaceId) == nullptr)
     {
         BuildDefaultLayout(dockspaceId, ImGui::GetContentRegionAvail());
@@ -641,6 +1385,16 @@ void Editor::OnImGuiRender()
     if (m_ShowProfiler)
         m_ProfilerPanel.OnImGuiRender();
 
+    m_ScriptsPanel.SetContext(m_ActiveScene.get());
+    if (m_ShowScripts)
+        m_ScriptsPanel.OnImGuiRender(m_ShowScripts);
+
+    if (m_ShowAnimationGraph)
+        m_AnimationGraphPanel.OnImGuiRender(m_ShowAnimationGraph, m_SceneHireacyPanel.GetSelectedEntity());
+
+    if (m_ShowAudio)
+        m_AudioPanel.OnImGuiRender(m_ShowAudio);
+
     ImGuiWindowFlags viewportFlags = 0;
     std::string viewportName = "Viewport";
     const bool fullscreen = m_IsViewportFullScreen;
@@ -670,7 +1424,8 @@ void Editor::OnImGuiRender()
 
     m_ViewPortFocused = ImGui::IsWindowFocused();
     m_ViewPortHover = ImGui::IsWindowHovered();
-    Application::Get().GetImguiLayer()->SetBlockEvent(!m_ViewPortFocused && !m_ViewPortHover);
+    Application::Get().GetImguiLayer()->SetBlockEvent(m_CommandPalette.IsOpen() ||
+                                                      (!m_ViewPortFocused && !m_ViewPortHover));
 
     ImVec2 viewPortSize = ImGui::GetContentRegionAvail();
     if (viewPortSize.x < 1.0f)
@@ -696,49 +1451,9 @@ void Editor::OnImGuiRender()
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("Content_Browser_item"))
         {
             const char* path = (const char*)payload->Data;
-            std::filesystem::path itemPath(path);
-            std::string extension = itemPath.extension().string();
-
-            if (extension == ".unhuman")
-            {
-                OpenScene(path);
-            }
-            else if (extension == ".png" || extension == ".jpg")
-            {
-                UHE_CORE_INFO("Accepted Viewport DragDropPayload: {0}", path);
-                // Create a new entity with the texture
-                std::string filename = itemPath.stem().string();
-                Entity spriteEntity = m_ActiveScene->CreateEntity(filename);
-                auto& src = spriteEntity.AddComponent<SpriteRendererComponent>();
-                src.TexturePath = itemPath.string();
-                src.Texture = Texture2D::Create(itemPath.string());
-                if (src.Texture)
-                {
-                    UHE_CORE_INFO("Successfully loaded texture into viewport!");
-                }
-                else
-                {
-                    UHE_CORE_ERROR("Failed to load texture into viewport from payload!");
-                }
-            }
-            else if (extension == ".gltf" || extension == ".glb")
-            {
-                UHE_CORE_INFO("Accepted Viewport DragDropPayload (3D Model): {0}", path);
-                std::string filename = itemPath.stem().string();
-                Entity modelEntity = m_ActiveScene->CreateEntity(filename);
-                auto& mc = modelEntity.AddComponent<Model3DComponent>();
-                mc.ModelPath = path;
-                if (mc.ModelData->loadModel(itemPath.string()))
-                {
-                    mc.IsLoaded = true;
-                    UHE_CORE_INFO("Successfully loaded 3D model into viewport!");
-                }
-                else
-                {
-                    mc.IsLoaded = false;
-                    UHE_CORE_ERROR("Failed to load 3D model into viewport from payload!");
-                }
-            }
+            // Shared with OS drops: stores a project-relative path and builds the
+            // matching entity (texture, model, or opens a scene).
+            CreateEntityFromAsset(std::filesystem::path(path));
         }
 
         ImGui::EndDragDropTarget();
@@ -755,7 +1470,8 @@ void Editor::OnImGuiRender()
     {
         if (m_FramesSinceResize > 1)
         {
-            int pixelData = m_Framebuffer->ReadPixel(1, mouseX, mouseY);
+            // Async: the blocking read waited on the GPU every hovered frame.
+            int pixelData = m_Framebuffer->ReadPixelAsync(1, mouseX, mouseY);
             if (pixelData == -1 || pixelData < 0)
             {
                 m_HoverdEntity = Entity();
@@ -799,10 +1515,10 @@ void Editor::OnImGuiRender()
             }
 
             bool snap = m_SnapEnabled || Input::IsKeyPressed(Key::LeftControl);
-            f32 snapValue = 0.5f;
+            f32 snapValue = m_SnapValue;
 
             if (m_GizmoType == ImGuizmo::OPERATION::ROTATE)
-                snapValue = 45.0f;
+                snapValue = 15.0f;
 
             f32 snapValues[3] = {snapValue, snapValue, snapValue};
 
@@ -832,8 +1548,16 @@ void Editor::OnImGuiRender()
 
     ImGui::End();
     ImGui::PopStyleVar();
+
+    if (m_ShowViewportOverlay)
+        DrawViewportOverlay(imageMin, imageMax);
     }
 
+    // Record the finished edit after the gizmo and inspector have run, then
+    // draw the editor-level overlays on top of every docked panel.
+    PollTransformUndo();
+    m_Notifications.Draw();
+    m_CommandPalette.OnImGuiRender(BuildCommands());
 }
 
 bool Editor::OnMouseButtonPressedEvent(MouseButtonPressedEvent& e)
@@ -846,6 +1570,257 @@ bool Editor::OnMouseButtonPressedEvent(MouseButtonPressedEvent& e)
         }
     }
     return false;
+}
+
+void Editor::DrawViewportOverlay(const ImVec2& imageMin, const ImVec2& imageMax)
+{
+    const float width = imageMax.x - imageMin.x;
+    const float height = imageMax.y - imageMin.y;
+    if (width < 140.0f || height < 90.0f)
+        return;
+
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+
+    // Small translucent pill: coloured dot + label. Kept on black so it reads
+    // on both the light and the dark themes.
+    float badgeX = imageMin.x + 10.0f;
+    const float badgeY = imageMin.y + 10.0f;
+    auto drawBadge = [&](const char* text, const ImVec4& accent)
+    {
+        const ImVec2 textSize = ImGui::CalcTextSize(text);
+        const ImVec2 badgeMin(badgeX, badgeY);
+        const ImVec2 badgeMax(badgeX + textSize.x + 20.0f, badgeY + textSize.y + 7.0f);
+        const float rounding = (badgeMax.y - badgeMin.y) * 0.5f;
+
+        draw->AddRectFilled(badgeMin, badgeMax, IM_COL32(12, 12, 16, 165), rounding);
+        draw->AddRect(badgeMin, badgeMax, ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.55f)),
+                      rounding);
+        draw->AddCircleFilled(ImVec2(badgeMin.x + 9.0f, (badgeMin.y + badgeMax.y) * 0.5f), 3.0f,
+                              ImGui::GetColorU32(accent));
+        draw->AddText(ImVec2(badgeMin.x + 15.0f, badgeMin.y + 3.5f), IM_COL32(238, 238, 242, 255), text);
+
+        badgeX = badgeMax.x + 6.0f;
+    };
+
+    const char* toolName = "Select";
+    ImVec4 toolAccent = EditorTheme::Accent();
+    switch (m_GizmoType)
+    {
+        case ImGuizmo::TRANSLATE:
+            toolName = "Move";
+            break;
+        case ImGuizmo::ROTATE:
+            toolName = "Rotate";
+            break;
+        case ImGuizmo::SCALE:
+            toolName = "Scale";
+            break;
+        default:
+            break;
+    }
+    drawBadge(toolName, toolAccent);
+
+    if (m_GizmoType != -1)
+    {
+        char space[32];
+        std::snprintf(space, sizeof(space), "%s Space", m_GizmoSpaceWorld ? "World" : "Local");
+        drawBadge(space, EditorTheme::ConsoleInfo());
+
+        if (m_SnapEnabled)
+        {
+            char snap[32];
+            std::snprintf(snap, sizeof(snap), "Snap %.2f", m_SnapValue);
+            drawBadge(snap, EditorTheme::Warning());
+        }
+    }
+
+    drawBadge(m_RenderPath == RenderPath::RenderGraph ? "Render Graph" : "Immediate", EditorTheme::Success());
+
+    // Playing without a camera renders nothing: say so instead of showing a
+    // black viewport.
+    if (m_SceneState != SceneState::Edit && m_ActiveScene && !m_ActiveScene->GetPrimaryCameraEntity())
+    {
+        const char* warning = "No primary camera - the runtime view is blank";
+        const ImVec2 textSize = ImGui::CalcTextSize(warning);
+        const ImVec2 warnMin(imageMin.x + (width - textSize.x) * 0.5f - 12.0f, imageMin.y + 12.0f);
+        const ImVec2 warnMax(warnMin.x + textSize.x + 24.0f, warnMin.y + textSize.y + 10.0f);
+        draw->AddRectFilled(warnMin, warnMax, IM_COL32(60, 20, 18, 220), 6.0f);
+        draw->AddRect(warnMin, warnMax, ImGui::GetColorU32(EditorTheme::Danger()), 6.0f);
+        draw->AddText(ImVec2(warnMin.x + 12.0f, warnMin.y + 5.0f),
+                      ImGui::GetColorU32(EditorTheme::Warning()), warning);
+    }
+
+    DrawAxisGizmo(draw, ImVec2(imageMin.x + 48.0f, imageMax.y - 48.0f), 30.0f);
+
+    // Interactive camera controls, anchored to the top-right corner. Submitted
+    // last so it sits above the docked viewport window.
+    ImGui::SetNextWindowPos(ImVec2(imageMax.x - 10.0f, imageMin.y + 8.0f), ImGuiCond_Always,
+                            ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.82f);
+    const ImGuiWindowFlags controlFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                                          ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove |
+                                          ImGuiWindowFlags_NoFocusOnAppearing |
+                                          ImGuiWindowFlags_AlwaysAutoResize;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+    ImGui::Begin("##ViewportControls", nullptr, controlFlags);
+    ImGui::PopStyleVar(2);
+
+    ImGui::TextDisabled("Camera");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(110.0f);
+    float speed = m_EditorCamera.GetSpeedMultiplier();
+    if (ImGui::SliderFloat("##CameraSpeed", &speed, 0.1f, 5.0f, "%.2fx"))
+        m_EditorCamera.SetSpeedMultiplier(speed);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Pan / orbit / zoom sensitivity");
+    ImGui::SameLine();
+    if (ImGui::Button("Focus"))
+        FocusSelectedEntity();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Frame the selected entity (F)");
+
+    ImGui::End();
+}
+
+void Editor::DrawAxisGizmo(ImDrawList* draw, const ImVec2& center, float radius)
+{
+    draw->AddCircleFilled(center, radius + 7.0f, IM_COL32(12, 12, 16, 120), 32);
+    draw->AddCircle(center, radius + 7.0f, ImGui::GetColorU32(ImGuiCol_Separator), 32, 1.0f);
+
+    const glm::mat3 viewRotation(m_EditorCamera.GetViewMatrix());
+    struct Axis
+    {
+        glm::vec3 Direction;
+        ImVec4 Color;
+        const char* Label;
+    };
+    const Axis axes[3] = {
+        {{1.0f, 0.0f, 0.0f}, {0.96f, 0.34f, 0.32f, 1.0f}, "X"},
+        {{0.0f, 1.0f, 0.0f}, {0.48f, 0.88f, 0.38f, 1.0f}, "Y"},
+        {{0.0f, 0.0f, 1.0f}, {0.38f, 0.64f, 0.98f, 1.0f}, "Z"},
+    };
+
+    ImVec2 endpoints[3];
+    float depths[3];
+    for (int i = 0; i < 3; ++i)
+    {
+        const glm::vec3 viewDirection = viewRotation * axes[i].Direction;
+        const float length = radius * (0.62f + 0.38f * std::abs(viewDirection.z));
+        endpoints[i] = ImVec2(center.x + viewDirection.x * length, center.y - viewDirection.y * length);
+        depths[i] = viewDirection.z;
+    }
+
+    // Draw the axis pointing away from the camera first, so the one pointing
+    // at the viewer stays readable on top.
+    int order[3] = {0, 1, 2};
+    std::sort(order, order + 3, [&](int a, int b) { return depths[a] < depths[b]; });
+
+    for (int axisIndex : order)
+    {
+        const Axis& axis = axes[axisIndex];
+        draw->AddLine(center, endpoints[axisIndex], ImGui::GetColorU32(axis.Color), 2.0f);
+        draw->AddCircleFilled(endpoints[axisIndex], 4.0f, ImGui::GetColorU32(axis.Color), 12);
+
+        const ImVec2 labelOffset(endpoints[axisIndex].x - center.x, endpoints[axisIndex].y - center.y);
+        const float labelLength = std::max(std::sqrt(labelOffset.x * labelOffset.x + labelOffset.y * labelOffset.y),
+                                           0.001f);
+        const ImVec2 labelPosition(endpoints[axisIndex].x + labelOffset.x / labelLength * 8.0f - 3.0f,
+                                   endpoints[axisIndex].y + labelOffset.y / labelLength * 8.0f - 7.0f);
+        draw->AddText(labelPosition, ImGui::GetColorU32(axis.Color), axis.Label);
+    }
+}
+
+std::vector<CommandPalette::Command> Editor::BuildCommands()
+{
+    std::vector<CommandPalette::Command> commands;
+    commands.reserve(48);
+
+    auto add = [&commands](std::string label, std::string category, std::string shortcut, bool enabled,
+                           std::function<void()> action)
+    {
+        commands.push_back({std::move(label), std::move(category), std::move(shortcut), enabled,
+                            std::move(action)});
+    };
+
+    add("New Scene", "File", "Ctrl+N", true, [this] { NewScene(); });
+    add("Open Scene...", "File", "Ctrl+O", true, [this] { OpenScene(); });
+    add("Save Scene As...", "File", "Ctrl+S", true, [this] { SaveSceneAs(); });
+    add("Open Project...", "File", "", true,
+        [this]
+        {
+            const std::string folder = FileDialogs::SelectFolder("Open Project",
+                                                                 std::filesystem::current_path().string());
+            if (!folder.empty() && !OpenProject(folder))
+                m_ProjectLauncher.SetMessage("Could not open '" + folder + "'");
+        });
+    add("Project Manager...", "File", "", m_Project.has_value(), [this] { CloseProject(); });
+
+    add("Undo Transform", "Edit", "Ctrl+Z", !m_UndoStack.empty(), [this] { UndoTransform(); });
+    add("Redo Transform", "Edit", "Ctrl+Shift+Z", !m_RedoStack.empty(), [this] { RedoTransform(); });
+    add("Delete Selected Entity", "Edit", "Del", m_SceneState == SceneState::Edit,
+        [this] { DeleteSelectedEntity(); });
+    add("Preferences...", "Edit", "Ctrl+,", true, [this] { m_ShowPreferences = true; });
+    add("About UHE", "Help", "F1", true, [this] { m_ShowAbout = true; });
+
+    add("Toggle Hierarchy", "View", "", true, [this] { m_ShowHierarchy = !m_ShowHierarchy; });
+    add("Toggle Inspector", "View", "", true, [this] { m_ShowInspector = !m_ShowInspector; });
+    add("Toggle Content Browser", "View", "", true, [this] { m_ShowContentBrowser = !m_ShowContentBrowser; });
+    add("Toggle Console", "View", "", true, [this] { m_ShowConsole = !m_ShowConsole; });
+    add("Toggle Profiler", "View", "", true, [this] { m_ShowProfiler = !m_ShowProfiler; });
+    add("Toggle Scripts", "View", "", true, [this] { m_ShowScripts = !m_ShowScripts; });
+    add("Toggle Animation Graph", "View", "", true, [this] { m_ShowAnimationGraph = !m_ShowAnimationGraph; });
+    add("Toggle Audio", "View", "", true, [this] { m_ShowAudio = !m_ShowAudio; });
+    add("Toggle Settings", "View", "", true, [this] { m_ShowSettings = !m_ShowSettings; });
+    add("Toggle Viewport", "View", "", true, [this] { m_ShowViewport = !m_ShowViewport; });
+    add("Toggle Viewport Overlay", "View", "", true, [this] { m_ShowViewportOverlay = !m_ShowViewportOverlay; });
+    add("Toggle Fullscreen Viewport", "View", "Ctrl+Shift+F", true,
+        [this] { m_IsViewportFullScreen = !m_IsViewportFullScreen; });
+    add("Reset Layout", "View", "", true, [this] { m_ResetLayout = true; });
+    add("Focus Selected Entity", "View", "F", true, [this] { FocusSelectedEntity(); });
+
+    add("Play", "Play", "F5", m_SceneState == SceneState::Edit, [this] { OnScreenPlay(); });
+    add("Pause / Resume", "Play", "F6", m_SceneState != SceneState::Edit, [this] { OnScreenPause(); });
+    add("Step One Tick", "Play", "F7", m_SceneState == SceneState::Paused, [this] { OnScreenStep(); });
+    add("Stop", "Play", "F5", m_SceneState != SceneState::Edit, [this] { OnSceneStop(); });
+
+    add("Use Immediate Render Path", "Render", "", m_RenderPath != RenderPath::Immediate,
+        [this] { m_RenderPath = RenderPath::Immediate; });
+    add("Use Render Graph Path", "Render", "", m_RenderPath != RenderPath::RenderGraph,
+        [this] { m_RenderPath = RenderPath::RenderGraph; });
+    add("Toggle Lighting", "Render", "", true,
+        [this] { Renderer3D::SetLightingEnabled(!Renderer3D::IsLightingEnabled()); });
+    add("Reload Shaders", "Render", "Ctrl+Shift+R", true, [this] { ReloadShaders(); });
+    add("Reload Scripts", "Render", "Ctrl+Alt+R", true, [this] { ReloadScripts(); });
+
+    for (int i = 0; i < EditorTheme::GetThemeCount(); ++i)
+    {
+        const auto theme = static_cast<EditorTheme::EditorThemeId>(i);
+        const bool selected = EditorTheme::GetSelected() == theme;
+        add(std::string("Theme: ") + EditorTheme::GetName(theme), "Appearance", selected ? "current" : "",
+            !selected, [theme] { EditorTheme::SetSelected(theme); });
+    }
+
+    // Scene entities are listed as a convenience: picking one selects it and
+    // frames it, which is faster than hunting through the hierarchy.
+    if (m_ActiveScene && m_ActiveScene->GetRegistry().view<entt::entity>().size() <= 200)
+    {
+        for (entt::entity handle : m_ActiveScene->GetRegistry().view<entt::entity>())
+        {
+            Entity entity(handle, m_ActiveScene.get());
+            if (!entity || !entity.HasComponent<TagComponent>())
+                continue;
+            const std::string tag = entity.GetComponent<TagComponent>().Tag;
+            add("Select: " + tag, "Scene", "", true,
+                [this, entity]()
+                {
+                    m_SceneHireacyPanel.SetSelectedEntity(entity);
+                    FocusSelectedEntity();
+                });
+        }
+    }
+
+    return commands;
 }
 
 void Editor::DrawMainMenuBar()
@@ -863,6 +1838,28 @@ void Editor::DrawMainMenuBar()
         if (ImGui::MenuItem("Save Scene As...", "Ctrl+S"))
             SaveSceneAs();
         ImGui::Separator();
+        if (ImGui::MenuItem("Open Project..."))
+        {
+            const std::string folder = FileDialogs::SelectFolder("Open Project", std::filesystem::current_path().string());
+            if (!folder.empty() && !OpenProject(folder))
+                m_ProjectLauncher.SetMessage("Could not open '" + folder + "'");
+        }
+        if (ImGui::MenuItem("Project Manager..."))
+            CloseProject();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Reload Shaders", "Ctrl+Shift+R"))
+        {
+            // Compiles every loaded shader from source and rebuilds the pipelines
+            // built from it, without restarting.
+            ReloadShaders();
+        }
+        if (ImGui::MenuItem("Reload Scripts", "Ctrl+Alt+R"))
+        {
+            // Recompiles every attached script and runs its OnCreate again, for
+            // the cases a file timestamp cannot see.
+            ReloadScripts();
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Exit", "Alt+F4"))
             Application::Get().Close();
         ImGui::EndMenu();
@@ -870,6 +1867,17 @@ void Editor::DrawMainMenuBar()
 
     if (ImGui::BeginMenu("Edit"))
     {
+        ImGui::BeginDisabled(m_UndoStack.empty());
+        if (ImGui::MenuItem("Undo Transform", "Ctrl+Z"))
+            UndoTransform();
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(m_RedoStack.empty());
+        if (ImGui::MenuItem("Redo Transform", "Ctrl+Shift+Z"))
+            RedoTransform();
+        ImGui::EndDisabled();
+        ImGui::Separator();
+        if (ImGui::MenuItem("Command Palette...", "Ctrl+P"))
+            m_CommandPalette.Open();
         if (ImGui::MenuItem("Preferences...", "Ctrl+,"))
             m_ShowPreferences = true;
         ImGui::EndMenu();
@@ -905,9 +1913,13 @@ void Editor::DrawMainMenuBar()
         EditorUI::ToggleMenuItem("Content Browser", &m_ShowContentBrowser);
         EditorUI::ToggleMenuItem("Console", &m_ShowConsole);
         EditorUI::ToggleMenuItem("Profiler", &m_ShowProfiler);
+        EditorUI::ToggleMenuItem("Scripts", &m_ShowScripts);
+        EditorUI::ToggleMenuItem("Animation Graph", &m_ShowAnimationGraph);
+        EditorUI::ToggleMenuItem("Audio", &m_ShowAudio);
         EditorUI::ToggleMenuItem("Settings", &m_ShowSettings);
         EditorUI::ToggleMenuItem("Viewport", &m_ShowViewport);
         ImGui::Separator();
+        EditorUI::ToggleMenuItem("Viewport Overlay", &m_ShowViewportOverlay, "Gizmo and camera HUD");
         if (ImGui::MenuItem("Fullscreen Viewport", "Ctrl+Shift+F"))
             m_IsViewportFullScreen = !m_IsViewportFullScreen;
         if (ImGui::MenuItem("Reset Layout"))
@@ -968,6 +1980,23 @@ void Editor::DrawEditorToolbar()
     ImGui::SameLine(0.0f, 4.0f);
     if (EditorUI::ToolbarToggle("Snap", m_SnapEnabled, "Snap transforms to increments", ImVec2(52, 28)))
         m_SnapEnabled = !m_SnapEnabled;
+    ImGui::SameLine(0.0f, 4.0f);
+    if (EditorUI::ToolbarToggle("Commands", m_CommandPalette.IsOpen(), "Command palette (Ctrl+P)", ImVec2(88, 28)))
+        m_CommandPalette.Open();
+    ImGui::SameLine(0.0f, 4.0f);
+    ImGui::BeginDisabled(m_UndoStack.empty());
+    if (ImGui::Button("Undo", ImVec2(52.0f, 28.0f)))
+        UndoTransform();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Undo the last transform edit (Ctrl+Z)");
+    ImGui::SameLine(0.0f, 4.0f);
+    ImGui::BeginDisabled(m_RedoStack.empty());
+    if (ImGui::Button("Redo", ImVec2(52.0f, 28.0f)))
+        RedoTransform();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Redo the last transform edit (Ctrl+Shift+Z)");
 
     const f32 controlsWidth = 28.0f * 3.0f + 6.0f * 2.0f + 10.0f + 48.0f;
     f32 controlsX = (ImGui::GetWindowWidth() - controlsWidth) * 0.5f;
@@ -999,7 +2028,18 @@ void Editor::DrawEditorToolbar()
         OnScreenStep();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Advance one frame while paused (F7)");
+        ImGui::SetTooltip("Advance one simulation tick while paused (F7)");
+
+    if (playing || paused)
+    {
+        // Issue #49: simulated time is counted in ticks, independent of FPS.
+        const SimulationClock& clock = m_ActiveScene->GetSimulationClock();
+        ImGui::SameLine(0.0f, 10.0f);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f);
+        ImGui::TextDisabled("tick %llu", static_cast<unsigned long long>(clock.GetTickIndex()));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%.3f s simulated at %.0f Hz", clock.GetSimulatedSeconds(), 1.0 / clock.GetFixedStep());
+    }
 
     const char* stateLabel = "Editing";
     ImVec4 stateColor = EditorTheme::ConsoleInfo();
@@ -1102,20 +2142,39 @@ void Editor::DrawStatusBar()
     ImGui::SameLine(0.0f, 8.0f);
     ImGui::TextUnformatted(m_CurrentScenePath.empty() ? "Untitled Scene" : m_CurrentScenePath.filename().string().c_str());
 
+    if (m_Project)
+    {
+        ImGui::SameLine(0.0f, 10.0f);
+        EditorUI::Separator();
+        ImGui::SameLine(0.0f, 10.0f);
+        ImGui::TextDisabled("Project: %s", m_Project->Name.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s\nAssets: %s", m_Project->RootPath.string().c_str(),
+                              m_Project->AssetPath.string().c_str());
+    }
+
     ImGui::SameLine(0.0f, 10.0f);
     EditorUI::Separator();
     ImGui::SameLine(0.0f, 10.0f);
     ImGui::TextDisabled("Entities: %zu", m_ActiveScene ? m_ActiveScene->GetRegistry().view<entt::entity>().size() : 0);
 
     ImGui::SameLine(0.0f, 12.0f);
-    if (m_HoverdEntity && m_HoverdEntity.HasComponent<TagComponent>())
+    if (m_SceneHireacyPanel.GetSelectedEntity() &&
+        m_SceneHireacyPanel.GetSelectedEntity().HasComponent<TagComponent>())
+        ImGui::TextDisabled("Selected: %s",
+                            m_SceneHireacyPanel.GetSelectedEntity().GetComponent<TagComponent>().Tag.c_str());
+    else if (m_HoverdEntity && m_HoverdEntity.HasComponent<TagComponent>())
         ImGui::TextDisabled("Hover: %s", m_HoverdEntity.GetComponent<TagComponent>().Tag.c_str());
     else
         ImGui::TextDisabled("Hover: -");
 
-    ImGui::SameLine(ImGui::GetWindowWidth() - 190.0f);
-    ImGui::TextDisabled("%.0f FPS  |  %.2f ms", ImGui::GetIO().Framerate,
-                        1000.0f / (ImGui::GetIO().Framerate > 0.0f ? ImGui::GetIO().Framerate : 1.0f));
+    char performance[128];
+    const float fps = ImGui::GetIO().Framerate;
+    std::snprintf(performance, sizeof(performance), "%.0f FPS  |  %.2f ms  |  %s", fps,
+                  1000.0f / (fps > 0.0f ? fps : 1.0f), EditorTheme::GetName(EditorTheme::GetSelected()));
+    const float performanceWidth = ImGui::CalcTextSize(performance).x;
+    ImGui::SameLine(ImGui::GetWindowWidth() - performanceWidth - 12.0f);
+    ImGui::TextDisabled("%s", performance);
 
     ImGui::EndChild();
 }
@@ -1141,6 +2200,34 @@ void Editor::DrawPreferencesContent()
         Scene::GetShowLightIcons() = showLightIcons;
     ImGui::Checkbox("Snap Transforms", &m_SnapEnabled);
     ImGui::Checkbox("World-space Gizmos", &m_GizmoSpaceWorld);
+
+    EditorUI::SectionHeader("Viewport");
+    float cameraSpeed = m_EditorCamera.GetSpeedMultiplier();
+    if (ImGui::SliderFloat("Camera Speed", &cameraSpeed, 0.1f, 5.0f, "%.2fx"))
+        m_EditorCamera.SetSpeedMultiplier(cameraSpeed);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Pan, orbit and zoom sensitivity (also in the viewport HUD).");
+
+    static const char* kSnapLabels[] = {"0.1", "0.25", "0.5", "1", "2", "5", "10"};
+    static const float kSnapValues[] = {0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f};
+    int snapIndex = 2;
+    for (int i = 0; i < 7; ++i)
+    {
+        if (std::abs(kSnapValues[i] - m_SnapValue) < 0.001f)
+        {
+            snapIndex = i;
+            break;
+        }
+    }
+    if (ImGui::Combo("Snap Increment", &snapIndex, kSnapLabels, 7))
+        m_SnapValue = kSnapValues[snapIndex];
+
+    ImGui::Checkbox("Viewport Overlay", &m_ShowViewportOverlay);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Tool badges, orientation gizmo and camera controls drawn over the viewport.");
+    ImGui::SameLine();
+    if (ImGui::Button("Focus Selected (F)"))
+        FocusSelectedEntity();
 
     EditorUI::SectionHeader("Appearance");
     const char* themeLabel = EditorTheme::GetName(EditorTheme::GetSelected());
@@ -1177,6 +2264,49 @@ void Editor::DrawPreferencesContent()
         m_ResetLayout = true;
     ImGui::SameLine();
     ImGui::Checkbox("Fullscreen Viewport", &m_IsViewportFullScreen);
+
+    if (m_Project)
+    {
+        EditorUI::SectionHeader("Project");
+        ImGui::TextDisabled("%s", m_Project->Name.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s\nAssets: %s", m_Project->RootPath.string().c_str(),
+                              m_Project->AssetPath.string().c_str());
+
+        // Start scene, relative to the project root (like a default map).
+        char startScene[256];
+        std::snprintf(startScene, sizeof(startScene), "%s", m_Project->StartScene.c_str());
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputTextWithHint("##StartScene", "Assets/Scenes/Main.unhuman", startScene, sizeof(startScene),
+                                     ImGuiInputTextFlags_EnterReturnsTrue))
+        {
+            m_Project->StartScene = startScene;
+            std::string error;
+            if (!Project::Save(*m_Project, &error))
+                UHE_CORE_WARN("Could not save the project manifest: {0}", error);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Opened automatically the next time this project is opened");
+
+        const bool canUseCurrentScene = !m_CurrentScenePath.empty();
+        ImGui::BeginDisabled(!canUseCurrentScene);
+        if (ImGui::Button("Use Current Scene") && canUseCurrentScene)
+        {
+            std::error_code ec;
+            std::filesystem::path relative = std::filesystem::relative(m_CurrentScenePath, m_Project->RootPath, ec);
+            m_Project->StartScene = ec ? m_CurrentScenePath.string() : relative.generic_string();
+            std::string error;
+            if (!Project::Save(*m_Project, &error))
+                UHE_CORE_WARN("Could not save the project manifest: {0}", error);
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Save the current scene inside the project first");
+
+        ImGui::SameLine();
+        if (ImGui::Button("Close Project"))
+            CloseProject();
+    }
 
     EditorUI::SectionHeader("About");
     ImGui::TextDisabled("Unhuman Engine (UHE) - Editor");

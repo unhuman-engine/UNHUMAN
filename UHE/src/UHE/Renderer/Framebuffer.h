@@ -62,10 +62,11 @@ namespace UHE {
 
 		void Resize(uint32_t width, uint32_t height);
 		int ReadPixel(uint32_t attachmentIndex, int x, int y);
+        /// @brief Picking without a stall: queues a read of (x, y) and returns
+        /// the newest finished one (a few frames old), or -1 before the first.
+        int ReadPixelAsync(uint32_t attachmentIndex, int x, int y);
 
-		void ClearAttachment(uint32_t attachmentIndex, int value);
-
-		void* GetColorAttachmentRendererID(uint32_t index = 0) const;
+        void* GetColorAttachmentRendererID(uint32_t index = 0) const;
 
 		const FramebufferSpecification& GetSpecification() const { return m_Specification; }
         

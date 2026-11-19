@@ -45,12 +45,5 @@ private:
     vk::raii::Queue m_graphicsQueue = nullptr;
     vk::raii::SurfaceKHR surface = nullptr;
     VmaAllocator m_allocator = nullptr;
-
-    // \todo Dead member — device-extension selection is done in initialize(). Either
-    //       wire it in or delete it (tracked in docs/ROADMAP.md).
-    std::vector<const char*> requiredDeviceExtension = {
-        vk::KHRSwapchainExtensionName,           vk::KHRSpirv14ExtensionName,
-        vk::KHRSynchronization2ExtensionName,    vk::KHRCreateRenderpass2ExtensionName,
-        vk::KHRShaderFloatControlsExtensionName, vk::KHRDynamicRenderingExtensionName};
 };
 } // namespace UHE::RHI::VULKAN

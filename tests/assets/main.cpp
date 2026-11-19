@@ -3,8 +3,8 @@
 // Exercises UUID identity uniqueness, the AssetManager registry (path-to-ID dedup,
 // refcounted handles, lifecycle state machine, synchronous and asynchronous worker loading,
 // hot reload polling), and VFS mount resolution.
-#include "UHE/AssestsManager/AssetManager.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/AssetManager.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/UUID.h"
 #include "UHE/Jobsystem/Jobsystem.h"
 
@@ -164,6 +164,55 @@ static void TestAsyncLoad()
     fs::remove_all(dir);
 }
 
+// A load that failed must be retryable: the file may simply not have been
+// there yet (an export still being written, a path fixed by the user).
+static void TestAsyncRetryAfterFailure()
+{
+    std::cout << "[async retry after failure]\n";
+    fs::path dir = MakeTempDir();
+    fs::path file = dir / "late.bin";
+
+    Jobsystem::UheJobsystem jobs;
+    jobs.Init();
+    auto& manager = AssetManager::Get();
+    manager.SetJobsystem(&jobs);
+
+    const auto waitFor = [&](const bool& fired)
+    {
+        for (int i = 0; i < 1000 && !fired; ++i)
+        {
+            manager.Update();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    };
+
+    bool firstFired = false;
+    bool firstOk = true;
+    AssetHandle<BinaryAsset> first = manager.LoadAsync<BinaryAsset>(
+        file.string(), [&](AssetID, bool ok) { firstFired = true; firstOk = ok; });
+    waitFor(firstFired);
+    CHECK(firstFired && !firstOk, "loading a missing file reports failure");
+
+    WriteFile(file, std::string(64, 'x'));
+
+    bool retryFired = false;
+    bool retryOk = false;
+    AssetHandle<BinaryAsset> retry = manager.LoadAsync<BinaryAsset>(
+        file.string(), [&](AssetID, bool ok) { retryFired = true; retryOk = ok; });
+    CHECK(retry.ID() == first.ID(), "the retry reuses the record");
+    waitFor(retryFired);
+    CHECK(retryFired && retryOk, "the retry reports success once the file exists");
+    CHECK(retry.IsValid() && retry.Get() && retry.Get()->Bytes.size() == 64,
+          "and its handle holds the decoded, finalized data");
+
+    first = AssetHandle<BinaryAsset>();
+    retry = AssetHandle<BinaryAsset>();
+    manager.SetJobsystem(nullptr);
+    jobs.ShutDown();
+    manager.UnloadUnused();
+    fs::remove_all(dir);
+}
+
 static void TestUnloadWithLiveHandle()
 {
     std::cout << "[unload]\n";
@@ -280,6 +329,7 @@ int main(int argc, char** argv)
     TestSyncLoad();
     TestFailedLoad();
     TestAsyncLoad();
+    TestAsyncRetryAfterFailure();
     TestUnloadWithLiveHandle();
     TestHotReload();
     TestVfs();

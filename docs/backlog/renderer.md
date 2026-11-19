@@ -86,7 +86,7 @@ Status vocabulary as above. Loader lives in `UHE/src/UHE/Renderer3D/LoadModel.{h
 
 ## Shader system
 
-- [ ] Shader system with SPIR-V generation via Slang — **PARTIAL** — `SlangCompiler.{h,cpp}` + `Shader.{h,cpp}` compile and load; `Platform/Vulkan/ShaderSystem/VulkanShaderManager.{h,cpp}` is an unreferenced stub
+- [ ] Shader system with SPIR-V generation via Slang — **PARTIAL** — `SlangCompiler.{h,cpp}` + `Shader.{h,cpp}` compile and load; the unreferenced `VulkanShaderManager` stub was deleted; `ShaderCache` is the live path
 - [ ] Hot reload for shaders — **TODO** — assets doc §2.7
 
 ## Render graph

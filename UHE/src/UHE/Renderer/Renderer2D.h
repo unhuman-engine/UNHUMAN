@@ -17,6 +17,14 @@ namespace UHE {
 		static void Init();
 		static void Shutdown();
 
+		/// Rebuilds every shader module and pipeline from the library's current bytes.
+		///
+		/// The shader library calls this when a source changes on disk, and the
+		/// editor's Reload Shaders command calls it directly. Waits for the device
+		/// to be idle first: frames already queued reference the objects being
+		/// replaced.
+		static void ReloadShaders();
+
 		static void BeginScene(const Camera& camera, const glm::mat4& transform);
 		static void BeginScene(const EditorCamera& camera);
 		static void EndScene();
@@ -51,6 +59,11 @@ namespace UHE {
 	private:
 		static void StartBatch();
 		static void NextBatch();
+
+		// Creates and destroys the shader modules and the pipelines built from
+		// them; the two are re-created together on reload.
+		static void CreateShaderResources();
+		static void DestroyShaderResources();
 	};
 
 }

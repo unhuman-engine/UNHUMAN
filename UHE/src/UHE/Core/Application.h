@@ -41,8 +41,8 @@ namespace UHE {
 		bool m_Minimized = false;
 
 		LayerStack m_LayerStack;
-		float m_LastFrameTime = 0.0f;
-	private:
+        double m_LastFrameTime = 0.0; ///< @brief glfwGetTime() at the last frame.
+    private:
 		
 		
 

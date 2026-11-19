@@ -309,6 +309,17 @@ public:
     {
         CalculateOffsetsAndStride();
     }
+
+    /// Appends an element and re-derives the offsets and stride.
+    ///
+    /// For a layout that comes from a shader's reflection at runtime rather than
+    /// from a list written out in the source.
+    void PushElement(const BufferElement& element)
+    {
+        m_Elements.push_back(element);
+        CalculateOffsetsAndStride();
+    }
+
     inline u32 GetStride() const { return m_Stride; }
     inline const std::vector<BufferElement>& GetElements() const { return m_Elements; }
 

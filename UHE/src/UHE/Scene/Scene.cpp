@@ -5,12 +5,15 @@
 #include "Components.h"
 #include "Entity.h"
 #include "ScriptableEntity.h"
+#include "UHE/Scripting/ScriptEngine.h"
 #include "UHE/Core/UUID.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Renderer3D/AnimationStateMachine.h"
 #include "UHE/Renderer2D/SubTexture2D.h"
 #include "UHE/Renderer3D/LightSystem.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
+#include "UHE/Audio/AudioEngine.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
@@ -38,6 +41,8 @@ Scene::Scene()
     m_registry.storage<TextComponent>();
     m_registry.storage<SpriteAnimationComponent>();
     m_registry.storage<NativeScriptComponent>();
+    m_registry.storage<ScriptComponent>();
+    m_registry.storage<AudioSourceComponent>();
     m_registry.storage<RigidBody2DComponent>();
     m_registry.storage<BoxColliderComponent>();
     m_registry.storage<Model3DComponent>();
@@ -53,7 +58,18 @@ Scene::~Scene()
 {
     // Issue #17 lifetime fix: release script instances before the registry
     // dies so OnDestroy() can still access components and handles safely.
+    ScriptEngine::Get().OnSceneStop(*this);
     DestroyScriptInstances();
+    StopAudioSources();
+
+    // A scene destroyed in play mode (closed, or replaced) never reaches
+    // OnRuntimeStop; its Box2D world would leak. The Jolt world is released by
+    // PhysicsSystem3D's destructor.
+    if (b2World_IsValid(m_PhysicsWorldId))
+    {
+        b2DestroyWorld(m_PhysicsWorldId);
+        m_PhysicsWorldId = b2_nullWorldId;
+    }
 }
 
 void Scene::DestroyScriptInstances()
@@ -169,6 +185,25 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
             dst.DestroyScript = src.DestroyScript;
         }
 
+        // Copy ScriptComponent. RuntimeIndex is deliberately not copied: the copy
+        // gets its own instance the first time it is updated.
+        if (srcRegistry.all_of<ScriptComponent>(srcEntity))
+        {
+            auto& src = srcRegistry.get<ScriptComponent>(srcEntity);
+            auto& dst = newEntity.AddComponent<ScriptComponent>();
+            dst.ScriptPath = src.ScriptPath;
+            dst.Enabled = src.Enabled;
+            dst.RuntimeIndex = 0xFFFFFFFFu;
+        }
+
+        // Copy AudioSourceComponent. Runtime handles are deliberately not copied:
+        // the simulation owns its own voices.
+        if (srcRegistry.all_of<AudioSourceComponent>(srcEntity))
+        {
+            auto& src = srcRegistry.get<AudioSourceComponent>(srcEntity);
+            newEntity.AddComponent<AudioSourceComponent>() = src;
+        }
+
         // Copy RigidBody2DComponent
         if (srcRegistry.all_of<RigidBody2DComponent>(srcEntity))
         {
@@ -225,6 +260,9 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
             dst.RootMotion = src.RootMotion;
             dst.CrossFadeDuration = src.CrossFadeDuration;
             dst.SkinIndex = src.SkinIndex;
+            // The authored graph is copied; its compiled runtime is rebuilt by
+            // the first update of the new scene.
+            dst.Graph = src.Graph;
             // Note: Animator itself needs to be recreated since it depends on the ModelData instance,
             // but we can just share it or let it re-initialize in OnUpdate. We'll copy the ref.
             dst.Animator = src.Animator;
@@ -374,10 +412,20 @@ void Scene::DestroyEntity(Entity entity)
 {
     std::unordered_set<u64> visited;
     auto destroyRecursive = [&](Entity e, auto& self) -> void {
-        if (!e) return;
+        if (!e || !m_registry.valid(e)) return;
         u64 uuid = e.GetUUID();
         if (visited.find(uuid) != visited.end()) return;
         visited.insert(uuid);
+
+        // A Lua script's instance holds the entity handle: stop it while the
+        // entity is still valid, so OnDestroy can still touch components.
+        if (e.HasComponent<ScriptComponent>())
+        {
+            ScriptEngine::Get().OnEntityDestroyed(*this, static_cast<u32>(static_cast<entt::id_type>(e)));
+            // OnDestroy may have destroyed this entity itself (self:Destroy()),
+            // through a nested DestroyEntity that already did the rest.
+            if (!m_registry.valid(e)) return;
+        }
 
         // Issue #17 lifetime fix: destroy the script instance (OnDestroy + delete)
         // BEFORE the registry handle dies, or it leaks and keeps a dangling Entity.
@@ -424,6 +472,13 @@ void Scene::DestroyEntity(Entity entity)
         }
 
         UnindexEntity(uuid);
+        if (e.HasComponent<AudioSourceComponent>())
+        {
+            AudioSourceComponent& audio = e.GetComponent<AudioSourceComponent>();
+            if (audio.RuntimeHandle != 0)
+                Audio::AudioEngine::Stop(audio.RuntimeHandle);
+            audio.RuntimeHandle = 0;
+        }
         m_registry.destroy(e);
     };
 
@@ -860,32 +915,181 @@ void Scene::OnUpdateEditorSimulation(Timestep ts)
             nsc.Instance->OnUpdate(ts);
         });
 
+    // Lua scripts run alongside the native ones, on the same step. The poll
+    // before it is what makes an edit on disk show up without a restart.
+    ScriptEngine::Get().Tick(*this);
+    ScriptEngine::Get().Update(*this, ts);
+
+    StepAnimators(ts);
+    UpdateAudioSources(ts, false);
+}
+
+void Scene::StepAnimators(Timestep ts)
+{
+    UHE_PROFILE_FUNCTION();
+
+    auto view = m_registry.view<AnimatorComponent>();
+    for (auto entity : view)
     {
-        auto view = m_registry.view<AnimatorComponent>();
-        for (auto entity : view)
+        auto& anim = view.get<AnimatorComponent>(entity);
+        if (!anim.Animator)
+            continue;
+
+        const bool graphActive = anim.Graph.Enabled && !anim.Graph.States.empty();
+
+        if (graphActive)
         {
-            auto& anim = view.get<AnimatorComponent>(entity);
-            if (anim.Animator)
+            const u64 graphHash = HashGraph(anim.Graph);
+            if (!anim.GraphRuntime || anim.GraphRuntimeHash != graphHash)
             {
-                // Synchronize component playback parameters with the runtime Animator
-                anim.Animator->SetLoopMode(anim.LoopMode);
-                anim.Animator->SetReversed(anim.Reverse);
-                anim.Animator->SetRootMotionEnabled(anim.RootMotion);
-                if (anim.Animator->GetSkinIndex() != anim.SkinIndex)
-                    anim.Animator->SetSkin(anim.SkinIndex);
-                if (anim.IsPlaying)
+                anim.GraphRuntime = BuildStateMachine(anim.Graph);
+                anim.GraphRuntimeHash = graphHash;
+
+                const int entry =
+                    std::clamp(anim.Graph.EntryState, 0, static_cast<int>(anim.Graph.States.size()) - 1);
+                const AnimationGraphState& entryState = anim.Graph.States[static_cast<std::size_t>(entry)];
+                anim.GraphRuntime->Enter(entryState.Name, *anim.Animator, 0.0f);
+                if (!entryState.Clip.empty())
+                    anim.CurrentAnimationName = entryState.Clip;
+            }
+
+            SyncStateMachineParameters(anim.Graph, *anim.GraphRuntime);
+            anim.GraphRuntime->Update(*anim.Animator);
+
+            // The machine owns cross-fades; mirror its state's clip so the
+            // component (and the saved scene) shows what is actually playing.
+            const std::string& stateName = anim.GraphRuntime->GetCurrentState();
+            for (const AnimationGraphState& state : anim.Graph.States)
+            {
+                if (state.Name == stateName)
                 {
-                    anim.Animator->UpdateAnimation(ts * anim.PlaybackSpeed);
-                    if (anim.RootMotion && m_registry.all_of<TransformComponent>(entity))
-                    {
-                        // Apply root motion displacement delta to entity transform
-                        auto& tc = m_registry.get<TransformComponent>(entity);
-                        tc.Translation += anim.Animator->GetRootMotionDelta();
-                    }
+                    if (!state.Clip.empty())
+                        anim.CurrentAnimationName = state.Clip;
+                    break;
                 }
             }
         }
+        else
+        {
+            anim.Animator->SetLoopMode(anim.LoopMode);
+        }
+
+        anim.Animator->SetReversed(anim.Reverse);
+        anim.Animator->SetRootMotionEnabled(anim.RootMotion);
+        if (anim.Animator->GetSkinIndex() != anim.SkinIndex)
+            anim.Animator->SetSkin(anim.SkinIndex);
+
+        // An enabled graph owns playback: it is what drives the state machine,
+        // so it keeps ticking even when the legacy IsPlaying flag is off.
+        if (anim.IsPlaying || graphActive)
+        {
+            // The compiled machine sets the animation's time scale from the
+            // state speed, so only the component-wide multiplier is applied here.
+            anim.Animator->UpdateAnimation(ts * anim.PlaybackSpeed);
+            if (anim.RootMotion && m_registry.all_of<TransformComponent>(entity))
+            {
+                auto& tc = m_registry.get<TransformComponent>(entity);
+                tc.Translation += anim.Animator->GetRootMotionDelta();
+            }
+        }
     }
+}
+
+void Scene::UpdateAudioSources(Timestep, bool runtime)
+{
+    auto view = m_registry.view<TransformComponent, AudioSourceComponent>();
+    for (auto handle : view)
+    {
+        auto [transform, audio] = view.get<TransformComponent, AudioSourceComponent>(handle);
+        Entity entity{handle, this};
+
+        if (audio.RuntimeHandle != 0 && !Audio::AudioEngine::IsValid(audio.RuntimeHandle))
+        {
+            audio.RuntimeHandle = 0;
+            audio.RuntimePlaying = false;
+        }
+
+        auto startVoice = [&]()
+        {
+            if (audio.SoundPath.empty())
+                return;
+
+            Audio::SoundOptions options;
+            options.Volume = audio.Muted ? 0.0f : audio.Volume;
+            options.Pitch = audio.Pitch;
+            options.Pan = audio.Pan;
+            options.Loop = audio.Loop;
+            options.Spatial = audio.Spatial;
+            options.MinDistance = audio.MinDistance;
+            options.MaxDistance = audio.MaxDistance;
+            options.Rolloff = audio.Rolloff;
+            if (audio.Spatial)
+                options.Position = glm::vec3(GetWorldSpaceTransformMatrix(entity)[3]);
+
+            audio.RuntimeHandle = Audio::AudioEngine::Play(audio.SoundPath, options);
+            audio.RuntimePlaying = audio.RuntimeHandle != 0;
+        };
+
+        if (audio.StopRequested)
+        {
+            audio.StopRequested = false;
+            if (audio.RuntimeHandle != 0)
+                Audio::AudioEngine::Stop(audio.RuntimeHandle);
+            audio.RuntimeHandle = 0;
+            audio.RuntimePlaying = false;
+        }
+
+        if (audio.PlayRequested)
+        {
+            audio.PlayRequested = false;
+            if (audio.RuntimeHandle != 0)
+                Audio::AudioEngine::Stop(audio.RuntimeHandle);
+            startVoice();
+        }
+
+        if (runtime && audio.Autoplay && !audio.RuntimeAutoStarted)
+        {
+            audio.RuntimeAutoStarted = true;
+            if (audio.RuntimeHandle == 0)
+                startVoice();
+        }
+
+        if (audio.RuntimeHandle == 0 || !audio.RuntimePlaying)
+            continue;
+
+        Audio::AudioEngine::SetVolume(audio.RuntimeHandle, audio.Muted ? 0.0f : audio.Volume);
+        Audio::AudioEngine::SetPitch(audio.RuntimeHandle, audio.Pitch);
+        Audio::AudioEngine::SetLooping(audio.RuntimeHandle, audio.Loop);
+
+        if (audio.Spatial)
+        {
+            Audio::AudioEngine::SetPosition(audio.RuntimeHandle, glm::vec3(GetWorldSpaceTransformMatrix(entity)[3]));
+            Audio::AudioEngine::SetMinMaxDistance(audio.RuntimeHandle, audio.MinDistance, audio.MaxDistance);
+            Audio::AudioEngine::SetRolloff(audio.RuntimeHandle, audio.Rolloff);
+        }
+        else
+        {
+            Audio::AudioEngine::SetPan(audio.RuntimeHandle, audio.Pan);
+        }
+
+        if (!Audio::AudioEngine::IsPlaying(audio.RuntimeHandle))
+            audio.RuntimePlaying = false; // finished or paused
+    }
+}
+
+void Scene::StopAudioSources()
+{
+    m_registry.view<AudioSourceComponent>().each(
+        [](entt::entity, AudioSourceComponent& audio)
+        {
+            if (audio.RuntimeHandle != 0)
+                Audio::AudioEngine::Stop(audio.RuntimeHandle);
+            audio.RuntimeHandle = 0;
+            audio.RuntimePlaying = false;
+            audio.RuntimeAutoStarted = false;
+            audio.PlayRequested = false;
+            audio.StopRequested = false;
+        });
 }
 
 void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera)
@@ -999,7 +1203,10 @@ void Scene::UpdateWorldTransformCache()
         stack.pop_back();
 
         glm::mat4 world = entry.parentWorld;
-        if (entry.entity.HasComponent<TransformComponent>())
+        const auto blended = m_RenderLocalOverride.find(static_cast<entt::entity>(entry.entity));
+        if (blended != m_RenderLocalOverride.end())
+            world = entry.parentWorld * blended->second; // issue #49 render interpolation
+        else if (entry.entity.HasComponent<TransformComponent>())
             world = entry.parentWorld * entry.entity.GetComponent<TransformComponent>().GetTransform();
 
         m_WorldTransformCache[(entt::entity)entry.entity] = world;
@@ -1203,7 +1410,7 @@ void Scene::OnUpdateRuntime(Timestep ts)
     RenderRuntimeScene(ts);
 }
 
-void Scene::OnUpdateRuntimeSimulation(Timestep ts)
+void Scene::OnUpdateRuntimeSimulation(Timestep frame)
 {
     UHE_PROFILE_FUNCTION();
     // Issue #17 hardening: apply hierarchy mutations deferred from the editor
@@ -1212,51 +1419,70 @@ void Scene::OnUpdateRuntimeSimulation(Timestep ts)
     FlushPendingCollapses();
     FlushPendingModelOps();
 
+    // Hot reload is polled per frame, not per tick: it watches the disk.
+    ScriptEngine::Get().Tick(*this);
+
+    // Issue #49: the simulation advances in fixed ticks, however long this
+    // frame took. A slow frame runs several; a fast one may run none.
+    const u32 ticks = m_SimulationClock.Advance(frame.GetSeconds());
+    for (u32 i = 0; i < ticks; ++i)
     {
-        auto view = m_registry.view<AnimatorComponent>();
-        for (auto entity : view)
-        {
-            auto& anim = view.get<AnimatorComponent>(entity);
-            if (anim.Animator)
-            {
-                // Synchronize component playback parameters with the runtime Animator
-                anim.Animator->SetLoopMode(anim.LoopMode);
-                anim.Animator->SetReversed(anim.Reverse);
-                anim.Animator->SetRootMotionEnabled(anim.RootMotion);
-                if (anim.Animator->GetSkinIndex() != anim.SkinIndex)
-                    anim.Animator->SetSkin(anim.SkinIndex);
-                if (anim.IsPlaying)
-                {
-                    anim.Animator->UpdateAnimation(ts * anim.PlaybackSpeed);
-                    if (anim.RootMotion && m_registry.all_of<TransformComponent>(entity))
-                    {
-                        // Apply root motion displacement delta to entity transform
-                        auto& tc = m_registry.get<TransformComponent>(entity);
-                        tc.Translation += anim.Animator->GetRootMotionDelta();
-                    }
-                }
-            }
-        }
+        StepSimulation();
+    }
+    m_InterpolateRender = true;
+
+    // Presentation runs on the render delta: animation playback and audio
+    // follow wall-clock time, and neither feeds back into the simulation.
+    StepAnimators(frame);
+    UpdateAudioSources(frame, true);
+
+    // Issue #17: world transforms are refreshed in RenderRuntimeScene so the
+    // graph path also sees UI/script changes made after this step.
+}
+
+void Scene::StepSimulation()
+{
+    UHE_PROFILE_FUNCTION();
+    const Timestep dt(static_cast<float>(m_SimulationClock.GetFixedStep()));
+
+    // A manual step can arrive without a frame (editor Step, a headless server).
+    FlushPendingReparents();
+    FlushPendingCollapses();
+    FlushPendingModelOps();
+
+    // The pose before this tick, for render interpolation. Only bodies move
+    // between ticks without the user asking; everything else draws as is.
+    m_PreviousTickPose.clear();
+    {
+        auto bodies2d = m_registry.view<TransformComponent, RigidBody2DComponent>();
+        for (auto entity : bodies2d)
+            m_PreviousTickPose.emplace(entity, bodies2d.get<TransformComponent>(entity));
+        auto bodies3d = m_registry.view<TransformComponent, RigidBody3DComponent>();
+        for (auto entity : bodies3d)
+            m_PreviousTickPose.emplace(entity, bodies3d.get<TransformComponent>(entity));
     }
 
-    {
-        m_registry.view<NativeScriptComponent>().each(
-            [=, this](auto entity, auto& nsc)
+    m_registry.view<NativeScriptComponent>().each(
+        [=, this](auto entity, auto& nsc)
+        {
+            if (!nsc.Instance)
             {
-                if (!nsc.Instance)
-                {
-                    nsc.Instance = nsc.InstantiateScript();
-                    nsc.Instance->m_Entity = Entity{entity, this};
-                    nsc.Instance->OnCreate();
-                }
-                nsc.Instance->OnUpdate(ts);
-            });
-    }
+                nsc.Instance = nsc.InstantiateScript();
+                nsc.Instance->m_Entity = Entity{entity, this};
+                nsc.Instance->OnCreate();
+            }
+            nsc.Instance->OnUpdate(dt);
+        });
+
+    // Lua scripts run alongside the native ones, with the same fixed dt: a
+    // controller written against dt behaves identically at any frame rate.
+    ScriptEngine::Get().Update(*this, dt);
 
     // Physics
+    if (b2World_IsValid(m_PhysicsWorldId))
     {
         const int subStepCount = 4;
-        b2World_Step(m_PhysicsWorldId, ts, subStepCount);
+        b2World_Step(m_PhysicsWorldId, dt, subStepCount);
 
         // Retrieve transforms from Box2D
         auto view = m_registry.view<TransformComponent, RigidBody2DComponent>();
@@ -1274,11 +1500,12 @@ void Scene::OnUpdateRuntimeSimulation(Timestep ts)
             b2Rot rotation = b2Body_GetRotation(rb2d.RuntimeBody);
             transform.Rotation.z = b2Rot_GetAngle(rotation);
         }
+    }
 
-        // 3D Physics Jolt
-        m_PhysicsSystem3D.Update(ts);
-        JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface();
-
+    // 3D Physics Jolt
+    m_PhysicsSystem3D.Update(dt);
+    if (JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface())
+    {
         auto view3d = m_registry.view<TransformComponent, RigidBody3DComponent>();
         for (auto entity : view3d)
         {
@@ -1300,15 +1527,38 @@ void Scene::OnUpdateRuntimeSimulation(Timestep ts)
         }
     }
 
-    // Issue #17: refresh world transforms after scripts/physics so rendering
-    // uses this frame's final transforms. Done in RenderRuntimeScene so the
-    // graph path sees UI/script changes made after the simulation step.
+    m_SimulationClock.OnTickCompleted();
+    // A manual step shows exactly the tick it produced; the next frame-driven
+    // update turns blending back on.
+    m_InterpolateRender = false;
 }
 
 void Scene::RenderRuntimeScene(Timestep ts)
 {
     UHE_PROFILE_FUNCTION();
+
+    // Issue #49: blend physics-driven bodies from their pose before the last
+    // tick to their current one. The blend only feeds this world-cache build;
+    // TransformComponent keeps the simulated state.
+    m_RenderLocalOverride.clear();
+    if (m_InterpolateRender && !m_PreviousTickPose.empty())
+    {
+        const float alpha = m_SimulationClock.Alpha();
+        for (const auto& [entity, previous] : m_PreviousTickPose)
+        {
+            if (!m_registry.valid(entity) || !m_registry.all_of<TransformComponent>(entity))
+                continue;
+            const TransformComponent& current = m_registry.get<TransformComponent>(entity);
+            const glm::vec3 translation = glm::mix(previous.Translation, current.Translation, alpha);
+            const glm::quat rotation = glm::slerp(glm::quat(previous.Rotation), glm::quat(current.Rotation), alpha);
+            const glm::vec3 scale = glm::mix(previous.Scale, current.Scale, alpha);
+            m_RenderLocalOverride.emplace(entity, glm::translate(glm::mat4(1.0f), translation) *
+                                                      glm::mat4_cast(rotation) *
+                                                      glm::scale(glm::mat4(1.0f), scale));
+        }
+    }
     UpdateWorldTransformCache();
+    m_RenderLocalOverride.clear();
 
     Camera* mainCamera = nullptr;
     glm::mat4 cameraTransform;
@@ -1343,6 +1593,31 @@ void Scene::RenderRuntimeScene(Timestep ts)
 
 void Scene::OnRuntimeStart()
 {
+    // Issue #49: every play session starts at tick 0 with an empty accumulator.
+    m_SimulationClock.Reset();
+    m_PreviousTickPose.clear();
+    m_InterpolateRender = false;
+
+    // Every play session starts the animation graphs from their entry state.
+    m_registry.view<AnimatorComponent>().each(
+        [](entt::entity, AnimatorComponent& anim)
+        {
+            anim.GraphRuntime.reset();
+            anim.GraphRuntimeHash = 0;
+        });
+
+    // Runtime audio is owned by the copied scene: the editor's preview handles
+    // stay with the editor scene and must not be shared with the simulation.
+    m_registry.view<AudioSourceComponent>().each(
+        [](entt::entity, AudioSourceComponent& audio)
+        {
+            audio.RuntimeHandle = 0;
+            audio.RuntimePlaying = false;
+            audio.RuntimeAutoStarted = false;
+            audio.PlayRequested = false;
+            audio.StopRequested = false;
+        });
+
     // 1. Define and Create the World
     b2WorldDef worldDef = b2DefaultWorldDef();
     worldDef.gravity = {0.0f, -9.8f};
@@ -1485,9 +1760,13 @@ void Scene::OnRuntimeStart()
 
 void Scene::OnRuntimeStop()
 {
+    m_PreviousTickPose.clear();
+    m_InterpolateRender = false;
+
     // Issue #17 lifetime fix: the runtime (play-mode) scene copy instantiated
     // its own script instances; release them before the copy is swapped out,
     // otherwise every play session leaked the whole instance set.
+    ScriptEngine::Get().OnSceneStop(*this);
     DestroyScriptInstances();
 
     if (b2World_IsValid(m_PhysicsWorldId))
@@ -1498,6 +1777,8 @@ void Scene::OnRuntimeStop()
 
     // 3D Physics
     m_PhysicsSystem3D.ShutdownScene();
+
+    StopAudioSources();
 }
 
 Entity Scene::GetPrimaryCameraEntity()
@@ -1520,7 +1801,10 @@ template <typename T> void Scene::OnComponentAdded(Entity entity, T& component)
 template <> void Scene::OnComponentAdded<TransformComponent>(Entity entity, TransformComponent& component) {}
 template <> void Scene::OnComponentAdded<CameraComponent>(Entity entity, CameraComponent& component)
 {
-    component.Camera.SetViewportSize(m_ViewportWidth, m_ViewportHeight);
+    // A scene can be created/deserialized before its viewport size is known;
+    // glm::perspective asserts on a zero aspect, so never hand it 0x0.
+    component.Camera.SetViewportSize(m_ViewportWidth > 0 ? m_ViewportWidth : 1,
+                                      m_ViewportHeight > 0 ? m_ViewportHeight : 1);
 }
 
 template <> void Scene::OnComponentAdded<TagComponent>(Entity entity, TagComponent& component) {}
@@ -1531,6 +1815,8 @@ template <> void Scene::OnComponentAdded<SpriteAnimationComponent>(Entity entity
 {
 }
 template <> void Scene::OnComponentAdded<NativeScriptComponent>(Entity entity, NativeScriptComponent& component) {}
+template <> void Scene::OnComponentAdded<ScriptComponent>(Entity entity, ScriptComponent& component) {}
+template <> void Scene::OnComponentAdded<AudioSourceComponent>(Entity entity, AudioSourceComponent& component) {}
 template <> void Scene::OnComponentAdded<RigidBody2DComponent>(Entity entity, RigidBody2DComponent& component) {}
 template <> void Scene::OnComponentAdded<BoxColliderComponent>(Entity entity, BoxColliderComponent& component) {}
 template <> void Scene::OnComponentAdded<IDComponent>(Entity entity, IDComponent& component) {};

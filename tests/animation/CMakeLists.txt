@@ -12,6 +12,7 @@ add_executable(animation_test
     # Real units under test
     ${SCENE_SRC_DIR}/Renderer3D/Animator.cpp
     ${SCENE_SRC_DIR}/Renderer3D/AnimationStateMachine.cpp
+    ${SCENE_SRC_DIR}/Animation/AnimationGraph.cpp
     ${SCENE_SRC_DIR}/Renderer3D/AnimationCompression.cpp
     ${SCENE_SRC_DIR}/Renderer3D/IKSolver.cpp
     ${SCENE_SRC_DIR}/Jobsystem/Jobsystem.cpp

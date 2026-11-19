@@ -133,9 +133,18 @@ int Framebuffer::ReadPixel(uint32_t attachmentIndex, int x, int y)
     return pixelData;
 }
 
-void Framebuffer::ClearAttachment(uint32_t attachmentIndex, int value)
+int Framebuffer::ReadPixelAsync(uint32_t attachmentIndex, int x, int y)
 {
-    // TODO: Implement clearing specific attachment
+    if (attachmentIndex >= m_ColorAttachments.size())
+        return -1;
+
+    if (x < 0 || y < 0 || x >= (int)m_Specification.Width || y >= (int)m_Specification.Height)
+        return -1;
+
+    int pixelData = -1;
+    if (!Renderer::GetDevice().ReadPixelAsync(m_ColorAttachments[attachmentIndex], x, y, &pixelData))
+        return -1;
+    return pixelData;
 }
 
 void* Framebuffer::GetColorAttachmentRendererID(uint32_t index) const

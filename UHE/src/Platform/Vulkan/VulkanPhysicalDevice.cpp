@@ -81,11 +81,27 @@ bool VulkanPhysicalDevice::IsDeviceSuitable(const vk::raii::PhysicalDevice& devi
                 { return strcmp(extensionProperties.extensionName, requiredDeviceExtensionName) == 0; });
         });
 
-    auto features = device.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
-                                        vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
+    auto features =
+        device.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
+                            vk::PhysicalDeviceVulkan13Features, vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
+
+    // The global descriptor set is bindless (runtime arrays, update-after-bind,
+    // partially bound) and every shader indexes it; there is no per-draw set
+    // fallback yet, so a device without these features cannot render at all.
+    // @todo #13: a legacy descriptor path, then relax this check.
+    const auto& v12 = features.get<vk::PhysicalDeviceVulkan12Features>();
+    const bool supportsBindless =
+        v12.descriptorIndexing && v12.runtimeDescriptorArray && v12.descriptorBindingPartiallyBound &&
+        v12.descriptorBindingStorageBufferUpdateAfterBind && v12.descriptorBindingSampledImageUpdateAfterBind &&
+        v12.shaderSampledImageArrayNonUniformIndexing;
+    if (!supportsBindless)
+    {
+        UHE_CORE_WARN("Vulkan: skipping '{}': no bindless descriptor indexing, which the renderer requires",
+                      device.getProperties().deviceName.data());
+    }
 
     bool supportsRequiredFeatures =
-        features.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
+        supportsBindless && features.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
         features.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
 
     return supportsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;

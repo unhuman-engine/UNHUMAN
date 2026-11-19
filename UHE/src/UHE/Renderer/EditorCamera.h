@@ -21,6 +21,19 @@ namespace UHE {
 		inline float GetDistance() const { return m_Distance; }
 		inline void SetDistance(float distance) { m_Distance = distance; }
 
+		// Orbit pivot. The editor uses it to focus the selected entity (F).
+		inline const glm::vec3& GetFocalPoint() const { return m_FocalPoint; }
+		inline void SetFocalPoint(const glm::vec3& focalPoint) { m_FocalPoint = focalPoint; UpdateView(); }
+		// Recentres the pivot on 'point' and pulls back to 'distance'.
+		void FocusOn(const glm::vec3& point, float distance);
+
+		// Multiplies pan/rotate/zoom sensitivity. 1.0 is the built-in speed.
+		inline float GetSpeedMultiplier() const { return m_SpeedMultiplier; }
+		inline void SetSpeedMultiplier(float multiplier)
+		{
+			m_SpeedMultiplier = multiplier < 0.05f ? 0.05f : (multiplier > 20.0f ? 20.0f : multiplier);
+		}
+
 		inline void SetViewportSize(float width, float height) { m_ViewportWidth = width; m_ViewportHeight = height; UpdateProjection(); }
 
 		const glm::mat4& GetViewMatrix() const { return m_ViewMatrix; }
@@ -61,6 +74,7 @@ namespace UHE {
 		glm::vec2 m_InitialMousePosition = { 0.0f, 0.0f };
 
 		float m_Distance = 10.0f;
+		float m_SpeedMultiplier = 1.0f;
 		float m_Pitch = 0.0f, m_Yaw = 0.0f;
 
 		float m_ViewportWidth = 1280, m_ViewportHeight = 720;

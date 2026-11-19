@@ -426,6 +426,18 @@ UHE/vendor/bin/
 build_debug/
 build-release/
 .agents/
+editor_projects.ini
+
+# Project content is local: a project ships its manifest and folder layout, the
+# assets a user imports/drops into Assets/ are not tracked.
+projects/*/Assets/*
+!projects/*/Assets/README.md
+
+# Shader artifacts: `uhe_shaderc` writes <stem>.<stage>.<variant>.spv next to
+# each .slang at build time (and hot reload rewrites them), so they are outputs,
+# not sources. The two Texture.*.spv committed before this were hand-built.
+UHE_EDITOR/assets/shaders/*.spv
+
 imgui.ini
 .worktrees/
 

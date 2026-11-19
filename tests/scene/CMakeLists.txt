@@ -14,10 +14,14 @@ add_executable(scene_test
     ${CMAKE_SOURCE_DIR}/tests/rendergraph/log_stub.cpp
     # Real units under test
     ${SCENE_SRC_DIR}/Scene/Scene.cpp
+    # Scene.cpp drives the Lua scripts attached to entities; the VM stays shut
+    # until a test calls Init(), which this harness does not.
+    ${SCENE_SRC_DIR}/Scripting/ScriptEngine.cpp
     ${SCENE_SRC_DIR}/Scene/SceneCamera.cpp
     ${SCENE_SRC_DIR}/Scene/Entity.cpp
     ${SCENE_SRC_DIR}/Core/UUID.cpp
-    ${SCENE_SRC_DIR}/AssestsManager/VfsSystem.cpp
+    ${SCENE_SRC_DIR}/Core/SimulationClock.cpp
+    ${SCENE_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${SCENE_SRC_DIR}/Physics/PhysicsSystem3D.cpp
     ${SCENE_SRC_DIR}/Math/Math.cpp
     ${SCENE_SRC_DIR}/Debug/TracySetup.cpp
@@ -27,6 +31,10 @@ add_executable(scene_test
     # Scene.cpp carries UHE_PROFILE_* scopes; Profiler.cpp is dependency-free
     # (std only), so the harness compiles the real TU instead of stubbing it.
     ${SCENE_SRC_DIR}/Debug/Profiler.cpp
+    # The scene step drives animation graphs; both are pure logic (the
+    # Animator they act on is stubbed in tests/scene/stubs.cpp).
+    ${SCENE_SRC_DIR}/Animation/AnimationGraph.cpp
+    ${SCENE_SRC_DIR}/Renderer3D/AnimationStateMachine.cpp
 )
 
 # Same include set as UHE (mirrors UHE/CMakeLists.txt) so the real TUs resolve
@@ -50,6 +58,8 @@ target_include_directories(scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/UHE/vendor/box2d/include
     ${CMAKE_SOURCE_DIR}/UHE/vendor/jolt
     ${CMAKE_SOURCE_DIR}/UHE/vendor/miniaudio
+    ${CMAKE_SOURCE_DIR}/UHE/vendor/sol2/include
+    ${CMAKE_SOURCE_DIR}/UHE/vendor/lua/src
 )
 
 target_compile_definitions(scene_test PRIVATE
@@ -70,7 +80,7 @@ target_compile_definitions(scene_test PRIVATE $<$<CONFIG:Debug>:UHE_DEBUG>)
 
 # Real box2d + Jolt + fastgltf (same vendored targets the engine uses;
 # fastgltf is needed for headers pulled in via Components.h -> LoadModel.h).
-target_link_libraries(scene_test PRIVATE box2d Jolt fastgltf::fastgltf Vulkan::Vulkan)
+target_link_libraries(scene_test PRIVATE box2d Jolt fastgltf::fastgltf Vulkan::Vulkan lua glfw)
 
 if(MSVC)
     target_compile_options(scene_test PRIVATE /utf-8)

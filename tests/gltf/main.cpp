@@ -587,9 +587,13 @@ fs::path writeAsset(const TempDir& dir, std::string_view name, const AssetSpec& 
         const float t = static_cast<float>(v) / static_cast<float>(Quad::kVertexCount);
         quadColors.push_back(t);        // R ramps 0 -> 1
         quadColors.push_back(1.0f - t); // G ramps 1 -> 0
+        // B for VEC3 and VEC4 alike: the block is copied as colorComponents
+        // floats per vertex, so a VEC3 colour that skipped B read past the end
+        // of this vector (ASan) and misaligned every vertex after the first.
+        if (spec.colorComponents >= 3)
+            quadColors.push_back(0.5f); // B constant, a canary
         if (spec.colorComponents >= 4)
         {
-            quadColors.push_back(0.5f); // B constant, a canary
             // Alpha VARIES per vertex. A constant 1 is indistinguishable from
             // hardcoding alpha to 1, which is the exact defect the VEC4 branch
             // exists to prevent.
