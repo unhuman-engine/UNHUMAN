@@ -222,10 +222,11 @@ void Editor::OnUpdate(UHE::Timestep ts)
             m_EditorCamera.OnUpdate(ts);
             if (m_StepRequested)
             {
-                if (graphMode)
-                    m_ActiveScene->OnUpdateRuntimeSimulation(ts);
-                else
-                    m_ActiveScene->OnUpdateRuntime(ts); // simulation + render
+                // Issue #49: a step is exactly one fixed simulation tick, not a
+                // frame of wall time, so stepping is reproducible.
+                m_ActiveScene->StepSimulation();
+                if (!graphMode)
+                    m_ActiveScene->RenderRuntimeScene(ts);
                 m_StepRequested = false;
             }
             else
@@ -1612,7 +1613,7 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
 
     add("Play", "Play", "F5", m_SceneState == SceneState::Edit, [this] { OnScreenPlay(); });
     add("Pause / Resume", "Play", "F6", m_SceneState != SceneState::Edit, [this] { OnScreenPause(); });
-    add("Step One Frame", "Play", "F7", m_SceneState == SceneState::Paused, [this] { OnScreenStep(); });
+    add("Step One Tick", "Play", "F7", m_SceneState == SceneState::Paused, [this] { OnScreenStep(); });
     add("Stop", "Play", "F5", m_SceneState != SceneState::Edit, [this] { OnSceneStop(); });
 
     add("Use Immediate Render Path", "Render", "", m_RenderPath != RenderPath::Immediate,
@@ -1859,7 +1860,18 @@ void Editor::DrawEditorToolbar()
         OnScreenStep();
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Advance one frame while paused (F7)");
+        ImGui::SetTooltip("Advance one simulation tick while paused (F7)");
+
+    if (playing || paused)
+    {
+        // Issue #49: simulated time is counted in ticks, independent of FPS.
+        const SimulationClock& clock = m_ActiveScene->GetSimulationClock();
+        ImGui::SameLine(0.0f, 10.0f);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f);
+        ImGui::TextDisabled("tick %llu", static_cast<unsigned long long>(clock.GetTickIndex()));
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%.3f s simulated at %.0f Hz", clock.GetSimulatedSeconds(), 1.0 / clock.GetFixedStep());
+    }
 
     const char* stateLabel = "Editing";
     ImVec4 stateColor = EditorTheme::ConsoleInfo();

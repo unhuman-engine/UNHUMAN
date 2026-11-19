@@ -100,8 +100,12 @@ void Start(Scene& scene)
     ScriptEngine::Get().OnSceneStart(scene);
 }
 
+/// Runs `times` frames of `dt`, each exactly one simulation tick of `dt`: the
+/// harness is a headless driver, so it sets the tick to the step it wants
+/// instead of feeding frames to the default 120 Hz clock.
 void Step(Scene& scene, float dt, int times = 1)
 {
+    scene.GetSimulationClock().SetFixedStep(dt);
     for (int i = 0; i < times; ++i)
     {
         scene.OnUpdateRuntimeSimulation(Timestep(dt));

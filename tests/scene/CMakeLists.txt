@@ -20,6 +20,7 @@ add_executable(scene_test
     ${SCENE_SRC_DIR}/Scene/SceneCamera.cpp
     ${SCENE_SRC_DIR}/Scene/Entity.cpp
     ${SCENE_SRC_DIR}/Core/UUID.cpp
+    ${SCENE_SRC_DIR}/Core/SimulationClock.cpp
     ${SCENE_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${SCENE_SRC_DIR}/Physics/PhysicsSystem3D.cpp
     ${SCENE_SRC_DIR}/Math/Math.cpp

@@ -1203,7 +1203,10 @@ void Scene::UpdateWorldTransformCache()
         stack.pop_back();
 
         glm::mat4 world = entry.parentWorld;
-        if (entry.entity.HasComponent<TransformComponent>())
+        const auto blended = m_RenderLocalOverride.find(static_cast<entt::entity>(entry.entity));
+        if (blended != m_RenderLocalOverride.end())
+            world = entry.parentWorld * blended->second; // issue #49 render interpolation
+        else if (entry.entity.HasComponent<TransformComponent>())
             world = entry.parentWorld * entry.entity.GetComponent<TransformComponent>().GetTransform();
 
         m_WorldTransformCache[(entt::entity)entry.entity] = world;
@@ -1407,7 +1410,7 @@ void Scene::OnUpdateRuntime(Timestep ts)
     RenderRuntimeScene(ts);
 }
 
-void Scene::OnUpdateRuntimeSimulation(Timestep ts)
+void Scene::OnUpdateRuntimeSimulation(Timestep frame)
 {
     UHE_PROFILE_FUNCTION();
     // Issue #17 hardening: apply hierarchy mutations deferred from the editor
@@ -1416,32 +1419,70 @@ void Scene::OnUpdateRuntimeSimulation(Timestep ts)
     FlushPendingCollapses();
     FlushPendingModelOps();
 
-    StepAnimators(ts);
-    UpdateAudioSources(ts, true);
+    // Hot reload is polled per frame, not per tick: it watches the disk.
+    ScriptEngine::Get().Tick(*this);
 
+    // Issue #49: the simulation advances in fixed ticks, however long this
+    // frame took. A slow frame runs several; a fast one may run none.
+    const u32 ticks = m_SimulationClock.Advance(frame.GetSeconds());
+    for (u32 i = 0; i < ticks; ++i)
     {
-        m_registry.view<NativeScriptComponent>().each(
-            [=, this](auto entity, auto& nsc)
-            {
-                if (!nsc.Instance)
-                {
-                    nsc.Instance = nsc.InstantiateScript();
-                    nsc.Instance->m_Entity = Entity{entity, this};
-                    nsc.Instance->OnCreate();
-                }
-                nsc.Instance->OnUpdate(ts);
-            });
+        StepSimulation();
+    }
+    m_InterpolateRender = true;
+
+    // Presentation runs on the render delta: animation playback and audio
+    // follow wall-clock time, and neither feeds back into the simulation.
+    StepAnimators(frame);
+    UpdateAudioSources(frame, true);
+
+    // Issue #17: world transforms are refreshed in RenderRuntimeScene so the
+    // graph path also sees UI/script changes made after this step.
+}
+
+void Scene::StepSimulation()
+{
+    UHE_PROFILE_FUNCTION();
+    const Timestep dt(static_cast<float>(m_SimulationClock.GetFixedStep()));
+
+    // A manual step can arrive without a frame (editor Step, a headless server).
+    FlushPendingReparents();
+    FlushPendingCollapses();
+    FlushPendingModelOps();
+
+    // The pose before this tick, for render interpolation. Only bodies move
+    // between ticks without the user asking; everything else draws as is.
+    m_PreviousTickPose.clear();
+    {
+        auto bodies2d = m_registry.view<TransformComponent, RigidBody2DComponent>();
+        for (auto entity : bodies2d)
+            m_PreviousTickPose.emplace(entity, bodies2d.get<TransformComponent>(entity));
+        auto bodies3d = m_registry.view<TransformComponent, RigidBody3DComponent>();
+        for (auto entity : bodies3d)
+            m_PreviousTickPose.emplace(entity, bodies3d.get<TransformComponent>(entity));
     }
 
-    // Lua scripts run alongside the native ones, on the same step. The poll
-    // before it is what makes an edit on disk show up without a restart.
-    ScriptEngine::Get().Tick(*this);
-    ScriptEngine::Get().Update(*this, ts);
+    m_registry.view<NativeScriptComponent>().each(
+        [=, this](auto entity, auto& nsc)
+        {
+            if (!nsc.Instance)
+            {
+                nsc.Instance = nsc.InstantiateScript();
+                nsc.Instance->m_Entity = Entity{entity, this};
+                nsc.Instance->OnCreate();
+            }
+            nsc.Instance->OnUpdate(dt);
+        });
+
+    // Lua scripts run alongside the native ones, with the same fixed dt: a
+    // controller written against dt behaves identically at any frame rate.
+    ScriptEngine::Get().Update(*this, dt);
 
     // Physics
+    if (b2World_IsValid(m_PhysicsWorldId))
     {
         const int subStepCount = 4;
-        b2World_Step(m_PhysicsWorldId, ts, subStepCount);
+        b2World_Step(m_PhysicsWorldId, dt, subStepCount);
 
         // Retrieve transforms from Box2D
         auto view = m_registry.view<TransformComponent, RigidBody2DComponent>();
@@ -1459,18 +1500,15 @@ void Scene::OnUpdateRuntimeSimulation(Timestep ts)
             b2Rot rotation = b2Body_GetRotation(rb2d.RuntimeBody);
             transform.Rotation.z = b2Rot_GetAngle(rotation);
         }
+    }
 
-        // 3D Physics Jolt
-        m_PhysicsSystem3D.Update(ts);
-        JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface();
-
+    // 3D Physics Jolt
+    m_PhysicsSystem3D.Update(dt);
+    if (JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface())
+    {
         auto view3d = m_registry.view<TransformComponent, RigidBody3DComponent>();
         for (auto entity : view3d)
         {
-            if (bodyInterface == nullptr)
-            {
-                break; // stepped without OnRuntimeStart: there is no 3D world
-            }
             auto [transform, rb3d] = view3d.get<TransformComponent, RigidBody3DComponent>(entity);
 
             if (rb3d.RuntimeBodyID == 0xFFFFFFFF)
@@ -1489,15 +1527,38 @@ void Scene::OnUpdateRuntimeSimulation(Timestep ts)
         }
     }
 
-    // Issue #17: refresh world transforms after scripts/physics so rendering
-    // uses this frame's final transforms. Done in RenderRuntimeScene so the
-    // graph path sees UI/script changes made after the simulation step.
+    m_SimulationClock.OnTickCompleted();
+    // A manual step shows exactly the tick it produced; the next frame-driven
+    // update turns blending back on.
+    m_InterpolateRender = false;
 }
 
 void Scene::RenderRuntimeScene(Timestep ts)
 {
     UHE_PROFILE_FUNCTION();
+
+    // Issue #49: blend physics-driven bodies from their pose before the last
+    // tick to their current one. The blend only feeds this world-cache build;
+    // TransformComponent keeps the simulated state.
+    m_RenderLocalOverride.clear();
+    if (m_InterpolateRender && !m_PreviousTickPose.empty())
+    {
+        const float alpha = m_SimulationClock.Alpha();
+        for (const auto& [entity, previous] : m_PreviousTickPose)
+        {
+            if (!m_registry.valid(entity) || !m_registry.all_of<TransformComponent>(entity))
+                continue;
+            const TransformComponent& current = m_registry.get<TransformComponent>(entity);
+            const glm::vec3 translation = glm::mix(previous.Translation, current.Translation, alpha);
+            const glm::quat rotation = glm::slerp(glm::quat(previous.Rotation), glm::quat(current.Rotation), alpha);
+            const glm::vec3 scale = glm::mix(previous.Scale, current.Scale, alpha);
+            m_RenderLocalOverride.emplace(entity, glm::translate(glm::mat4(1.0f), translation) *
+                                                      glm::mat4_cast(rotation) *
+                                                      glm::scale(glm::mat4(1.0f), scale));
+        }
+    }
     UpdateWorldTransformCache();
+    m_RenderLocalOverride.clear();
 
     Camera* mainCamera = nullptr;
     glm::mat4 cameraTransform;
@@ -1532,6 +1593,11 @@ void Scene::RenderRuntimeScene(Timestep ts)
 
 void Scene::OnRuntimeStart()
 {
+    // Issue #49: every play session starts at tick 0 with an empty accumulator.
+    m_SimulationClock.Reset();
+    m_PreviousTickPose.clear();
+    m_InterpolateRender = false;
+
     // Every play session starts the animation graphs from their entry state.
     m_registry.view<AnimatorComponent>().each(
         [](entt::entity, AnimatorComponent& anim)
@@ -1694,6 +1760,9 @@ void Scene::OnRuntimeStart()
 
 void Scene::OnRuntimeStop()
 {
+    m_PreviousTickPose.clear();
+    m_InterpolateRender = false;
+
     // Issue #17 lifetime fix: the runtime (play-mode) scene copy instantiated
     // its own script instances; release them before the copy is swapped out,
     // otherwise every play session leaked the whole instance set.
