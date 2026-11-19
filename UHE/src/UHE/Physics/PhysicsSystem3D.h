@@ -20,13 +20,20 @@ class UHE_API PhysicsSystem3D
 {
 public:
     PhysicsSystem3D() = default;
-    ~PhysicsSystem3D() = default;
+    // Releases the scene's world if it is still running: a scene destroyed in
+    // play mode (closed, or replaced by another) never reaches OnRuntimeStop.
+    ~PhysicsSystem3D();
+    // Owns raw Jolt objects; a copy would release them twice.
+    PhysicsSystem3D(const PhysicsSystem3D&) = delete;
+    PhysicsSystem3D& operator=(const PhysicsSystem3D&) = delete;
 
     static void Init();
     static void Shutdown();
 
     void InitializeScene();
+    /// Safe to call when no world exists, and more than once.
     void ShutdownScene();
+    [[nodiscard]] bool IsSceneInitialized() const { return m_PhysicsSystem != nullptr; }
     void Update(Timestep ts);
 
     // Getters for internal Jolt classes

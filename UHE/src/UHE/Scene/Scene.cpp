@@ -61,6 +61,15 @@ Scene::~Scene()
     ScriptEngine::Get().OnSceneStop(*this);
     DestroyScriptInstances();
     StopAudioSources();
+
+    // A scene destroyed in play mode (closed, or replaced) never reaches
+    // OnRuntimeStop; its Box2D world would leak. The Jolt world is released by
+    // PhysicsSystem3D's destructor.
+    if (b2World_IsValid(m_PhysicsWorldId))
+    {
+        b2DestroyWorld(m_PhysicsWorldId);
+        m_PhysicsWorldId = b2_nullWorldId;
+    }
 }
 
 void Scene::DestroyScriptInstances()
@@ -1458,6 +1467,10 @@ void Scene::OnUpdateRuntimeSimulation(Timestep ts)
         auto view3d = m_registry.view<TransformComponent, RigidBody3DComponent>();
         for (auto entity : view3d)
         {
+            if (bodyInterface == nullptr)
+            {
+                break; // stepped without OnRuntimeStart: there is no 3D world
+            }
             auto [transform, rb3d] = view3d.get<TransformComponent, RigidBody3DComponent>(entity);
 
             if (rb3d.RuntimeBodyID == 0xFFFFFFFF)
