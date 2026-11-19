@@ -29,11 +29,16 @@ void UheJobsystem::Init()
 
 void UheJobsystem::ShutDown()
 {
-    if (!m_IsRunning.load(std::memory_order_acquire))
-        return;
-
-    // Signal all threads to stop
-    m_IsRunning.store(false, std::memory_order_release);
+    // The flag is flipped under the queue mutex. A worker evaluates its wait
+    // predicate holding that mutex; flipping it outside could land between the
+    // predicate reading "running" and the worker going to sleep, so the
+    // notify_all below would be lost and join() would wait forever.
+    {
+        std::lock_guard<std::mutex> lock(m_QueueMutex);
+        if (!m_IsRunning.load(std::memory_order_acquire))
+            return;
+        m_IsRunning.store(false, std::memory_order_release);
+    }
     m_WakeCondition.notify_all();
 
     // Wait for all threads to finish their current job and exit
@@ -45,6 +50,15 @@ void UheJobsystem::ShutDown()
         }
     }
     m_Workers.clear();
+
+    // Workers stop at their next loop check, possibly with jobs still queued.
+    // Run those here: someone may be waiting on their counter, and a dropped
+    // job would leave that Wait() spinning forever. Jobs they enqueue run too,
+    // because Execute() on a stopped system runs inline.
+    std::pair<JobFunction, JobCounter*> job;
+    while (TryPopJob(job))
+    {
+    }
 }
 
 void UheJobsystem::Execute(JobFunction job, JobCounter* counter)
@@ -52,17 +66,27 @@ void UheJobsystem::Execute(JobFunction job, JobCounter* counter)
     if (!job)
         return;
 
-    // Count the job as in-flight BEFORE it becomes visible to other threads,
-    // so IsBusy()/WaitForAll() can never miss it.
-    m_JobsInFlight.fetch_add(1, std::memory_order_acq_rel);
-
-    if (counter)
     {
-        counter->count.fetch_add(1, std::memory_order_acq_rel);
-    }
+        std::unique_lock<std::mutex> lock(m_QueueMutex);
 
-    {
-        std::lock_guard<std::mutex> lock(m_QueueMutex);
+        // No workers (before Init or after ShutDown): queueing would strand the
+        // job and its counter, so run it on the caller instead. Checked under
+        // the mutex ShutDown flips the flag under, so a job is either queued
+        // before the flip (and drained by ShutDown) or runs here.
+        if (!m_IsRunning.load(std::memory_order_acquire))
+        {
+            lock.unlock();
+            job();
+            return;
+        }
+
+        // Count the job as in-flight BEFORE it becomes visible to other
+        // threads, so IsBusy()/WaitForAll() can never miss it.
+        m_JobsInFlight.fetch_add(1, std::memory_order_acq_rel);
+        if (counter)
+        {
+            counter->count.fetch_add(1, std::memory_order_acq_rel);
+        }
         m_JobQueue.emplace_back(std::move(job), counter);
     }
 
