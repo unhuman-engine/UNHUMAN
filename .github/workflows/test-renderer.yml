@@ -10,7 +10,8 @@ on:
 jobs:
   test-asan:
     name: Build & Test (ASAN)
-    runs-on: ubuntu-latest
+    # LunarG only publishes apt packages up to noble (24.04); ubuntu-latest moves past it.
+    runs-on: ubuntu-24.04
     
     steps:
       - name: Checkout repository

@@ -14,7 +14,8 @@ permissions:
 jobs:
   sandbox-smoke:
     name: Sandbox smoke (${{ matrix.sanitizer }})
-    runs-on: ubuntu-latest
+    # LunarG only publishes apt packages up to noble (24.04); ubuntu-latest moves past it.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
