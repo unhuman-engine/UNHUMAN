@@ -38,6 +38,8 @@ class Scene;
  * The sandbox opens `base`, `math`, `string`, `table`, `utf8` and `coroutine`;
  * `io`, `os`, `package` and `debug` are not reachable, and `load`, `loadfile` and
  * `dofile` are removed, so a script cannot read the disk or build code at runtime.
+ * Shared globals and library tables are read-only, so one script cannot break
+ * another, and every call runs under an instruction budget (SetInstructionBudget).
  */
 class UHE_API ScriptEngine
 {
@@ -118,6 +120,26 @@ public:
     [[nodiscard]] u32 ErroredInstanceCount() const;
     /// The last error a script produced, with its chunk name and traceback.
     [[nodiscard]] const std::string& LastError() const;
+
+    // ── Limits ───────────────────────────────────────────────────────────────
+
+    /// @brief Default for SetInstructionBudget: far above any real per-frame
+    /// script, low enough that an endless loop stops in well under a second.
+    static constexpr u64 kDefaultInstructionBudget = 50'000'000;
+
+    /**
+     * @brief Caps the VM instructions one call into a script may run.
+     *
+     * A hook (or a nested chain of them, such as OnDestroy running inside
+     * OnUpdate) that goes over is stopped with a script error, which disables
+     * that instance like any other error, so `while true do end` cannot hang
+     * the editor. Counted in steps of 10'000 instructions; time spent inside
+     * engine bindings is not counted.
+     *
+     * @param instructions the limit; 0 removes it.
+     */
+    void SetInstructionBudget(u64 instructions);
+    [[nodiscard]] u64 GetInstructionBudget() const;
 
     /// The implementation. Public so the file-local helpers in the translation
     /// unit can take it; the members themselves stay private.

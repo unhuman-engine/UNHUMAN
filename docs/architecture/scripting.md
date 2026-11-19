@@ -40,8 +40,14 @@ Deviations from the design below, all deliberate:
   was used outside a protected call, which is a bug in the host: Lua unwinds by
   `longjmp`, and returning from the handler would unwind through C++ frames.
   Every script call is protected, so this should be unreachable.
-- **No coroutines, frame budget or instruction watchdog yet**, and no
-  reflection-driven component access: those are phase 2 items below.
+- **The instruction watchdog is DONE** (`ScriptEngine::SetInstructionBudget`,
+  50M instructions per outermost call by default): an endless loop errors and
+  disables its instance. No per-instance coroutines or frame-time budget yet,
+  and no reflection-driven component access: those are phase 2 items below.
+- **Globals are isolated.** Each script runs in its own environment whose `_G`
+  is itself; the shared globals and plain library tables behind it are
+  read-only proxies, `rawset` is removed and the string and entity metatables
+  are hidden, so one script cannot patch what another sees.
 - **`GetID` returns a string.** An entity id is a random 64-bit UUID and a Lua
   integer is signed, so half of them cannot be represented as a number.
 
@@ -230,8 +236,8 @@ crashing -- all covered by `tests/scripting`.
 
 Phase 2, ergonomics and safety: **hot reload DONE** (mtime poll, recompile,
 re-run `OnCreate`; script logs and errors reach the editor console through the
-normal log sink). Still open: reflection-driven component access, coroutines with
-a frame budget and an instruction watchdog.
+normal log sink), **instruction watchdog DONE**. Still open: reflection-driven
+component access, coroutines with a frame budget.
 
 Phase 3, editor and events: **script inspector and Scripts panel DONE**, entity
 create/destroy from script DONE (`Spawn`, `Find`, `Destroy`), and attach-from-
@@ -248,8 +254,8 @@ optional for non-script builds, and profiler integration.
 | Language | Lua 5.4.7 vendored in `UHE/vendor/lua`, sol2 vendored in `UHE/vendor/sol2` (single header, pinned commit: the 3.3.0 release does not compile under C++23) |
 | VM count | One `sol::state`, owned by `ScriptEngine::Get()`, opened by `Application` |
 | Binding style | sol2 runtime bindings; `sol` appears in `ScriptEngine.cpp` only |
-| Execution | Plain protected calls; coroutines and the frame budget are still open |
-| Sandbox | `base`, `math`, `string`, `table`, `utf8`, `coroutine`; `debug` is opened only to capture `debug.traceback` and then dropped. `load`, `loadfile`, `dofile`, `require` and `print` are removed |
+| Execution | Plain protected calls under an instruction budget; coroutines and the frame budget are still open |
+| Sandbox | `base`, `math`, `string`, `table`, `utf8`, `coroutine`; `debug` is opened only to capture `debug.traceback` and then dropped. `load`, `loadfile`, `dofile`, `require`, `print` and `rawset` are removed; shared globals are read-only |
 | Storage | `ScriptComponent::ScriptPath`, project-relative, resolved by `ResolveAssetPath`; bytecode cooking is not done |
 | Threading | Main thread only: the VM is driven from the scene step |
 | Shipping form | Always built; hot reload is off unless an app turns it on |

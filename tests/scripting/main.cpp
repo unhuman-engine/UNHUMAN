@@ -613,6 +613,57 @@ function OnCreate(self) Find("Counter"):Translate(0, 1, 0) end
         engine.OnSceneStop(scene);
     }
 
+    section("an endless loop is stopped by the instruction budget");
+    {
+        check(engine.GetInstructionBudget() == ScriptEngine::kDefaultInstructionBudget, "a budget is on by default");
+        engine.SetInstructionBudget(1'000'000);
+        check(!engine.Run("while true do end", "spin"), "an endless chunk fails instead of hanging");
+        check(engine.LastError().find("instruction budget") != std::string::npos, "and says why");
+        check(!engine.Run("local co = coroutine.wrap(function() while true do end end) co()", "spin_co"),
+              "a loop inside a coroutine is stopped too");
+        check(engine.Run("local n = 0 for i = 1, 100000 do n = n + i end", "short"), "a call under the budget runs");
+
+        Scene scene;
+        Entity looper = SpawnScripted(scene, "Looper",
+                                      WriteScript("looper.lua", "function OnUpdate(self, dt) while true do end end\n"));
+        Entity healthy =
+            SpawnScripted(scene, "Healthy",
+                          WriteScript("healthy.lua", "function OnCreate(self) self.n = 0 end\n"
+                                                     "function OnUpdate(self, dt) self.n = self.n + 1 end\n"));
+        (void)looper;
+        (void)healthy;
+        Start(scene);
+        Step(scene, 1.0f / 60.0f, 2);
+        check(engine.ErroredInstanceCount() == 1, "only the looping instance is disabled");
+        engine.OnSceneStop(scene);
+        engine.SetInstructionBudget(ScriptEngine::kDefaultInstructionBudget);
+    }
+
+    section("scripts cannot change each other's globals");
+    {
+        check(!engine.Run("math.floor = nil", "patch_math"), "library tables are read-only");
+        check(engine.Run("assert(math.floor(2.5) == 2)", "math_intact"), "and stay intact");
+        check(engine.Run("assert(rawset == nil)", "no_rawset"), "rawset is not reachable");
+        check(engine.Run("assert(getmetatable('') == false)", "string_mt"), "the string metatable is hidden");
+        check(engine.Run("local n = 0 for _ in pairs(math) do n = n + 1 end assert(n > 10)", "pairs_math"),
+              "a read-only library still iterates");
+
+        Scene scene;
+        SpawnScripted(scene, "Writer",
+                      WriteScript("writer.lua", "_G.Shared = 42\n"
+                                                "Log = nil\n"
+                                                "function OnCreate(self) end\n"));
+        SpawnScripted(scene, "Reader",
+                      WriteScript("reader.lua", "function OnCreate(self)\n"
+                                                "  assert(Shared == nil, 'saw another script global')\n"
+                                                "  assert(Log ~= nil, 'lost the Log API')\n"
+                                                "  assert(getmetatable(self) == false, 'reached the methods table')\n"
+                                                "end\n"));
+        Start(scene);
+        check(engine.ErroredInstanceCount() == 0, "one script's globals are invisible to another");
+        engine.OnSceneStop(scene);
+    }
+
     engine.Shutdown();
     check(!engine.IsInitialized(), "the engine shuts down");
     // Shutdown closes the VM; the static engine dying at exit must not touch

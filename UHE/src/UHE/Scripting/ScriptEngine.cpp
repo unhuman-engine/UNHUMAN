@@ -86,6 +86,13 @@ struct ScriptEngine::Impl
     std::vector<u32> PendingRelease;
     sol::table EntityMethods;
     sol::function Traceback;
+    /// @brief Read-only view of the globals every script environment falls back to.
+    sol::table SharedGlobals;
+
+    /// @brief VM instructions one outermost script call may run; 0 disables the limit.
+    u64 InstructionBudget = ScriptEngine::kDefaultInstructionBudget;
+    /// @brief Instructions counted since the outermost call began.
+    u64 InstructionsUsed = 0;
     /// The scene the running instance belongs to: `Spawn` and `Find` are called
     /// from a script, and a script only exists inside a scene.
     Scene* ActiveScene = nullptr;
@@ -100,6 +107,70 @@ constexpr u32 kInvalidBodyId = 0xFFFFFFFFu;
 
 /// How often `Tick` looks at the watched sources.
 constexpr double kHotReloadPollSeconds = 0.25;
+
+/// @brief How many VM instructions run between two budget checks.
+constexpr int kBudgetCheckInterval = 10'000;
+
+/// @brief The Impl that owns a VM, kept in the state's extra space so the
+/// count hook can find it. Coroutines copy the main thread's extra space.
+ScriptEngine::Impl*& OwnerOf(lua_State* state)
+{
+    return *static_cast<ScriptEngine::Impl**>(lua_getextraspace(state));
+}
+
+/**
+ * @brief Count hook: raises a Lua error once a call has used its budget.
+ *
+ * The error unwinds like any other script error, so the protected call that
+ * started the script reports it and the instance is disabled instead of the
+ * frame hanging on an endless loop.
+ */
+void BudgetHook(lua_State* state, lua_Debug* /*ar*/)
+{
+    ScriptEngine::Impl* impl = OwnerOf(state);
+    if (impl == nullptr || impl->InstructionBudget == 0)
+    {
+        return;
+    }
+    impl->InstructionsUsed += kBudgetCheckInterval;
+    if (impl->InstructionsUsed > impl->InstructionBudget)
+    {
+        // lua_pushfstring has no 64-bit format, and luaL_error longjmps, so no
+        // object with a destructor may live in this frame: a plain buffer.
+        char limit[32];
+        std::snprintf(limit, sizeof(limit), "%llu", static_cast<unsigned long long>(impl->InstructionBudget));
+        luaL_error(state, "script exceeded its instruction budget (%s instructions)", limit);
+    }
+}
+
+/**
+ * @brief Read-only shared globals for every script environment.
+ *
+ * Plain library tables (`math`, `string`, `Log`, ...) are replaced by read-only
+ * proxies, the string metatable is hidden and `rawset` is removed, so no
+ * script can change what another script sees.
+ */
+constexpr const char* kSealGlobals = R"lua(
+local next, type, tostring, error, setmetatable, getmetatable = next, type, tostring, error, setmetatable, getmetatable
+local function readonly(t, name)
+    return setmetatable({}, {
+        __index = t,
+        __newindex = function(_, k) error("'" .. name .. "' is read-only (cannot set '" .. tostring(k) .. "')", 2) end,
+        __pairs = function() return next, t, nil end,
+        __len = function() return #t end,
+        __metatable = false,
+    })
+end
+local g = _G
+for k, v in next, g do
+    if type(v) == "table" and k ~= "_G" and getmetatable(v) == nil then
+        g[k] = readonly(v, k)
+    end
+end
+getmetatable("").__metatable = false
+g.rawset = nil
+return readonly(g, "_G")
+)lua";
 
 std::filesystem::file_time_type ModificationTime(const std::string& path)
 {
@@ -240,6 +311,9 @@ sol::table MakeEntityTable(ScriptEngine::Impl& impl, Scene& scene, entt::entity 
 
     sol::table metatable = impl.Lua.create_table();
     metatable[sol::meta_function::index] = impl.EntityMethods;
+    // Hidden: the methods table is shared, and a script must not reach it to
+    // replace `Destroy` for every other instance.
+    metatable["__metatable"] = false;
     self[sol::metatable_key] = metatable;
     return self;
 }
@@ -303,7 +377,13 @@ void FlushReleased(ScriptEngine::Impl& impl)
 class HookScope
 {
 public:
-    explicit HookScope(ScriptEngine::Impl& impl) : m_Impl(impl) { ++m_Impl.HookDepth; }
+    explicit HookScope(ScriptEngine::Impl& impl) : m_Impl(impl)
+    {
+        if (m_Impl.HookDepth++ == 0)
+        {
+            m_Impl.InstructionsUsed = 0; // the budget is per outermost call
+        }
+    }
     ~HookScope()
     {
         if (--m_Impl.HookDepth == 0)
@@ -357,7 +437,8 @@ bool LoadInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instan
 
     // The chunk runs in its own environment, so two scripts' globals cannot
     // collide and only what the script defines is visible to the engine.
-    sol::environment env(impl.Lua, sol::create, impl.Lua.globals());
+    sol::environment env(impl.Lua, sol::create, impl.SharedGlobals);
+    env["_G"] = env; // `_G.x = 1` stays inside this script
     // Text only: Lua does not verify precompiled bytecode, and a crafted binary
     // chunk can corrupt the VM, which would make the sandbox meaningless.
     sol::load_result loaded = impl.Lua.load(source, "@" + resolved, sol::load_mode::text);
@@ -1031,6 +1112,25 @@ void ScriptEngine::Init()
 
     BindApi(*m_Impl);
 
+    // Seal the shared globals last, so the engine API is sealed with them.
+    {
+        sol::protected_function_result sealed =
+            m_Impl->Lua.safe_script(kSealGlobals, sol::script_pass_on_error, "=seal", sol::load_mode::text);
+        if (sealed.valid() && sealed.get_type() == sol::type::table)
+        {
+            m_Impl->SharedGlobals = sealed;
+        }
+        else
+        {
+            UHE_CORE_ERROR("[script] could not seal the globals; scripts share a writable _G");
+            m_Impl->SharedGlobals = m_Impl->Lua.globals();
+        }
+    }
+
+    // Every call gets an instruction budget; the hook is per state and coroutines inherit it.
+    OwnerOf(m_Impl->Lua.lua_state()) = m_Impl.get();
+    lua_sethook(m_Impl->Lua.lua_state(), &BudgetHook, LUA_MASKCOUNT, kBudgetCheckInterval);
+
     m_Impl->Initialized = true;
     UHE_CORE_INFO("Scripting initialized (Lua {0})", LUA_VERSION);
 }
@@ -1057,6 +1157,7 @@ void ScriptEngine::Shutdown()
     m_Impl->PendingRelease.clear();
     m_Impl->EntityMethods = sol::table();
     m_Impl->Traceback = sol::function();
+    m_Impl->SharedGlobals = sol::table();
     m_Impl->ActiveScene = nullptr;
 
     // Close the VM here, not when the static ScriptEngine dies at exit: by then
@@ -1073,6 +1174,16 @@ bool ScriptEngine::IsInitialized() const { return m_Impl->Initialized; }
 lua_State* ScriptEngine::State() const { return m_Impl->Initialized ? m_Impl->Lua.lua_state() : nullptr; }
 
 const std::string& ScriptEngine::LastError() const { return m_Impl->LastError; }
+
+void ScriptEngine::SetInstructionBudget(u64 instructions)
+{
+    m_Impl->InstructionBudget = instructions;
+}
+
+u64 ScriptEngine::GetInstructionBudget() const
+{
+    return m_Impl->InstructionBudget;
+}
 
 u32 ScriptEngine::InstanceCount() const
 {

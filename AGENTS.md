@@ -55,6 +55,9 @@ here. Follow them; if a rule is wrong, change it here first.
   `load`/`loadfile`/`dofile` are removed, and scripts live in the project's assets
   where `ResolveAssetPath` finds them. Adding a binding means adding to that
   surface deliberately: every exposed function is a long-lived contract.
+  Shared globals and library tables are read-only proxies (`_G` is the script's
+  own environment), and every call runs under an instruction budget, so an
+  endless loop disables its instance instead of hanging the frame.
 - **A script resolves its entity through the registry on every call.** `self` is a
   table holding an entity token, not a pointer: a script can outlive the entity it
   was attached to, and `IsValid()` must answer for that case instead of crashing.
