@@ -115,17 +115,30 @@ namespace UHE{
         OnEvent(e);
     }
 
-	while (m_Running)
-	{   
-		UHE::Profiler::BeginFrame();
+    // The first frame's delta starts here, not at glfwInit: loading time is not
+    // simulation time.
+    m_LastFrameTime = glfwGetTime();
+
+    while (m_Running)
+    {
+        // Input first: a frame updates on the input that arrived before it,
+        // then simulates, then renders. Polling after End() made every frame
+        // act on the previous frame's input.
+        m_Window->OnUpdate();
+        if (!m_Running)
+            break; // the poll delivered a close
+
+        UHE::Profiler::BeginFrame();
 		{
 			UHE_PROFILE_SCOPE("Frame");
 			{
 				UHE_PROFILE_SCOPE("application");
-				float time = (float)glfwGetTime();
 
-				Timestep timestep = time - m_LastFrameTime;
-				m_LastFrameTime = time;
+                // Sampled as double: a float clock loses millisecond precision
+                // after a few hours of uptime.
+                const double time = glfwGetTime();
+                Timestep timestep = static_cast<float>(time - m_LastFrameTime);
+                m_LastFrameTime = time;
 
 				if (timestep > 0.25f)
 					timestep = 0.25f;
@@ -156,16 +169,12 @@ namespace UHE{
 
 					Renderer::GetDevice().End();
 				}
-
-				m_Window->OnUpdate();
-
 			}
 			UHE_PROFILE_FRAMEMARK;
 		}
 		UHE::Profiler::EndFrame();
-	}
-
-	};
+    }
+    };
 	bool Application::OnWindowClose(WindowCloseEvent& e) 
 	{   
 		m_Running = false;
