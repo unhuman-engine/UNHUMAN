@@ -1,4 +1,5 @@
 #include "uhepch.h"
+#include <array>
 #include "Renderer3D.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include "UHE/AssetsManager/VfsSystem.h"
@@ -20,6 +21,11 @@ namespace
 // overflow with the default material rather than reading out of bounds. Slot 0
 // is reserved for that default and is never handed to a model.
 constexpr uint32_t kMaxMaterialsPerFrame = 2048;
+constexpr uint32_t kMaxLightsPerFrame = 1024;
+constexpr uint32_t kMaxBonesPerFrame = 4096;
+// The device keeps this many frames in flight (VulkanDevice::MAX_FRAMES_IN_FLIGHT,
+// the same count Renderer2D double-buffers its vertex buffers for).
+constexpr uint32_t kFramesInFlight = 2;
 
 } // namespace
 
@@ -60,6 +66,21 @@ struct Renderer3DData
     glm::vec3 CameraPosition;
     std::vector<RD3d::LightData> CurrentLights;
     Ref<Texture2D> WhiteTexture;
+
+    // The light, bone and material buffers are host-visible and written with a
+    // plain memcpy while the GPU may still be reading the previous frame's
+    // copy. One set per frame in flight; BeginScene selects this frame's set
+    // into the fields below, which every other function uses.
+    struct FrameBuffers
+    {
+        RHI::BufferHandle Light = nullptr;
+        uint32_t LightIndex = 0;
+        RHI::BufferHandle Bone = nullptr;
+        uint32_t BoneIndex = 0;
+        RHI::BufferHandle Material = nullptr;
+        uint32_t MaterialIndex = 0;
+    };
+    std::array<FrameBuffers, kFramesInFlight> Frames{};
 
     RHI::BufferHandle LightStorageBufferHandle = nullptr;
     uint32_t LightStorageBufferIndex = 0;
@@ -102,28 +123,32 @@ void Renderer3D::Init()
 
     s_Data3D.WhiteTexture = Texture2D::Create(1, 1);
 
-    RHI::BufferDesc desc;
-    desc.size = sizeof(RD3d::LightData) * 1024; // Limit to 1024 lights
-    desc.usage = RHI::BufferUsage::Storage;
-    desc.hostVisible = true;
-    s_Data3D.LightStorageBufferHandle = device.CreateBuffer(desc);
-    s_Data3D.LightStorageBufferIndex = device.GetBufferBindlessIndex(s_Data3D.LightStorageBufferHandle);
+    for (auto& frame : s_Data3D.Frames)
+    {
+        RHI::BufferDesc desc;
+        desc.size = sizeof(RD3d::LightData) * kMaxLightsPerFrame;
+        desc.usage = RHI::BufferUsage::Storage;
+        desc.hostVisible = true;
+        frame.Light = device.CreateBuffer(desc);
+        frame.LightIndex = device.GetBufferBindlessIndex(frame.Light);
 
-    RHI::BufferDesc boneBufferDesc{};
-    boneBufferDesc.size = sizeof(glm::mat4) * 4096; // Support up to 4096 bones per frame
-    boneBufferDesc.usage = RHI::BufferUsage::Storage;
-    boneBufferDesc.hostVisible = true;
-    s_Data3D.BoneStorageBufferHandle = device.CreateBuffer(boneBufferDesc);
-    s_Data3D.BoneStorageBufferIndex = device.GetBufferBindlessIndex(s_Data3D.BoneStorageBufferHandle);
+        RHI::BufferDesc boneBufferDesc{};
+        boneBufferDesc.size = sizeof(glm::mat4) * kMaxBonesPerFrame;
+        boneBufferDesc.usage = RHI::BufferUsage::Storage;
+        boneBufferDesc.hostVisible = true;
+        frame.Bone = device.CreateBuffer(boneBufferDesc);
+        frame.BoneIndex = device.GetBufferBindlessIndex(frame.Bone);
 
-    RHI::BufferDesc materialBufferDesc{};
-    materialBufferDesc.size = sizeof(RD3d::MaterialGPU) * kMaxMaterialsPerFrame;
-    materialBufferDesc.usage = RHI::BufferUsage::Storage;
-    materialBufferDesc.hostVisible = true;
-    s_Data3D.MaterialStorageBufferHandle = device.CreateBuffer(materialBufferDesc);
-    // The material array lives in its own bindless namespace (shader binding
-    // 2), separate from the light/bone arrays of binding 0.
-    s_Data3D.MaterialStorageBufferIndex = device.GetMaterialBufferBindlessIndex(s_Data3D.MaterialStorageBufferHandle);
+        RHI::BufferDesc materialBufferDesc{};
+        materialBufferDesc.size = sizeof(RD3d::MaterialGPU) * kMaxMaterialsPerFrame;
+        materialBufferDesc.usage = RHI::BufferUsage::Storage;
+        materialBufferDesc.hostVisible = true;
+        frame.Material = device.CreateBuffer(materialBufferDesc);
+        // The material array lives in its own bindless namespace (shader
+        // binding 2), separate from the light/bone arrays of binding 0.
+        frame.MaterialIndex = device.GetMaterialBufferBindlessIndex(frame.Material);
+    }
+    SelectFrameBuffers();
     s_Data3D.MaterialBufferOffset = 1; // Slot 0 is the default material, written each BeginScene.
 }
 
@@ -131,9 +156,16 @@ void Renderer3D::Shutdown()
 {
     auto& device = Renderer::GetDevice();
     DestroyShaderResources();
-    device.DestroyBuffer(s_Data3D.LightStorageBufferHandle);
-    device.DestroyBuffer(s_Data3D.BoneStorageBufferHandle);
-    device.DestroyBuffer(s_Data3D.MaterialStorageBufferHandle);
+    for (auto& frame : s_Data3D.Frames)
+    {
+        device.DestroyBuffer(frame.Light);
+        device.DestroyBuffer(frame.Bone);
+        device.DestroyBuffer(frame.Material);
+        frame = {};
+    }
+    s_Data3D.LightStorageBufferHandle = nullptr;
+    s_Data3D.BoneStorageBufferHandle = nullptr;
+    s_Data3D.MaterialStorageBufferHandle = nullptr;
 
     s_Data3D.WhiteTexture.reset();
 
@@ -287,12 +319,8 @@ void Renderer3D::BeginScene(const EditorCamera& camera, const std::vector<RD3d::
     UHE_PROFILE_FUNCTION();
     s_Data3D.ViewProjection = camera.GetViewProjection();
     s_Data3D.CameraPosition = camera.GetPosition();
-    s_Data3D.CurrentLights = lights;
-    if (!lights.empty())
-    {
-        Renderer::GetDevice().GetCurrentCommandBuffer().UpdateBuffer(s_Data3D.LightStorageBufferHandle, lights.data(),
-                                                                     lights.size() * sizeof(RD3d::LightData));
-    }
+    SelectFrameBuffers();
+    UploadLights(lights);
     s_Data3D.BoneBufferOffset = 0;
 
     RestartMaterialRegion();
@@ -304,15 +332,41 @@ void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform,
     UHE_PROFILE_FUNCTION();
     s_Data3D.ViewProjection = camera.GetProjection() * glm::inverse(transform);
     s_Data3D.CameraPosition = glm::vec3(transform[3]);
-    s_Data3D.CurrentLights = lights;
-    if (!lights.empty())
-    {
-        Renderer::GetDevice().GetCurrentCommandBuffer().UpdateBuffer(s_Data3D.LightStorageBufferHandle, lights.data(),
-                                                                     lights.size() * sizeof(RD3d::LightData));
-    }
+    SelectFrameBuffers();
+    UploadLights(lights);
     s_Data3D.BoneBufferOffset = 0;
 
     RestartMaterialRegion();
+}
+
+void Renderer3D::SelectFrameBuffers()
+{
+    const auto& frame = s_Data3D.Frames[Renderer::GetDevice().GetCurrentFrameIndex() % kFramesInFlight];
+    s_Data3D.LightStorageBufferHandle = frame.Light;
+    s_Data3D.LightStorageBufferIndex = frame.LightIndex;
+    s_Data3D.BoneStorageBufferHandle = frame.Bone;
+    s_Data3D.BoneStorageBufferIndex = frame.BoneIndex;
+    s_Data3D.MaterialStorageBufferHandle = frame.Material;
+    s_Data3D.MaterialStorageBufferIndex = frame.MaterialIndex;
+}
+
+void Renderer3D::UploadLights(const std::vector<RD3d::LightData>& lights)
+{
+    s_Data3D.CurrentLights = lights;
+    if (s_Data3D.CurrentLights.size() > kMaxLightsPerFrame)
+    {
+        // The buffer refuses an oversized upload outright, which would leave
+        // every light stale; draw the first kMaxLightsPerFrame instead.
+        UHE_CORE_WARN("Renderer3D: {0} lights, only the first {1} are drawn", s_Data3D.CurrentLights.size(),
+                      kMaxLightsPerFrame);
+        s_Data3D.CurrentLights.resize(kMaxLightsPerFrame);
+    }
+    if (!s_Data3D.CurrentLights.empty())
+    {
+        Renderer::GetDevice().GetCurrentCommandBuffer().UpdateBuffer(
+            s_Data3D.LightStorageBufferHandle, s_Data3D.CurrentLights.data(),
+            s_Data3D.CurrentLights.size() * sizeof(RD3d::LightData));
+    }
 }
 
 void Renderer3D::RestartMaterialRegion()
@@ -360,7 +414,15 @@ Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator* ani
     if (animator && animator->HasAnimation())
     {
         const auto& matrices = animator->GetFinalBoneMatrices();
-        if (!matrices.empty())
+        if (!matrices.empty() && s_Data3D.BoneBufferOffset + matrices.size() > kMaxBonesPerFrame)
+        {
+            // Out of room this frame. The upload would be refused while the
+            // binding still pointed past the buffer; draw this model unskinned.
+            UHE_CORE_WARN("Renderer3D: bone buffer full ({0} matrices this frame), a skinned model draws in "
+                          "bind pose",
+                          kMaxBonesPerFrame);
+        }
+        else if (!matrices.empty())
         {
             uint64_t size = matrices.size() * sizeof(glm::mat4);
             auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
@@ -472,7 +534,7 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
     pc.entityID = entityID;
     pc.enableLighting = s_Data3D.EnableLighting ? 1 : 0;
     pc.lightBufferIndex = s_Data3D.LightStorageBufferIndex;
-    pc.numLights = static_cast<int>(std::min<size_t>(s_Data3D.CurrentLights.size(), 1024));
+    pc.numLights = static_cast<int>(std::min<size_t>(s_Data3D.CurrentLights.size(), kMaxLightsPerFrame));
     pc.boneBufferIndex = boneBufferIndex;
     pc.boneOffset = boneOffset;
     pc.materialBufferIndex = (materialBinding.BufferIndex >= 0) ? materialBinding.BufferIndex

@@ -83,6 +83,9 @@ private:
     static void DestroyShaderResources();
 
     // Rewrites the default material (slot 0) and resets the per-frame cursor.
+    // Points the light/bone/material fields at this frame-in-flight's buffers.
+    static void SelectFrameBuffers();
+    static void UploadLights(const std::vector<RD3d::LightData>& lights);
     static void RestartMaterialRegion();
 };
 } // namespace UHE
