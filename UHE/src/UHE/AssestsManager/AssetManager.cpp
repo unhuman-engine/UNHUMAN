@@ -198,6 +198,11 @@ AssetHandle<T> AssetManager::LoadAsync(std::string_view path, LoadCallback onDon
         return AssetHandle<T>(record);
     }
 
+    // A record that failed before is already `finalized` (Update marks a failed
+    // load terminal). Clear it for the retry, or Update would deliver this
+    // request's callback as failed at once and never run Finalize (the GPU
+    // upload) when the decode then succeeds.
+    record->finalized.store(false, std::memory_order_release);
     record->state.store(LoadState::Loading, std::memory_order_release);
     // Worker: pure CPU work, no RHI. State flips to Ready with release so the
     // main thread's acquire load sees the decoded data.
