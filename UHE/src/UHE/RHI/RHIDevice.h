@@ -81,6 +81,22 @@ public:
     /// Reads a single pixel (RGBA8) back from \p handle into \p outData. Stalls the pipeline.
     virtual void ReadPixel(TextureHandle handle, int x, int y, void* outData) = 0;
 
+    /**
+     * @brief Non-blocking pixel read, for picking under the mouse every frame.
+     *
+     * Queues a copy of texel (\p x, \p y) of \p handle into this frame's
+     * command buffer, and writes the newest pixel whose frame has finished on
+     * the GPU (a few frames old) into \p outData. Nothing waits.
+     *
+     * @return false while no request has completed yet (outData untouched).
+     * @note The default falls back to the blocking ReadPixel.
+     */
+    virtual bool ReadPixelAsync(TextureHandle handle, int x, int y, void* outData)
+    {
+        ReadPixel(handle, x, y, outData);
+        return true;
+    }
+
     // ── Resource destruction ─────────────────────────────────────────────────
 
     virtual void DestroyBuffer(BufferHandle handle) = 0;

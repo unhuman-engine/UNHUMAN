@@ -172,6 +172,13 @@ void VulkanDevice::CleanupVulkan()
 
     m_DescriptorManager.cleanup();
 
+    for (PixelReadback& readback : m_PixelReadbacks)
+    {
+        if (readback.Buffer)
+            vmaDestroyBuffer(m_Allocator, static_cast<VkBuffer>(readback.Buffer), readback.Allocation);
+        readback = {};
+    }
+
     for (auto& frame : m_Frames)
     {
         frame.Cleanup();
@@ -427,6 +434,7 @@ void VulkanDevice::Begin()
     auto waitResult = m_LogicalDevice.getLogicalDevice().waitForFences({*m_Frames[m_CurrentFrame].GetInFlightFence()},
                                                                        VK_TRUE, UINT64_MAX);
     UHE_CORE_ASSERT(waitResult == vk::Result::eSuccess, "Failed to wait for in-flight fence!");
+    CollectPixelReadback(); // this slot's fence passed: its copy has landed
 
     // ── Acquire ONCE (§9.1.4): no retry loop. Out-of-date → recreate + skip
     // the frame; the fresh swapchain is acquired on the next Begin.
@@ -500,6 +508,10 @@ void VulkanDevice::End()
                          vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eBottomOfPipe);
     }
     m_FrameGraphFailed = false;
+
+    if (!m_FrameSkipped)
+        RecordPixelReadback(cmd);
+    m_PixelRequest.reset();
 
     cmd.end();
 
@@ -769,9 +781,14 @@ void VulkanDevice::ReadPixel(TextureHandle handle, int x, int y, void* outData)
     ImmediateSubmit(
         [&](vk::raii::CommandBuffer& cmd)
         {
+            // The texel was last written as a colour attachment in an earlier
+            // submission: wait for that stage, not for an earlier transfer.
             TransitionLayout(cmd, image, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferSrcOptimal,
-                             vk::AccessFlagBits::eMemoryRead, vk::AccessFlagBits::eTransferRead,
-                             vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer);
+                             vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eShaderRead,
+                             vk::AccessFlagBits::eTransferRead,
+                             vk::PipelineStageFlagBits::eColorAttachmentOutput |
+                                 vk::PipelineStageFlagBits::eFragmentShader,
+                             vk::PipelineStageFlagBits::eTransfer);
 
             vk::BufferImageCopy region{.bufferOffset = 0,
                                        .bufferRowLength = 0,
@@ -786,8 +803,11 @@ void VulkanDevice::ReadPixel(TextureHandle handle, int x, int y, void* outData)
             cmd.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, readbackBuf.buffer, region);
 
             TransitionLayout(cmd, image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-                             vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eMemoryRead,
-                             vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer);
+                             vk::AccessFlagBits::eTransferRead,
+                             vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eColorAttachmentWrite,
+                             vk::PipelineStageFlagBits::eTransfer,
+                             vk::PipelineStageFlagBits::eFragmentShader |
+                                 vk::PipelineStageFlagBits::eColorAttachmentOutput);
         });
 
     void* mappedData = nullptr;
@@ -799,6 +819,90 @@ void VulkanDevice::ReadPixel(TextureHandle handle, int x, int y, void* outData)
     }
 
     vmaDestroyBuffer(m_Allocator, static_cast<VkBuffer>(readbackBuf.buffer), readbackBuf.allocation);
+}
+
+bool VulkanDevice::ReadPixelAsync(TextureHandle handle, int x, int y, void* outData)
+{
+    if (handle != nullptr && x >= 0 && y >= 0)
+        m_PixelRequest = PixelRequest{.Texture = handle, .X = x, .Y = y};
+
+    if (!m_LastPixel)
+        return false;
+    std::memcpy(outData, &*m_LastPixel, sizeof(u32));
+    return true;
+}
+
+void VulkanDevice::RecordPixelReadback(vk::raii::CommandBuffer& cmd)
+{
+    if (!m_PixelRequest)
+        return;
+
+    PixelReadback& readback = m_PixelReadbacks[m_CurrentFrame];
+    if (!readback.Buffer)
+    {
+        const CreatedBuffer created =
+            ::UHE::RHI::VULKAN::CreateBuffer(4, vk::BufferUsageFlagBits::eTransferDst, VMA_MEMORY_USAGE_GPU_TO_CPU);
+        if (!created.buffer)
+        {
+            UHE_CORE_ERROR("ReadPixelAsync: could not create the readback buffer");
+            return;
+        }
+        readback.Buffer = created.buffer;
+        readback.Allocation = created.allocation;
+    }
+
+    auto* texture = reinterpret_cast<VulkanTexture*>(m_PixelRequest->Texture);
+    const auto& desc = texture->GetDesc();
+    if (static_cast<u32>(m_PixelRequest->X) >= desc.width || static_cast<u32>(m_PixelRequest->Y) >= desc.height)
+        return; // the texture was resized under the request
+    const vk::Image image = texture->GetImage();
+
+    // Recorded after the frame graph, so it sees this frame's scene pass. The
+    // attachment ends the graph sampled by ImGui (ShaderReadOnly), as it does
+    // for the blocking ReadPixel.
+    TransitionLayout(cmd, image, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferSrcOptimal,
+                     vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eShaderRead,
+                     vk::AccessFlagBits::eTransferRead,
+                     vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eFragmentShader,
+                     vk::PipelineStageFlagBits::eTransfer);
+
+    const vk::BufferImageCopy region{.bufferOffset = 0,
+                                     .bufferRowLength = 0,
+                                     .bufferImageHeight = 0,
+                                     .imageSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor,
+                                                          .mipLevel = 0,
+                                                          .baseArrayLayer = 0,
+                                                          .layerCount = 1},
+                                     .imageOffset = vk::Offset3D{m_PixelRequest->X, m_PixelRequest->Y, 0},
+                                     .imageExtent = vk::Extent3D{1, 1, 1}};
+    cmd.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, readback.Buffer, region);
+
+    TransitionLayout(cmd, image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                     vk::AccessFlagBits::eTransferRead,
+                     vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eColorAttachmentWrite,
+                     vk::PipelineStageFlagBits::eTransfer,
+                     vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eColorAttachmentOutput);
+
+    // Host visibility of the copy is covered by the submit's fence signal.
+    readback.InFlight = true;
+}
+
+void VulkanDevice::CollectPixelReadback()
+{
+    PixelReadback& readback = m_PixelReadbacks[m_CurrentFrame];
+    if (!readback.InFlight)
+        return;
+    readback.InFlight = false;
+
+    void* mapped = nullptr;
+    if (vmaMapMemory(m_Allocator, readback.Allocation, &mapped) == VK_SUCCESS && mapped)
+    {
+        vmaInvalidateAllocation(m_Allocator, readback.Allocation, 0, VK_WHOLE_SIZE);
+        u32 value = 0;
+        std::memcpy(&value, mapped, sizeof(value));
+        m_LastPixel = value;
+        vmaUnmapMemory(m_Allocator, readback.Allocation);
+    }
 }
 
 } // namespace UHE::RHI::VULKAN

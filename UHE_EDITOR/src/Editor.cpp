@@ -1470,7 +1470,8 @@ void Editor::OnImGuiRender()
     {
         if (m_FramesSinceResize > 1)
         {
-            int pixelData = m_Framebuffer->ReadPixel(1, mouseX, mouseY);
+            // Async: the blocking read waited on the GPU every hovered frame.
+            int pixelData = m_Framebuffer->ReadPixelAsync(1, mouseX, mouseY);
             if (pixelData == -1 || pixelData < 0)
             {
                 m_HoverdEntity = Entity();
