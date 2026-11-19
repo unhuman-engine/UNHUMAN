@@ -30,6 +30,10 @@ add_executable(scene_test
     # Scene.cpp carries UHE_PROFILE_* scopes; Profiler.cpp is dependency-free
     # (std only), so the harness compiles the real TU instead of stubbing it.
     ${SCENE_SRC_DIR}/Debug/Profiler.cpp
+    # The scene step drives animation graphs; both are pure logic (the
+    # Animator they act on is stubbed in tests/scene/stubs.cpp).
+    ${SCENE_SRC_DIR}/Animation/AnimationGraph.cpp
+    ${SCENE_SRC_DIR}/Renderer3D/AnimationStateMachine.cpp
 )
 
 # Same include set as UHE (mirrors UHE/CMakeLists.txt) so the real TUs resolve

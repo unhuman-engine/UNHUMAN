@@ -13,6 +13,7 @@
 #include "UHE/Renderer/Texture.h"
 #include "UHE/Renderer/Font.h"
 #include "UHE/Core/input.h"
+#include "UHE/Audio/AudioEngine.h"
 
 #include <mutex>
 
@@ -97,8 +98,12 @@ Ref<SubTexture2D> SubTexture2D::CreateFromPixels(const Ref<Texture2D>&, glm::vec
 // No models are loaded headless, so these are inert. ----
 namespace UHE::RD3d
 {
+Animator::Animator(Ref<Model> model) : m_Model(std::move(model)) {}
 void Animator::UpdateAnimation(f32) {}
 void Animator::SetSkin(i32) {}
+void Animator::PlayAnimation(const std::string&) {}
+void Animator::CrossFade(const std::string&, float) {}
+float Animator::GetNormalizedTime() const { return 0.0f; }
 std::vector<LightData> LightSystem::ExtractLights(entt::registry&) { return {}; }
 Model::~Model()
 {
@@ -111,3 +116,32 @@ Model::~Model()
     m_NodeToMesh.clear();
 }
 } // namespace UHE::RD3d
+
+// ---- Audio: AudioSourceComponent voices are driven from the scene step. A
+// headless harness has no output device, so every voice is invalid and inert,
+// which is what the real engine answers before AudioEngine::Init(). ----
+namespace UHE::Audio
+{
+void AudioEngine::Init() {}
+void AudioEngine::Shutdown() {}
+void AudioEngine::Update() {}
+SoundHandle AudioEngine::Play(const std::string&, const SoundOptions&) { return 0; }
+SoundHandle AudioEngine::PlaySound2D(const std::string&, float, bool) { return 0; }
+void AudioEngine::Stop(SoundHandle) {}
+void AudioEngine::Pause(SoundHandle) {}
+void AudioEngine::Resume(SoundHandle) {}
+void AudioEngine::StopAll() {}
+bool AudioEngine::IsPlaying(SoundHandle) { return false; }
+bool AudioEngine::IsValid(SoundHandle) { return false; }
+void AudioEngine::SetVolume(SoundHandle, float) {}
+void AudioEngine::SetPitch(SoundHandle, float) {}
+void AudioEngine::SetPan(SoundHandle, float) {}
+void AudioEngine::SetPosition(SoundHandle, const glm::vec3&) {}
+void AudioEngine::SetLooping(SoundHandle, bool) {}
+void AudioEngine::SetMinMaxDistance(SoundHandle, float, float) {}
+void AudioEngine::SetRolloff(SoundHandle, float) {}
+void AudioEngine::SetMasterVolume(float) {}
+float AudioEngine::GetMasterVolume() { return 1.0f; }
+void AudioEngine::SetListenerPosition(const glm::vec3&, const glm::vec3&, const glm::vec3&) {}
+std::vector<ActiveVoice> AudioEngine::GetActiveVoices() { return {}; }
+} // namespace UHE::Audio

@@ -30,6 +30,10 @@ add_executable(scripting_test
     ${SCENE_SRC_DIR}/Debug/TracySetup.cpp
     ${SCENE_SRC_DIR}/Animation/Animation2D/SpriteAnimation.cpp
     ${SCENE_SRC_DIR}/Debug/Profiler.cpp
+    # The scene step drives animation graphs; both are pure logic (the
+    # Animator they act on is stubbed in tests/scene/stubs.cpp).
+    ${SCENE_SRC_DIR}/Animation/AnimationGraph.cpp
+    ${SCENE_SRC_DIR}/Renderer3D/AnimationStateMachine.cpp
 )
 
 find_package(Vulkan REQUIRED)

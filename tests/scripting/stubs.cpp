@@ -8,10 +8,9 @@
 
 namespace UHE
 {
-// SceneSerializer constructs a Model and an Animator when a scene declares those
-// components. The harness's scenes do not, so these exist to link, not to run --
-// the same reason tests/scene stubs the renderer it never calls.
+// SceneSerializer loads a Model when a scene declares one. The harness's scenes
+// do not, so this exists to link, not to run -- the same reason tests/scene
+// stubs the renderer it never calls. The Animator stubs live in
+// tests/scene/stubs.cpp, which both harnesses link.
 bool RD3d::Model::loadModel(const std::filesystem::path&, const RD3d::ModelLoadOptions&) { return false; }
-RD3d::Animator::Animator(Ref<RD3d::Model> model) : m_Model(std::move(model)) {}
-void RD3d::Animator::PlayAnimation(const std::string&) {}
 } // namespace UHE
