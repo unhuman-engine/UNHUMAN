@@ -114,6 +114,11 @@ creates them again (`Renderer3D::ReloadShaders` / `Renderer2D::ReloadShaders`).
 Waiting is not optional: frames already queued reference the objects being
 replaced.
 
+An edit that does not compile keeps the last good stages: `Shader::Error` holds
+Slang's message, failure listeners get it (the editor shows it as an error
+toast), and the source counts as seen, so the same error is not recompiled on
+every poll. `ReloadAll()` returns how many shaders failed.
+
 Off by default — a shipped build has no sources to watch. The editor and the
 sandbox enable it; the editor's **File > Reload Shaders** forces a recompile of
 everything, for the cases an mtime check cannot see (a restored file, a changed

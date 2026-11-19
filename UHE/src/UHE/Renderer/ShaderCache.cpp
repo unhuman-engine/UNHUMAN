@@ -303,12 +303,15 @@ bool ShaderCache::CompileInto(Entry& entry, const std::filesystem::path& source,
 {
     UHE_CORE_INFO("Shader '{0}' [{1}]: compiling", Describe(source), variant.Name);
 
-    const auto compiled = SlangCompiler::CompileToSPIRV(source.string(), variant.Defines);
+    std::string diagnostics;
+    const auto compiled = SlangCompiler::CompileToSPIRV(source.string(), variant.Defines, &diagnostics);
     if (compiled.empty())
     {
         UHE_CORE_ERROR("Shader '{0}' [{1}] did not compile to any stage", Describe(source), variant.Name);
+        entry.Data.Error = diagnostics.empty() ? "did not compile to any stage" : diagnostics;
         return false;
     }
+    entry.Data.Error.clear();
 
     entry.Data.Stages.clear();
     entry.Data.FromArtifact = false;
@@ -371,6 +374,7 @@ bool ShaderCache::Reload(Handle handle)
 
     if (!CompileInto(entry, source, variant))
     {
+        ReportFailure(handle, entry);
         return false;
     }
 
@@ -433,8 +437,9 @@ std::vector<ShaderCache::Handle> ShaderCache::Poll()
     return reloaded;
 }
 
-void ShaderCache::ReloadAll()
+u32 ShaderCache::ReloadAll()
 {
+    u32 failed = 0;
     for (Handle handle : Handles())
     {
         const auto it = m_Shaders.find(handle);
@@ -449,6 +454,11 @@ void ShaderCache::ReloadAll()
         {
             ++entry.Data.ReloadCount;
         }
+        else
+        {
+            ReportFailure(handle, entry);
+            ++failed;
+        }
     }
 
     // One notification, not one per shader: a listener rebuilds the pipelines it
@@ -457,6 +467,23 @@ void ShaderCache::ReloadAll()
     {
         listener(0);
     }
+    return failed;
+}
+
+void ShaderCache::ReportFailure(Handle handle, Entry& entry)
+{
+    // The failed source counts as seen: polling must wait for the next edit
+    // instead of recompiling (and reporting) the same error four times a second.
+    entry.Data.SourceTime = ModificationTime(entry.Data.SourcePath);
+    for (const auto& listener : m_FailureListeners)
+    {
+        listener(handle, entry.Data.Error);
+    }
+}
+
+void ShaderCache::AddFailureListener(std::function<void(Handle, const std::string&)> listener)
+{
+    m_FailureListeners.push_back(std::move(listener));
 }
 
 void ShaderCache::SetHotReloadEnabled(bool enabled)
@@ -491,5 +518,6 @@ void ShaderCache::Clear()
 {
     m_Shaders.clear();
     m_Listeners.clear();
+    m_FailureListeners.clear();
 }
 } // namespace UHE

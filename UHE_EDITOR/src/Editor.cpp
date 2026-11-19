@@ -48,6 +48,18 @@ void Editor::OnAttach()
     ShaderCache::Get().SetHotReloadEnabled(true);
     ScriptEngine::Get().SetHotReloadEnabled(true);
 
+    // A shader edit that does not compile keeps the last good version drawing;
+    // say so on screen, not only in the log.
+    ShaderCache::Get().AddFailureListener(
+        [this](ShaderCache::Handle handle, const std::string& error)
+        {
+            const ShaderCache::Shader* shader = ShaderCache::Get().Get(handle);
+            const std::string name =
+                shader ? std::filesystem::path(shader->SourcePath).filename().string() : std::string("shader");
+            const std::string firstLine = error.substr(0, error.find('\n'));
+            Notify(NotificationCenter::Kind::Error, name + " failed to compile", firstLine);
+        });
+
     FramebufferSpecification fbSpec;
     fbSpec.Attachments = {FramebufferTextureFormat::RGBA8, FramebufferTextureFormat::RED_INTEGER,
                           FramebufferTextureFormat::Depth};
@@ -629,9 +641,16 @@ void Editor::DeleteSelectedEntity()
 
 void Editor::ReloadShaders()
 {
-    ShaderCache::Get().ReloadAll();
-    Notify(NotificationCenter::Kind::Success, "Shaders reloaded",
-           "Every loaded shader was recompiled and its pipelines rebuilt.");
+    const u32 failed = ShaderCache::Get().ReloadAll();
+    if (failed == 0)
+    {
+        Notify(NotificationCenter::Kind::Success, "Shaders reloaded",
+               "Every loaded shader was recompiled and its pipelines rebuilt.");
+        return;
+    }
+    // Each failure already raised its own toast through the failure listener.
+    Notify(NotificationCenter::Kind::Warning, "Shaders reloaded with errors",
+           std::to_string(failed) + " shader(s) kept their last good version; see the console.");
 }
 
 void Editor::ReloadScripts()

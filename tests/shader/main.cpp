@@ -326,6 +326,31 @@ int main(int argc, char** argv)
         check(std::filesystem::last_write_time(artifact, ec) > artifactTimeBefore,
               "the reload rewrote the artifact");
 
+        // A broken edit: reported once, with Slang's message, and the last good
+        // stages stay in place.
+        int failures = 0;
+        std::string failureText;
+        library.AddFailureListener(
+            [&](UHE::ShaderCache::Handle, const std::string& error)
+            {
+                ++failures;
+                failureText = error;
+            });
+        {
+            std::ofstream broken(tempDir / "Basic3D.slang", std::ios::app);
+            broken << "\nthis is not slang @@@\n";
+        }
+        std::filesystem::last_write_time(tempDir / "Basic3D.slang",
+                                         std::filesystem::file_time_type::clock::now() + std::chrono::seconds(20), ec);
+        check(library.Poll().empty(), "a broken edit reloads nothing");
+        check(failures == 1, "the failure listener is told once");
+        check(!failureText.empty(), "with the compiler's message");
+        const UHE::ShaderCache::Shader* kept = library.Get(artifactHandle);
+        check(kept != nullptr && !kept->Error.empty(), "the shader records the error");
+        check(kept != nullptr && kept->Stages.size() == 2, "and keeps its last good stages");
+        check(library.Poll().empty() && failures == 1, "an unchanged broken source is not recompiled every poll");
+        check(library.ReloadAll() == 1, "ReloadAll counts the failure");
+
         library.Clear();
         std::filesystem::remove_all(tempDir, ec);
     }

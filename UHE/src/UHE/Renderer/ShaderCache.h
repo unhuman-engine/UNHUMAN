@@ -88,6 +88,9 @@ public:
         bool FromArtifact = false;
         u32 ReloadCount = 0;
         std::filesystem::file_time_type SourceTime{};
+        /// @brief Why the last compile failed; empty after a good one. The
+        /// stages stay those of the last good compile, so a typo keeps drawing.
+        std::string Error;
 
         [[nodiscard]] const ShaderStageBinary* FindStage(RHI::ShaderStage stage) const;
     };
@@ -117,7 +120,8 @@ public:
     ///
     /// For an explicit "reload shaders" command: a file that was restored, or a
     /// define that changed, is not something an mtime check can see.
-    void ReloadAll();
+    /// @return how many shaders failed to compile (0 means all reloaded).
+    u32 ReloadAll();
 
     /// Enables or disables source watching. Off by default: a shipped build has
     /// no shader sources to watch.
@@ -131,6 +135,10 @@ public:
     /// Notified after a shader's bytes changed, so the caller can rebuild the
     /// pipelines that were built from them.
     void AddReloadListener(std::function<void(Handle)> listener);
+
+    /// @brief Notified when a reload fails to compile, with the shader and
+    /// Slang's message, so the editor can show it rather than only log it.
+    void AddFailureListener(std::function<void(Handle, const std::string&)> listener);
 
     /// Drops every loaded shader. For shutdown; the device must already be idle.
     void Clear();
@@ -148,9 +156,12 @@ private:
     bool LoadInto(Entry& entry, const std::filesystem::path& source, const ShaderVariant& variant);
     bool CompileInto(Entry& entry, const std::filesystem::path& source, const ShaderVariant& variant);
     static void RefreshTimestamps(Entry& entry);
+    /// @brief Records a failed compile on \p handle and tells the failure listeners.
+    void ReportFailure(Handle handle, Entry& entry);
 
     std::unordered_map<Handle, Entry> m_Shaders;
     std::vector<std::function<void(Handle)>> m_Listeners;
+    std::vector<std::function<void(Handle, const std::string&)>> m_FailureListeners;
     Handle m_NextHandle = 1;
     bool m_HotReload = false;
     double m_LastPollSeconds = -1.0;

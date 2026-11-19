@@ -14,8 +14,11 @@ namespace UHE {
         ///
         /// A define is how one source serves two pipelines that differ in a
         /// shader output, rather than keeping two near-identical files in step.
-        static std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> CompileToSPIRV(
-            const std::string& filepath,
-            const std::vector<std::pair<std::string, std::string>>& defines = {});
-	};
+        /// @param diagnostics when set, receives Slang's error text on failure
+        ///        (empty on success), so a caller can show it rather than only log it.
+        static std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>>
+        CompileToSPIRV(const std::string& filepath,
+                       const std::vector<std::pair<std::string, std::string>>& defines = {},
+                       std::string* diagnostics = nullptr);
+    };
 }
