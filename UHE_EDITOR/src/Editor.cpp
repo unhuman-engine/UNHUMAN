@@ -6,9 +6,9 @@
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 #include "ImGuizmo.h"
-#include "UHE/AssestsManager/AssetImport.h"
-#include "UHE/AssestsManager/Project.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/AssetImport.h"
+#include "UHE/AssetsManager/Project.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
 #include "UHE/Math/Math.h"
 #include "UHE/RHI/RHICommandBuffer.h"

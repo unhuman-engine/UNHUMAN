@@ -21,7 +21,7 @@ set(GLTF_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer/Mipmap.cpp
     # LoadModel.cpp resolves asset paths through the VFS mounts; VfsSystem.cpp is
     # GPU-free, so the harness compiles the real TU.
-    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/AssestsManager/VfsSystem.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/AssetsManager/VfsSystem.cpp
 )
 
 # The loader reports failures through UHE::Log macros, which the test does not

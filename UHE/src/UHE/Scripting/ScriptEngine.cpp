@@ -1,7 +1,7 @@
 #include "uhepch.h"
 #include "ScriptEngine.h"
 
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/Log.h"
 #include "UHE/Core/input.h"
 #include "UHE/Physics/PhysicsSystem3D.h"

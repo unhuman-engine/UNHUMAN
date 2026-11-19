@@ -1,7 +1,7 @@
 #include "uhepch.h"
 #include "MiniAudioBackend.h"
 
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/Log.h"
 
 #define MINIAUDIO_IMPLEMENTATION

@@ -7,7 +7,7 @@
 #include <misc/cpp/imgui_stdlib.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "EditorTheme.h"
 #include <algorithm>
 #include <cctype>

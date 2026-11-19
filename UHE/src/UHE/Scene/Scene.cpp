@@ -12,7 +12,7 @@
 #include "UHE/Renderer3D/AnimationStateMachine.h"
 #include "UHE/Renderer2D/SubTexture2D.h"
 #include "UHE/Renderer3D/LightSystem.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Audio/AudioEngine.h"
 
 #define GLM_ENABLE_EXPERIMENTAL

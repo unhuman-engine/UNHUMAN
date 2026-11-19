@@ -2,7 +2,7 @@
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Font.h"

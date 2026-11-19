@@ -118,7 +118,7 @@ parsed*, and it fixes visible wrongness (foliage renders black).
 | 1 | Per-thread job queues + work-stealing deques (kill the single hot-path mutex) | jobsystem §10.1 | `TODO` |
 | 2 | Job continuations (child jobs instead of OS-stack recursion) | jobsystem §10.2 | `TODO` |
 | 3 | `ParallelFor` cache-line-aligned batch hints | jobsystem §10.5 | `TODO` |
-| 4 | Asset Phase A: fix `UUID` uniqueness, `AssetManager` registry + path→ID + refcount + sync `Load`, migrate model/texture/audio loads. Renames while churn is cheap: `AssestsManager`→`AssetManager`, `UIID`→`UUID` | assets §2.1–§2.3, §5A | `TODO` |
+| 4 | Asset Phase A: fix `UUID` uniqueness, `AssetManager` registry + path→ID + refcount + sync `Load`, migrate model/texture/audio loads. Renames while churn is cheap: `AssetsManager`→`AssetManager`, `UIID`→`UUID` | assets §2.1–§2.3, §5A | `TODO` |
 | 5 | Asset Phase B: `IAssetLoader` (worker load + main-thread finalize), `LoadAsync` on the Jobsystem, `AssetManager::Update` delivery; audio decoded-sound cache, `Voice` handles, master volume, auto listener | assets §2.5, §3.1–§3.2, §5B | `TODO` |
 | 6 | Asset Phase C: mount-based VFS, scenes serialize `AssetID` with path fallback | assets §2.8, §2.10, §5C | `TODO` |
 | 7 | Asset Phase D: dependency graph via `TaskGraph`, audio buses/ducking, event assets | assets §2.6, §3.4, §5D | `TODO` |

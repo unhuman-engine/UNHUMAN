@@ -1,7 +1,7 @@
 #include "uhepch.h"
 #include "Project.h"
 
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 
 #include <yaml-cpp/yaml.h>
 

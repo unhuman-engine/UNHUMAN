@@ -1,9 +1,9 @@
 // Project system harness: creates, loads, saves and mounts a project, and checks
 // that asset paths resolve through the project ("game:") and engine ("engine:")
 // mounts. No GPU, no ImGui.
-#include "UHE/AssestsManager/AssetImport.h"
-#include "UHE/AssestsManager/Project.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/AssetImport.h"
+#include "UHE/AssetsManager/Project.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
 
 #include <array>

@@ -24,7 +24,7 @@ add_executable(scripting_test
     ${SCENE_SRC_DIR}/Scene/Entity.cpp
     ${SCENE_SRC_DIR}/Scene/SceneSerializer.cpp
     ${SCENE_SRC_DIR}/Core/UUID.cpp
-    ${SCENE_SRC_DIR}/AssestsManager/VfsSystem.cpp
+    ${SCENE_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${SCENE_SRC_DIR}/Physics/PhysicsSystem3D.cpp
     ${SCENE_SRC_DIR}/Math/Math.cpp
     ${SCENE_SRC_DIR}/Debug/TracySetup.cpp

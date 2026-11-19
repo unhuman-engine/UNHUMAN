@@ -1,5 +1,5 @@
 #pragma once
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
 
 extern UHE::Application* UHE::CreateApplication();

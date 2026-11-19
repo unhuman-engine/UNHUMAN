@@ -3,8 +3,8 @@
 // Exercises UUID identity uniqueness, the AssetManager registry (path-to-ID dedup,
 // refcounted handles, lifecycle state machine, synchronous and asynchronous worker loading,
 // hot reload polling), and VFS mount resolution.
-#include "UHE/AssestsManager/AssetManager.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/AssetManager.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/UUID.h"
 #include "UHE/Jobsystem/Jobsystem.h"
 

@@ -1,7 +1,7 @@
 #include "uhepch.h"
 #include "Renderer3D.h"
 #include <glm/gtc/matrix_transform.hpp>
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Renderer.h"

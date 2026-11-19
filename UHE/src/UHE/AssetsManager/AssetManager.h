@@ -8,7 +8,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "UHE/AssestsManager/AssetID.h"
+#include "UHE/AssetsManager/AssetID.h"
 #include "UHE/Core/Core.h"
 
 namespace UHE::Jobsystem

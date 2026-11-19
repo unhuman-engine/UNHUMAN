@@ -17,7 +17,7 @@
 #include <map>
 #include <tuple>
 #include "MeshoptDecode.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/Renderer.h"
 #include "fastgltf/core.hpp"

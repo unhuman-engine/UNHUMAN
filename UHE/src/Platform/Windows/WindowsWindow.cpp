@@ -1,7 +1,7 @@
 #include "uhepch.h"
 #include "WindowsWindow.h"
 
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/Log.h"
 #include "UHE/Events/ApplicationEvent.h"
 #include "UHE/Events/KeyEvent.h"

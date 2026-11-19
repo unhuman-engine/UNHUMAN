@@ -3,7 +3,7 @@
 #include "EditorTheme.h"
 #include "EditorUI.h"
 
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Utils/PlatfromUtils.h"
 
 #include "imgui.h"

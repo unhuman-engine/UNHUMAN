@@ -1,6 +1,6 @@
 #pragma once
 
-#include "UHE/AssestsManager/Project.h"
+#include "UHE/AssetsManager/Project.h"
 
 #include <filesystem>
 #include <string>

@@ -8,9 +8,9 @@ add_executable(project_test
     # Reuses the rendergraph log stub (UHE::Log statics without ImGui).
     ${CMAKE_SOURCE_DIR}/tests/rendergraph/log_stub.cpp
     # Real units under test
-    ${PROJECT_SRC_DIR}/AssestsManager/AssetImport.cpp
-    ${PROJECT_SRC_DIR}/AssestsManager/Project.cpp
-    ${PROJECT_SRC_DIR}/AssestsManager/VfsSystem.cpp
+    ${PROJECT_SRC_DIR}/AssetsManager/AssetImport.cpp
+    ${PROJECT_SRC_DIR}/AssetsManager/Project.cpp
+    ${PROJECT_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${PROJECT_SRC_DIR}/Core/CommandLine.cpp
 )
 

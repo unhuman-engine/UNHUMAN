@@ -1,7 +1,7 @@
 #include "ScriptsPanel.h"
 
 #include "EditorTheme.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Scene/Scene.h"
 #include "UHE/Scripting/ScriptEngine.h"
 #include "UHE/Utils/PlatfromUtils.h"

@@ -16,7 +16,7 @@ implemented below names the file it lives in; everything else is planned.
 | 2D physics (Box2D) | `Scene::OnUpdateRuntimeSimulation` | `b2World_Step` with substeps |
 | Jobs + task graph | `UHE/src/UHE/Jobsystem/` | used by physics and by the render graph |
 | Frame graph + offscreen rendering | `UHE/src/Platform/Vulkan/RenderGraph/`, editor viewport framebuffer | the scene already renders to a framebuffer, not straight to the swapchain |
-| Projects and per-project assets | `UHE/src/UHE/AssestsManager/Project.{h,cpp}`, `docs/architecture/assets-and-audio.md` | a scene + its assets are one unit to ship to a server |
+| Projects and per-project assets | `UHE/src/UHE/AssetsManager/Project.{h,cpp}`, `docs/architecture/assets-and-audio.md` | a scene + its assets are one unit to ship to a server |
 | Headless-capable tests, ASan CI | `tests/**`, `.github/workflows/sanitizers.yml` | the harness style (real TUs, no GPU) is how the sim layer should be tested |
 | Game/app shell | `UHEGAME/`, `sandbox/` | "client full base": a real application on top of the engine |
 

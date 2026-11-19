@@ -5,7 +5,7 @@
 > at any time. Related issue:
 > [#24](https://github.com/unhuman-engine/UNHUMAN/issues/24) for visualization. The
 > audio backend itself landed earlier with miniaudio.
-> **Code lands in:** `UHE/src/UHE/AssestsManager/`, `UHE/src/UHE/Audio/`,
+> **Code lands in:** `UHE/src/UHE/AssetsManager/`, `UHE/src/UHE/Audio/`,
 > `UHE/src/UHE/Renderer3D/`.
 > **Snapshot:** written against the current tree; re-verify `file:line`
 > references after phases A to C land.
@@ -35,8 +35,8 @@ real clients of the job system, so building them also exercises it.
 
 | Piece | Location | State |
 |---|---|---|
-| Path resolver | `AssestsManager/VfsSystem.h/.cpp` | Singleton, linear search for `UHE_EDITOR/assets`, `Resolve` prepends the root |
-| Shader manager | `AssestsManager/ShaderManager.h` | Stub, `void Init()` |
+| Path resolver | `AssetsManager/VfsSystem.h/.cpp` | Singleton, linear search for `UHE_EDITOR/assets`, `Resolve` prepends the root |
+| Shader manager | `AssetsManager/ShaderManager.h` | Stub, `void Init()` |
 | Model loading | `Renderer3D/LoadModel.h/.cpp` | Synchronous `Model::loadModel(path)` using fastgltf |
 | Textures | `Renderer/Texture.h` | `Texture2D` by path (stb_image) and from memory; KTX2/Basis decoded via `Renderer/KTX2.h` (LDR, level 0 + file-authored chains, issue #42); sampler state (wrap/filter/colour space/anisotropy/maxLod) per `RHI::SamplerDesc`; per-load texture dedup in the glTF loader |
 | UUID | `Core/UIID.h/.cpp` | Exists, random `u64`; the uniqueness set is unused |
@@ -239,11 +239,11 @@ projects/GameSnake/
   Assets/                 mounted as game:
 ```
 
-- `UHE::Project` (`AssestsManager/Project.h`) creates, loads, saves and validates
+- `UHE::Project` (`AssetsManager/Project.h`) creates, loads, saves and validates
   manifests; `Project::Mount` points `game:` at `<project>/Assets` and `engine:`
   at the binary's asset folder. Re-mounting replaces a prefix in place, so the
   project stays ahead of the engine folder and can shadow a file by name.
-- `ResolveAssetPath` (`AssestsManager/VfsSystem.h`) is the single seam used by
+- `ResolveAssetPath` (`AssetsManager/VfsSystem.h`) is the single seam used by
   content loaders (`Texture2D::Create`, `Model::loadModel`): absolute and
   already-resolvable paths pass through, otherwise `game:` is tried before
   `engine:`. Scene-serialized paths such as `Textures/wall.png` therefore resolve
@@ -258,7 +258,7 @@ projects/GameSnake/
   under `projects/`. A single click opens an entry, and File > Project Manager...
   returns to the launcher. Scene dialogs start inside the project's `Assets/`
   folder, and the status bar shows the open project.
-- Importing goes through `ImportAssetFile` (`AssestsManager/AssetImport.h`): files
+- Importing goes through `ImportAssetFile` (`AssetsManager/AssetImport.h`): files
   dropped from the OS file explorer are copied into the project before anything
   references them (name clashes are numbered, never overwritten) and are placed in
   the scene when they land on the viewport; the Content Browser's `Import` button
@@ -407,4 +407,4 @@ registry's generation scheme only.
 - Threading contract: a main-thread-only audio API, which is simpler, or a
   command queue, which is more flexible.
 - Hot reload scope: all asset types, or shaders and textures first.
-- Renaming `AssestsManager` and `UIID` while churn is low.
+- Renaming `AssetsManager` and `UIID` while churn is low.
