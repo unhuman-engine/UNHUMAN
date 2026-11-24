@@ -13,6 +13,7 @@ int main(int argc, char** argv)
     
     app->Run();
 
+    const int exitCode = app->GetExitCode();
     delete app;
-    return 0;
+    return exitCode;
 }

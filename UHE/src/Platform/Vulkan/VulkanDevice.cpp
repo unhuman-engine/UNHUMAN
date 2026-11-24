@@ -512,6 +512,8 @@ void VulkanDevice::End()
     if (!m_FrameSkipped)
         RecordPixelReadback(cmd);
     m_PixelRequest.reset();
+    // A skipped frame presents nothing, so a capture waits for the next one.
+    const bool capturing = !m_FrameSkipped && RecordFrameCapture(cmd);
 
     cmd.end();
 
@@ -578,6 +580,8 @@ void VulkanDevice::End()
         m_FramebufferResized = false;
         RecreateSwapchain();
     }
+    if (capturing)
+        CollectFrameCapture();
     m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
@@ -903,6 +907,107 @@ void VulkanDevice::CollectPixelReadback()
         m_LastPixel = value;
         vmaUnmapMemory(m_Allocator, readback.Allocation);
     }
+}
+
+bool VulkanDevice::RequestFrameCapture(std::function<void(const CapturedFrame&)> onCaptured)
+{
+    if (!m_SwapChain.SupportsTransferSrc())
+    {
+        UHE_CORE_ERROR("RequestFrameCapture: the surface does not allow reading swapchain images back");
+        return false;
+    }
+    const vk::Format format = m_SwapChain.GetSurfaceFormat().format;
+    const bool bgra = format == vk::Format::eB8G8R8A8Srgb || format == vk::Format::eB8G8R8A8Unorm;
+    const bool rgba = format == vk::Format::eR8G8B8A8Srgb || format == vk::Format::eR8G8B8A8Unorm;
+    if (!bgra && !rgba)
+    {
+        UHE_CORE_ERROR("RequestFrameCapture: unsupported swapchain format {0}", vk::to_string(format));
+        return false;
+    }
+    m_FrameCapture.Callback = std::move(onCaptured);
+    m_FrameCapture.SwapRedBlue = bgra;
+    return true;
+}
+
+bool VulkanDevice::RecordFrameCapture(vk::raii::CommandBuffer& cmd)
+{
+    if (!m_FrameCapture.Callback)
+        return false;
+
+    const vk::Extent2D extent = m_SwapChain.GetExtent();
+    const vk::DeviceSize size = static_cast<vk::DeviceSize>(extent.width) * extent.height * 4;
+    const CreatedBuffer created =
+        ::UHE::RHI::VULKAN::CreateBuffer(size, vk::BufferUsageFlagBits::eTransferDst, VMA_MEMORY_USAGE_GPU_TO_CPU);
+    if (!created.buffer)
+    {
+        UHE_CORE_ERROR("RequestFrameCapture: could not create a {0}-byte readback buffer", size);
+        m_FrameCapture.Callback = nullptr;
+        return false;
+    }
+    m_FrameCapture.Buffer = created.buffer;
+    m_FrameCapture.Allocation = created.allocation;
+    m_FrameCapture.Width = extent.width;
+    m_FrameCapture.Height = extent.height;
+
+    // Recorded last: the graph (or the recovery path above) has already left
+    // the image in PresentSrc with every colour write of the frame before it.
+    const vk::Image image = m_SwapChain.GetImages()[m_ImageIndex];
+    TransitionLayout(cmd, image, vk::ImageLayout::ePresentSrcKHR, vk::ImageLayout::eTransferSrcOptimal,
+                     vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eTransferRead,
+                     vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eTransfer);
+
+    const vk::BufferImageCopy region{.bufferOffset = 0,
+                                     .bufferRowLength = 0,
+                                     .bufferImageHeight = 0,
+                                     .imageSubresource = {.aspectMask = vk::ImageAspectFlagBits::eColor,
+                                                          .mipLevel = 0,
+                                                          .baseArrayLayer = 0,
+                                                          .layerCount = 1},
+                                     .imageOffset = vk::Offset3D{0, 0, 0},
+                                     .imageExtent = vk::Extent3D{extent.width, extent.height, 1}};
+    cmd.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, m_FrameCapture.Buffer, region);
+
+    TransitionLayout(cmd, image, vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::ePresentSrcKHR,
+                     vk::AccessFlagBits::eTransferRead, vk::AccessFlags{}, vk::PipelineStageFlagBits::eTransfer,
+                     vk::PipelineStageFlagBits::eBottomOfPipe);
+    return true;
+}
+
+void VulkanDevice::CollectFrameCapture()
+{
+    // Blocking by design: a capture is a test hook, and the callback wants the
+    // pixels of this frame, not of one a few frames later.
+    const auto waitResult = m_LogicalDevice.getLogicalDevice().waitForFences(
+        {*m_Frames[m_CurrentFrame].GetInFlightFence()}, VK_TRUE, UINT64_MAX);
+
+    CapturedFrame frame;
+    void* mapped = nullptr;
+    if (waitResult == vk::Result::eSuccess &&
+        vmaMapMemory(m_Allocator, m_FrameCapture.Allocation, &mapped) == VK_SUCCESS && mapped)
+    {
+        vmaInvalidateAllocation(m_Allocator, m_FrameCapture.Allocation, 0, VK_WHOLE_SIZE);
+        frame.Width = m_FrameCapture.Width;
+        frame.Height = m_FrameCapture.Height;
+        frame.Rgba.resize(static_cast<size_t>(frame.Width) * frame.Height * 4);
+        std::memcpy(frame.Rgba.data(), mapped, frame.Rgba.size());
+        vmaUnmapMemory(m_Allocator, m_FrameCapture.Allocation);
+        if (m_FrameCapture.SwapRedBlue)
+        {
+            for (size_t i = 0; i < frame.Rgba.size(); i += 4)
+                std::swap(frame.Rgba[i], frame.Rgba[i + 2]);
+        }
+    }
+    else
+    {
+        UHE_CORE_ERROR("RequestFrameCapture: the captured frame could not be read back");
+    }
+    vmaDestroyBuffer(m_Allocator, static_cast<VkBuffer>(m_FrameCapture.Buffer), m_FrameCapture.Allocation);
+
+    // Cleared before the call, so the callback may request another capture.
+    auto callback = std::move(m_FrameCapture.Callback);
+    m_FrameCapture = {};
+    if (!frame.Rgba.empty())
+        callback(frame);
 }
 
 } // namespace UHE::RHI::VULKAN
