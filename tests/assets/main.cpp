@@ -3,17 +3,16 @@
 // Exercises UUID identity uniqueness, the AssetManager registry (path-to-ID dedup,
 // refcounted handles, lifecycle state machine, synchronous and asynchronous worker loading,
 // hot reload polling), and VFS mount resolution.
-#include "UHE/AssetsManager/AssetManager.h"
-#include "UHE/AssetsManager/VfsSystem.h"
-#include "UHE/Core/UUID.h"
-#include "UHE/Jobsystem/Jobsystem.h"
-
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <thread>
 #include <unordered_set>
+#include "UHE/AssetsManager/AssetManager.h"
+#include "UHE/AssetsManager/VfsSystem.h"
+#include "UHE/Core/UUID.h"
+#include "UHE/Jobsystem/Jobsystem.h"
 #if defined(_WIN32)
     #include <process.h>
 #else
@@ -188,8 +187,12 @@ static void TestAsyncRetryAfterFailure()
 
     bool firstFired = false;
     bool firstOk = true;
-    AssetHandle<BinaryAsset> first = manager.LoadAsync<BinaryAsset>(
-        file.string(), [&](AssetID, bool ok) { firstFired = true; firstOk = ok; });
+    AssetHandle<BinaryAsset> first = manager.LoadAsync<BinaryAsset>(file.string(),
+                                                                    [&](AssetID, bool ok)
+                                                                    {
+                                                                        firstFired = true;
+                                                                        firstOk = ok;
+                                                                    });
     waitFor(firstFired);
     CHECK(firstFired && !firstOk, "loading a missing file reports failure");
 
@@ -197,8 +200,12 @@ static void TestAsyncRetryAfterFailure()
 
     bool retryFired = false;
     bool retryOk = false;
-    AssetHandle<BinaryAsset> retry = manager.LoadAsync<BinaryAsset>(
-        file.string(), [&](AssetID, bool ok) { retryFired = true; retryOk = ok; });
+    AssetHandle<BinaryAsset> retry = manager.LoadAsync<BinaryAsset>(file.string(),
+                                                                    [&](AssetID, bool ok)
+                                                                    {
+                                                                        retryFired = true;
+                                                                        retryOk = ok;
+                                                                    });
     CHECK(retry.ID() == first.ID(), "the retry reuses the record");
     waitFor(retryFired);
     CHECK(retryFired && retryOk, "the retry reports success once the file exists");

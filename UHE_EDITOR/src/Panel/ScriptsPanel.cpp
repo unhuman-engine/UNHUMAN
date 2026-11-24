@@ -1,11 +1,9 @@
 #include "ScriptsPanel.h"
-
 #include "EditorTheme.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Scene/Scene.h"
 #include "UHE/Scripting/ScriptEngine.h"
 #include "UHE/Utils/PlatfromUtils.h"
-
 #include "imgui.h"
 
 namespace UHE
@@ -60,8 +58,8 @@ void ScriptsPanel::OnImGuiRender(bool& open)
         return;
     }
 
-    const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
-                                  ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp;
+    const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
+                                  ImGuiTableFlags_SizingStretchProp;
     if (ImGui::BeginTable("##scripts", 4, flags))
     {
         ImGui::TableSetupColumn("Entity", ImGuiTableColumnFlags_WidthStretch);

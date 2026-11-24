@@ -35,8 +35,7 @@ void VulkanSwapChain::createSwapChain(vk::raii::Device& device, vk::raii::Physic
         .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
         .presentMode = chooseSwapPresentMode(physicalDevice.getSurfacePresentModesKHR(*surface)),
         .clipped = VK_TRUE,
-        .oldSwapchain = {}
-    };
+        .oldSwapchain = {}};
 
     swapChain = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
     swapChainImages = swapChain.getImages();

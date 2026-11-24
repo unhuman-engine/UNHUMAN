@@ -15,12 +15,11 @@
 #define STBI_ONLY_PNG
 #include <stb_image.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include <stb_image_write.h>
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <optional>
+#include <stb_image_write.h>
 #include <string>
 
 namespace
@@ -101,8 +100,8 @@ int main(int argc, char** argv)
     const UHE::ImageDiff::Result result = UHE::ImageDiff::Compare(*expected, *actual, policy);
     if (result.SizeMismatch)
     {
-        std::printf("FAIL: size differs: expected %dx%d, got %dx%d\n", expected->Width, expected->Height,
-                    actual->Width, actual->Height);
+        std::printf("FAIL: size differs: expected %dx%d, got %dx%d\n", expected->Width, expected->Height, actual->Width,
+                    actual->Height);
         return 1;
     }
 
@@ -110,9 +109,8 @@ int main(int argc, char** argv)
                 result.DifferingPixels, result.TotalPixels, result.DifferingRatio() * 100.0,
                 policy.MaxDifferingRatio * 100.0, result.MaxChannelDelta, policy.ChannelTolerance);
 
-    if (diffPath != nullptr &&
-        !stbi_write_png(diffPath, result.Diff.Width, result.Diff.Height, 4, result.Diff.Rgba.data(),
-                        result.Diff.Width * 4))
+    if (diffPath != nullptr && !stbi_write_png(diffPath, result.Diff.Width, result.Diff.Height, 4,
+                                               result.Diff.Rgba.data(), result.Diff.Width * 4))
         std::fprintf(stderr, "uhe_imgdiff: cannot write '%s'\n", diffPath);
 
     const bool matches = result.Matches(policy);

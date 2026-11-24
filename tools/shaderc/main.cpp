@@ -21,12 +21,11 @@
 // It links the same `SlangCompiler` the engine's hot-reload path uses, so the
 // artifact and a runtime compile cannot disagree about a session setting.
 
-#include "UHE/Renderer/ShaderCache.h"
-#include "UHE/Renderer/SlangCompiler.h"
-
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Renderer/SlangCompiler.h"
 
 namespace
 {
@@ -142,8 +141,7 @@ int main(int argc, char** argv)
             const auto stages = UHE::SlangCompiler::CompileToSPIRV(source.string(), variant.Defines);
             if (stages.empty())
             {
-                std::cerr << "uhe_shaderc: '" << source.string() << "' [" << variant.Name
-                          << "] produced no SPIR-V\n";
+                std::cerr << "uhe_shaderc: '" << source.string() << "' [" << variant.Name << "] produced no SPIR-V\n";
                 ++failed;
                 continue;
             }
@@ -171,7 +169,6 @@ int main(int argc, char** argv)
         }
     }
 
-    std::cout << "uhe_shaderc: " << compiled << " compiled, " << skipped << " up to date, " << failed
-              << " failed\n";
+    std::cout << "uhe_shaderc: " << compiled << " compiled, " << skipped << " up to date, " << failed << " failed\n";
     return failed == 0 ? 0 : 1;
 }

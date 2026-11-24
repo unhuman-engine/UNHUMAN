@@ -1,6 +1,6 @@
 #include "uhepch.h"
-#include <array>
 #include "Renderer3D.h"
+#include <array>
 #include <glm/gtc/matrix_transform.hpp>
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/RHI/RHICommandBuffer.h"
@@ -168,7 +168,6 @@ void Renderer3D::Shutdown()
     s_Data3D.MaterialStorageBufferHandle = nullptr;
 
     s_Data3D.WhiteTexture.reset();
-
 }
 
 void Renderer3D::CreateShaderResources()
@@ -182,8 +181,7 @@ void Renderer3D::CreateShaderResources()
     // a single colour attachment, and a fragment output with no matching
     // attachment is invalid.
     const ShaderCache::Handle modelHandle = library.Load((shaderDir / "Basic3D.slang").string());
-    const ShaderCache::Handle modelNoIdHandle =
-        library.Load((shaderDir / "Basic3D.slang").string(), "no_entity_id");
+    const ShaderCache::Handle modelNoIdHandle = library.Load((shaderDir / "Basic3D.slang").string(), "no_entity_id");
     const ShaderCache::Handle gridHandle = library.Load((shaderDir / "Grid.slang").string());
 
     const ShaderCache::Shader* model = library.Get(modelHandle);
@@ -385,7 +383,10 @@ void Renderer3D::RestartMaterialRegion()
 
 void Renderer3D::EndScene() {}
 
-void Renderer3D::SetSwapchainTarget(bool enabled) { s_Data3D.SwapchainTarget = enabled; }
+void Renderer3D::SetSwapchainTarget(bool enabled)
+{
+    s_Data3D.SwapchainTarget = enabled;
+}
 
 void Renderer3D::DrawGrid()
 {

@@ -60,10 +60,10 @@ template <> struct AssetTraits<BinaryAsset>
 
 enum class LoadState : u32
 {
-    Queued,   // registered, waiting for a worker
-    Loading,  // LoadFromFile running on a worker
-    Ready,    // CPU data present (finalize may still be pending)
-    Failed    // LoadFromFile failed
+    Queued,  // registered, waiting for a worker
+    Loading, // LoadFromFile running on a worker
+    Ready,   // CPU data present (finalize may still be pending)
+    Failed   // LoadFromFile failed
 };
 
 /**
@@ -120,8 +120,7 @@ using LoadCallback = std::function<void(AssetID id, bool success)>;
  * Handles participate in reference counting to prevent premature reclamation.
  * Stale handles are detected via generation mismatch following asset reload.
  */
-template <class T>
-class AssetHandle
+template <class T> class AssetHandle
 {
 public:
     AssetHandle() = default;
@@ -155,9 +154,7 @@ public:
 private:
     friend class AssetManager;
     explicit AssetHandle(std::shared_ptr<AssetRecord> record)
-        : m_Record(std::move(record)),
-          m_ID(m_Record->id),
-          m_Generation(m_Record->generation.load())
+        : m_Record(std::move(record)), m_ID(m_Record->id), m_Generation(m_Record->generation.load())
     {
         m_Record->refCount.fetch_add(1, std::memory_order_relaxed);
     }
@@ -186,8 +183,7 @@ private:
     u32 m_Generation = 0;
 
 public:
-    AssetHandle(const AssetHandle& other)
-        : m_Record(other.m_Record), m_ID(other.m_ID), m_Generation(other.m_Generation)
+    AssetHandle(const AssetHandle& other) : m_Record(other.m_Record), m_ID(other.m_ID), m_Generation(other.m_Generation)
     {
         AddRef();
     }

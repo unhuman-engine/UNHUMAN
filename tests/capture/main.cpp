@@ -5,7 +5,6 @@
 
 #include <iostream>
 #include <string>
-
 #include "ImageDiff.h"
 #include "UHE/Core/CaptureSettings.h"
 

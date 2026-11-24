@@ -6,17 +6,16 @@
 // under the ASan preset this is the regression net for the entt lifetime
 // crashes: script instances, parent/child links, deferred mutations, and the
 // play-mode scene copy.
-#include "UHE/Scene/Scene.h"
-#include "UHE/Scene/Entity.h"
-#include "UHE/Scene/Components.h"
-#include "UHE/Scene/ScriptableEntity.h"
-#include "UHE/Physics/PhysicsSystem3D.h"
-#include "UHE/Renderer/EditorCamera.h"
-#include "UHE/Math/Math.h"
-#include "UHE/Core/SimulationClock.h"
-
 #include <cassert>
 #include <iostream>
+#include "UHE/Core/SimulationClock.h"
+#include "UHE/Math/Math.h"
+#include "UHE/Physics/PhysicsSystem3D.h"
+#include "UHE/Renderer/EditorCamera.h"
+#include "UHE/Scene/Components.h"
+#include "UHE/Scene/Entity.h"
+#include "UHE/Scene/Scene.h"
+#include "UHE/Scene/ScriptableEntity.h"
 
 using namespace UHE;
 
@@ -355,8 +354,7 @@ static void TestFixedStepDeterminism()
     for (u64 i = 0; i < kTicks; ++i)
         stepped->StepSimulation();
 
-    CHECK(slow->GetSimulationClock().GetTickIndex() == kTicks &&
-              fast->GetSimulationClock().GetTickIndex() == kTicks,
+    CHECK(slow->GetSimulationClock().GetTickIndex() == kTicks && fast->GetSimulationClock().GetTickIndex() == kTicks,
           "30 FPS and 144 FPS both land on tick 240");
     CHECK(PoseOf(*slow, "Box3D").Translation.y < 4.0f, "the 3D box fell");
     CHECK(PoseOf(*slow, "Box2D").Translation.y < 3.0f, "the 2D box fell");

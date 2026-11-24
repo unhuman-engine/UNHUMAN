@@ -1,5 +1,4 @@
 #include "SimulationClock.h"
-
 #include <algorithm>
 #include <cmath>
 
@@ -47,7 +46,8 @@ std::uint32_t SimulationClock::Advance(double frameSeconds)
 
     // Each frame is converted to integer nanoseconds once, so the accumulator
     // never carries floating-point error from one frame to the next.
-    m_AccumulatorNs += static_cast<std::int64_t>(std::llround(frameSeconds * static_cast<double>(kNanosecondsPerSecond)));
+    m_AccumulatorNs +=
+        static_cast<std::int64_t>(std::llround(frameSeconds * static_cast<double>(kNanosecondsPerSecond)));
 
     const std::int64_t due = m_AccumulatorNs / m_StepNs;
     const std::int64_t ticks = std::min<std::int64_t>(due, m_MaxTicks);

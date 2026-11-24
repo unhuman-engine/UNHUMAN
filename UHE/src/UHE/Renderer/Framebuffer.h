@@ -68,8 +68,8 @@ namespace UHE {
 
         void* GetColorAttachmentRendererID(uint32_t index = 0) const;
 
-		const FramebufferSpecification& GetSpecification() const { return m_Specification; }
-        
+        const FramebufferSpecification& GetSpecification() const { return m_Specification; }
+
         const std::vector<RHI::TextureHandle>& GetColorAttachments() const { return m_ColorAttachments; }
         RHI::TextureHandle GetDepthAttachment() const { return m_DepthAttachment; }
 

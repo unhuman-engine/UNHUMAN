@@ -1,6 +1,5 @@
 #include "uhepch.h"
 #include "ScriptEngine.h"
-
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/Log.h"
 #include "UHE/Core/input.h"
@@ -23,7 +22,6 @@
 // clang-format on
 
 #include <GLFW/glfw3.h>
-
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -45,7 +43,10 @@ struct Vec3
     [[nodiscard]] float Length() const { return std::sqrt(x * x + y * y + z * z); }
 };
 
-Vec3 ToVec3(const glm::vec3& value) { return {value.x, value.y, value.z}; }
+Vec3 ToVec3(const glm::vec3& value)
+{
+    return {value.x, value.y, value.z};
+}
 } // namespace
 
 struct ScriptEngine::Impl
@@ -232,8 +233,7 @@ bool ResolveEntity(ScriptEngine::Impl& impl, const sol::table& self, Scene*& sce
 {
     scene = SceneOf(self);
     handle = EntityOf(self);
-    return scene != nullptr && scene == impl.ActiveScene && handle != entt::null &&
-           scene->GetRegistry().valid(handle);
+    return scene != nullptr && scene == impl.ActiveScene && handle != entt::null && scene->GetRegistry().valid(handle);
 }
 
 /// True when there is a window whose keys and buttons can be read.
@@ -296,7 +296,6 @@ JPH::Vec3 ToJolt(const glm::vec3& value)
     return {value.x, value.y, value.z};
 }
 } // namespace
-
 
 namespace
 {
@@ -630,28 +629,31 @@ void BindApi(ScriptEngine::Impl& impl)
                        });
 
     // ── scene ───────────────────────────────────────────────────────────────
-    lua.set_function("Spawn", [&impl](const std::string& name) -> sol::object
+    lua.set_function("Spawn",
+                     [&impl](const std::string& name) -> sol::object
                      {
                          if (impl.ActiveScene == nullptr)
                          {
                              return sol::nil;
                          }
-                         return sol::make_object(impl.Lua.lua_state(),
-                                                 MakeEntityTable(impl, *impl.ActiveScene,
-                                                                 impl.ActiveScene->CreateEntity(name)));
+                         return sol::make_object(
+                             impl.Lua.lua_state(),
+                             MakeEntityTable(impl, *impl.ActiveScene, impl.ActiveScene->CreateEntity(name)));
                      });
 
     // ── entity methods, shared by every instance table ──────────────────────
     sol::table methods = lua.create_table();
 
-    methods.set_function("IsValid", [&impl](sol::table self)
+    methods.set_function("IsValid",
+                         [&impl](sol::table self)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
                              return ResolveEntity(impl, self, scene, handle);
                          });
 
-    methods.set_function("GetName", [&impl](sol::table self) -> std::string
+    methods.set_function("GetName",
+                         [&impl](sol::table self) -> std::string
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -662,7 +664,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              return DescribeEntity(*scene, handle);
                          });
 
-    methods.set_function("SetName", [&impl](sol::table self, const std::string& name)
+    methods.set_function("SetName",
+                         [&impl](sol::table self, const std::string& name)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -680,7 +683,8 @@ void BindApi(ScriptEngine::Impl& impl)
     // A string, not a number: the id is a random 64-bit UUID, and a Lua integer
     // is signed, so half of them cannot be represented. Scripts compare ids, they
     // do not do arithmetic on them.
-    methods.set_function("GetID", [&impl](sol::table self) -> std::string
+    methods.set_function("GetID",
+                         [&impl](sol::table self) -> std::string
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -696,7 +700,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              return std::to_string(entity.GetComponent<IDComponent>().ID);
                          });
 
-    methods.set_function("GetPosition", [&impl](sol::table self) -> sol::object
+    methods.set_function("GetPosition",
+                         [&impl](sol::table self) -> sol::object
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -713,7 +718,8 @@ void BindApi(ScriptEngine::Impl& impl)
                                                      ToVec3(entity.GetComponent<TransformComponent>().Translation));
                          });
 
-    methods.set_function("SetPosition", [&impl](sol::table self, float x, float y, float z)
+    methods.set_function("SetPosition",
+                         [&impl](sol::table self, float x, float y, float z)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -728,7 +734,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              }
                          });
 
-    methods.set_function("Translate", [&impl](sol::table self, float dx, float dy, float dz)
+    methods.set_function("Translate",
+                         [&impl](sol::table self, float dx, float dy, float dz)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -743,7 +750,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              }
                          });
 
-    methods.set_function("GetRotation", [&impl](sol::table self) -> sol::object
+    methods.set_function("GetRotation",
+                         [&impl](sol::table self) -> sol::object
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -760,7 +768,8 @@ void BindApi(ScriptEngine::Impl& impl)
                                                      ToVec3(entity.GetComponent<TransformComponent>().Rotation));
                          });
 
-    methods.set_function("SetRotation", [&impl](sol::table self, float x, float y, float z)
+    methods.set_function("SetRotation",
+                         [&impl](sol::table self, float x, float y, float z)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -775,7 +784,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              }
                          });
 
-    methods.set_function("GetScale", [&impl](sol::table self) -> sol::object
+    methods.set_function("GetScale",
+                         [&impl](sol::table self) -> sol::object
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -792,7 +802,8 @@ void BindApi(ScriptEngine::Impl& impl)
                                                      ToVec3(entity.GetComponent<TransformComponent>().Scale));
                          });
 
-    methods.set_function("SetScale", [&impl](sol::table self, float x, float y, float z)
+    methods.set_function("SetScale",
+                         [&impl](sol::table self, float x, float y, float z)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -807,7 +818,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              }
                          });
 
-    methods.set_function("Destroy", [&impl](sol::table self)
+    methods.set_function("Destroy",
+                         [&impl](sol::table self)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -821,7 +833,8 @@ void BindApi(ScriptEngine::Impl& impl)
                          });
 
     // ── rigid bodies, which is what makes a script a controller ─────────────
-    methods.set_function("HasRigidBody", [&impl](sol::table self)
+    methods.set_function("HasRigidBody",
+                         [&impl](sol::table self)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -834,7 +847,8 @@ void BindApi(ScriptEngine::Impl& impl)
                                     entity.GetComponent<RigidBody3DComponent>().RuntimeBodyID != kInvalidBodyId;
                          });
 
-    methods.set_function("GetLinearVelocity", [&impl](sol::table self) -> sol::object
+    methods.set_function("GetLinearVelocity",
+                         [&impl](sol::table self) -> sol::object
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -848,10 +862,12 @@ void BindApi(ScriptEngine::Impl& impl)
                              {
                                  return sol::nil;
                              }
-                             return sol::make_object(self.lua_state(), ToVec3(ToGlm(bodies->GetLinearVelocity(bodyId))));
+                             return sol::make_object(self.lua_state(),
+                                                     ToVec3(ToGlm(bodies->GetLinearVelocity(bodyId))));
                          });
 
-    methods.set_function("SetLinearVelocity", [&impl](sol::table self, float x, float y, float z)
+    methods.set_function("SetLinearVelocity",
+                         [&impl](sol::table self, float x, float y, float z)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -870,7 +886,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              bodies->SetLinearVelocity(bodyId, ToJolt(glm::vec3(x, y, z)));
                          });
 
-    methods.set_function("GetAngularVelocity", [&impl](sol::table self) -> sol::object
+    methods.set_function("GetAngularVelocity",
+                         [&impl](sol::table self) -> sol::object
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -884,10 +901,12 @@ void BindApi(ScriptEngine::Impl& impl)
                              {
                                  return sol::nil;
                              }
-                             return sol::make_object(self.lua_state(), ToVec3(ToGlm(bodies->GetAngularVelocity(bodyId))));
+                             return sol::make_object(self.lua_state(),
+                                                     ToVec3(ToGlm(bodies->GetAngularVelocity(bodyId))));
                          });
 
-    methods.set_function("SetAngularVelocity", [&impl](sol::table self, float x, float y, float z)
+    methods.set_function("SetAngularVelocity",
+                         [&impl](sol::table self, float x, float y, float z)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -905,7 +924,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              bodies->SetAngularVelocity(bodyId, ToJolt(glm::vec3(x, y, z)));
                          });
 
-    methods.set_function("ApplyForce", [&impl](sol::table self, float x, float y, float z)
+    methods.set_function("ApplyForce",
+                         [&impl](sol::table self, float x, float y, float z)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -924,7 +944,8 @@ void BindApi(ScriptEngine::Impl& impl)
                          });
 
     // ── animation graph parameters ─────────────────────────────────────────
-    methods.set_function("HasAnimator", [&impl](sol::table self)
+    methods.set_function("HasAnimator",
+                         [&impl](sol::table self)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -935,7 +956,8 @@ void BindApi(ScriptEngine::Impl& impl)
                                     entity.GetComponent<AnimatorComponent>().Animator != nullptr;
                          });
 
-    methods.set_function("SetAnimFloat", [&impl](sol::table self, const std::string& name, float value)
+    methods.set_function("SetAnimFloat",
+                         [&impl](sol::table self, const std::string& name, float value)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -952,7 +974,8 @@ void BindApi(ScriptEngine::Impl& impl)
                                  graph.SetParameter(name, value);
                          });
 
-    methods.set_function("GetAnimFloat", [&impl](sol::table self, const std::string& name) -> float
+    methods.set_function("GetAnimFloat",
+                         [&impl](sol::table self, const std::string& name) -> float
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -964,7 +987,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              return entity.GetComponent<AnimatorComponent>().Graph.GetParameter(name);
                          });
 
-    methods.set_function("SetAnimTrigger", [&impl](sol::table self, const std::string& name)
+    methods.set_function("SetAnimTrigger",
+                         [&impl](sol::table self, const std::string& name)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -983,7 +1007,8 @@ void BindApi(ScriptEngine::Impl& impl)
 
     // Direct state jump: useful for robots whose controller already decided
     // the state, bypassing transition conditions for one frame.
-    methods.set_function("SetAnimState", [&impl](sol::table self, const std::string& stateName)
+    methods.set_function("SetAnimState",
+                         [&impl](sol::table self, const std::string& stateName)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -1007,7 +1032,8 @@ void BindApi(ScriptEngine::Impl& impl)
                              }
                          });
 
-    methods.set_function("PlayAnimation", [&impl](sol::table self, const std::string& clip, float fade)
+    methods.set_function("PlayAnimation",
+                         [&impl](sol::table self, const std::string& clip, float fade)
                          {
                              Scene* scene = nullptr;
                              entt::entity handle = entt::null;
@@ -1031,7 +1057,8 @@ void BindApi(ScriptEngine::Impl& impl)
 
     impl.EntityMethods = methods;
 
-    lua.set_function("Find", [&impl](const std::string& name) -> sol::object
+    lua.set_function("Find",
+                     [&impl](const std::string& name) -> sol::object
                      {
                          if (impl.ActiveScene == nullptr)
                          {
@@ -1044,8 +1071,7 @@ void BindApi(ScriptEngine::Impl& impl)
                          {
                              if (view.get<TagComponent>(handle).Tag == name)
                              {
-                                 return sol::make_object(impl.Lua.lua_state(),
-                                                         MakeEntityTable(impl, *scene, handle));
+                                 return sol::make_object(impl.Lua.lua_state(), MakeEntityTable(impl, *scene, handle));
                              }
                          }
                          return sol::nil;
@@ -1169,11 +1195,20 @@ void ScriptEngine::Shutdown()
     m_Impl->Initialized = false;
 }
 
-bool ScriptEngine::IsInitialized() const { return m_Impl->Initialized; }
+bool ScriptEngine::IsInitialized() const
+{
+    return m_Impl->Initialized;
+}
 
-lua_State* ScriptEngine::State() const { return m_Impl->Initialized ? m_Impl->Lua.lua_state() : nullptr; }
+lua_State* ScriptEngine::State() const
+{
+    return m_Impl->Initialized ? m_Impl->Lua.lua_state() : nullptr;
+}
 
-const std::string& ScriptEngine::LastError() const { return m_Impl->LastError; }
+const std::string& ScriptEngine::LastError() const
+{
+    return m_Impl->LastError;
+}
 
 void ScriptEngine::SetInstructionBudget(u64 instructions)
 {
@@ -1373,7 +1408,10 @@ void ScriptEngine::SetHotReloadEnabled(bool enabled)
     UHE_CORE_INFO("Script hot reload {0}", enabled ? "enabled" : "disabled");
 }
 
-bool ScriptEngine::IsHotReloadEnabled() const { return m_Impl->HotReload; }
+bool ScriptEngine::IsHotReloadEnabled() const
+{
+    return m_Impl->HotReload;
+}
 
 void ScriptEngine::Tick(Scene& scene)
 {
@@ -1454,8 +1492,8 @@ std::vector<ScriptEngine::InstanceInfo> ScriptEngine::Instances(Scene& scene) co
         info.Path = component.ScriptPath;
         {
             Entity entity{handle, &scene};
-            info.EntityName = entity.HasComponent<TagComponent>() ? entity.GetComponent<TagComponent>().Tag
-                                                                  : std::string("<entity>");
+            info.EntityName =
+                entity.HasComponent<TagComponent>() ? entity.GetComponent<TagComponent>().Tag : std::string("<entity>");
         }
 
         const auto it = m_Impl->Instances.find(component.RuntimeIndex);

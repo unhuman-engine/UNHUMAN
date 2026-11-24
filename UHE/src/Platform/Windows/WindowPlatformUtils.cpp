@@ -5,9 +5,9 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include <commdlg.h>
-#include <shellapi.h>
-#include <shlobj.h>
-#include "UHE/Core/Application.h"
+    #include <shellapi.h>
+    #include <shlobj.h>
+    #include "UHE/Core/Application.h"
 
 namespace UHE
 {
@@ -64,7 +64,8 @@ std::string FileDialogs::SelectFolder(const char* title, const std::string& defa
     bi.hwndOwner = glfwGetWin32Window((GLFWwindow*)Application::Get().GetWindow().GetNativeWindow());
     bi.lpszTitle = title != nullptr ? title : "Select Folder";
     bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-    bi.lpfn = [](HWND hwnd, UINT message, LPARAM, LPARAM) -> int {
+    bi.lpfn = [](HWND hwnd, UINT message, LPARAM, LPARAM) -> int
+    {
         if (message == BFFM_INITIALIZED && !s_initialFolder.empty())
             SendMessageA(hwnd, BFFM_SETSELECTIONA, TRUE, reinterpret_cast<LPARAM>(s_initialFolder.c_str()));
         return 0;
@@ -79,7 +80,6 @@ std::string FileDialogs::SelectFolder(const char* title, const std::string& defa
     CoTaskMemFree(pidl);
     return ok == TRUE ? std::string(path) : std::string();
 };
-
 
 bool FileDialogs::OpenInDefaultApp(const std::string& path)
 {

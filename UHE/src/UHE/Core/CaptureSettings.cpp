@@ -1,5 +1,4 @@
 #include "CaptureSettings.h"
-
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -48,8 +47,7 @@ CaptureSettings CaptureSettings::Parse(const char* fixedTimestep, const char* ca
 
 CaptureSettings CaptureSettings::FromEnvironment()
 {
-    return Parse(std::getenv("UHE_FIXED_TIMESTEP"), std::getenv("UHE_CAPTURE_FRAME"),
-                 std::getenv("UHE_CAPTURE_PATH"));
+    return Parse(std::getenv("UHE_FIXED_TIMESTEP"), std::getenv("UHE_CAPTURE_FRAME"), std::getenv("UHE_CAPTURE_PATH"));
 }
 
 } // namespace UHE
