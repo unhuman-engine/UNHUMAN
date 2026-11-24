@@ -1,0 +1,9 @@
+---
+# Test harnesses: the CHECK(cond, msg) macros stream `msg` on purpose
+# (`"x = " << x`), so parenthesising it as macro-parentheses asks would not
+# compile; and a check that reads an optional right after asserting it has a
+# value is the test, not an unchecked access.
+InheritParentConfig: true
+Checks: >
+  -bugprone-macro-parentheses,
+  -bugprone-unchecked-optional-access

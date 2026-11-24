@@ -287,15 +287,22 @@ namespace UHE
             float startX = std::fmod(m_Pan.x, gridStep);
             if (startX < 0.0f)
                 startX += gridStep;
-            for (float x = startX; x < m_CanvasSize.x; x += gridStep)
+            // Integer counters: a float accumulated by += drifts and can draw one line too many.
+            for (int i = 0; startX + static_cast<float>(i) * gridStep < m_CanvasSize.x; ++i)
+            {
+                const float x = startX + static_cast<float>(i) * gridStep;
                 draw->AddLine(ImVec2(m_CanvasMin.x + x, m_CanvasMin.y),
                               ImVec2(m_CanvasMin.x + x, canvasMax.y), gridColor);
+            }
             float startY = std::fmod(m_Pan.y, gridStep);
             if (startY < 0.0f)
                 startY += gridStep;
-            for (float y = startY; y < m_CanvasSize.y; y += gridStep)
+            for (int i = 0; startY + static_cast<float>(i) * gridStep < m_CanvasSize.y; ++i)
+            {
+                const float y = startY + static_cast<float>(i) * gridStep;
                 draw->AddLine(ImVec2(m_CanvasMin.x, m_CanvasMin.y + y),
                               ImVec2(canvasMax.x, m_CanvasMin.y + y), gridColor);
+            }
         }
 
         // ── view transform ──
@@ -661,9 +668,11 @@ namespace UHE
             state.Clip = clips.front();
 
         const glm::vec2 center = (glm::vec2(m_CanvasSize.x, m_CanvasSize.y) * 0.5f - m_Pan) / m_Zoom;
+        // New states fan out on a 4-wide grid: column and row are whole numbers on purpose.
+        const size_t column = graph.States.size() % 4;
+        const size_t row = graph.States.size() / 4;
         state.EditorPosition = center - glm::vec2(kNodeWidth * 0.5f, kNodeHeight * 0.5f) +
-                               glm::vec2(static_cast<float>(graph.States.size() % 4) * 24.0f,
-                                         static_cast<float>(graph.States.size() / 4) * 24.0f);
+                               glm::vec2(static_cast<float>(column) * 24.0f, static_cast<float>(row) * 24.0f);
 
         graph.States.push_back(std::move(state));
         m_SelectedState = static_cast<int>(graph.States.size()) - 1;

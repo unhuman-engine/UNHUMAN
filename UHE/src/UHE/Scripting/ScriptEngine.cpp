@@ -115,7 +115,7 @@ constexpr int kBudgetCheckInterval = 10'000;
 /// count hook can find it. Coroutines copy the main thread's extra space.
 ScriptEngine::Impl*& OwnerOf(lua_State* state)
 {
-    return *static_cast<ScriptEngine::Impl**>(lua_getextraspace(state));
+    return *reinterpret_cast<ScriptEngine::Impl**>(lua_getextraspace(state));
 }
 
 /**

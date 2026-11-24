@@ -1,0 +1,126 @@
+name: Lint
+
+# Style and static analysis on the lines a pull request changes. Code that a
+# PR does not touch is never flagged, so the gate can be on from day one
+# without a mass reformat; old code is brought in line as it is edited.
+#
+# Both tools come from PyPI at a pinned version: clang-format's output differs
+# between releases, and a local run must agree with CI's. To run the same
+# checks locally:
+#   pip install clang-format==22.1.8 clang-tidy==22.1.8
+#   git clang-format --diff master -- UHE/src UHE_EDITOR/src UHEGAME/src sandbox/src tests tools
+#   git diff -U0 master -- '*.cpp' | clang-tidy-diff.py -p1 -path <build dir> -iregex '.*\.cpp'
+
+on:
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LINT_PATHS: UHE/src UHE_EDITOR/src UHEGAME/src sandbox/src tests tools
+  BASE_REF: ${{ github.base_ref || 'master' }}
+
+jobs:
+  clang-format:
+    name: clang-format (changed lines)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install clang-format
+        run: pip install clang-format==22.1.8
+
+      - name: Check changed lines
+        shell: bash
+        run: |
+          BASE=$(git merge-base "origin/$BASE_REF" HEAD)
+          # shellcheck disable=SC2086 # LINT_PATHS is a list
+          git clang-format --binary "$(command -v clang-format)" --diff --extensions cpp,h,hpp \
+            "$BASE" -- $LINT_PATHS > format.diff || true
+          if grep -q '^diff --git' format.diff; then
+            echo "::error::Lines changed by this PR are not clang-formatted. Run: git clang-format $BASE_REF"
+            cat format.diff
+            exit 1
+          fi
+          echo "Every changed line matches .clang-format."
+
+  clang-tidy:
+    name: clang-tidy (changed lines)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxi-dev libwayland-dev libxkbcommon-dev libfreetype6-dev
+
+      - name: Install Vulkan SDK
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          source /etc/os-release
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-${VERSION_CODENAME}.list http://packages.lunarg.com/vulkan/lunarg-vulkan-${VERSION_CODENAME}.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      - name: Run Setup Script (download Slang etc.)
+        run: python script/Setup.py
+
+      - name: Install clang-tidy
+        run: pip install clang-tidy==22.1.8
+
+      # Configure only: clang-tidy needs compile_commands.json, not binaries.
+      # Precompiled headers are off because a GCC-built PCH cannot be read by
+      # clang-tidy; every source includes uhepch.h itself, so nothing is lost.
+      - name: Configure CMake (compile commands)
+        run: >
+          cmake -S . -B build-tidy -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+          -DVG_PROFILE=OFF
+
+      # Findings are limited to changed lines. bugprone-* are errors (see
+      # .clang-tidy for the few that are disabled and why); performance-* and
+      # modernize-* are printed as warnings for the author to judge.
+      - name: Run clang-tidy on changed lines
+        shell: bash
+        run: |
+          BASE=$(git merge-base "origin/$BASE_REF" HEAD)
+          # The PyPI package installs the script next to clang-tidy.
+          TIDY_DIFF=$(command -v clang-tidy-diff.py) || { echo "clang-tidy-diff.py not found"; exit 1; }
+          # shellcheck disable=SC2086 # LINT_PATHS is a list
+          git diff -U0 --no-color "$BASE" -- $LINT_PATHS > changes.diff
+          set +e
+          python "$TIDY_DIFF" -p1 -path build-tidy -iregex '.*\.cpp' \
+            -clang-tidy-binary "$(command -v clang-tidy)" -j "$(nproc)" -quiet < changes.diff 2>&1 | tee tidy.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ] || grep -qE '(error): .*\[[a-z0-9.,-]+\]$' tidy.log; then
+            echo "::error::clang-tidy reported errors on lines changed by this PR (see above)."
+            exit 1
+          fi
+          echo "No clang-tidy errors on changed lines."

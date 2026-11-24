@@ -39,7 +39,7 @@ static RHI::TextureHandle CreateAtlasTexture(const std::vector<msdf_atlas::Glyph
     msdfgen::BitmapConstSection<T, N> bitmap = static_cast<msdfgen::BitmapConstSection<T, N>>(generator.atlasStorage());
 
     bool allZeros = true;
-    for (size_t i = 0; i < width * height * N; i++)
+    for (size_t i = 0; i < size_t{width} * height * N; i++)
     {
         if (reinterpret_cast<const u8*>(bitmap.pixels)[i] != 0)
         {

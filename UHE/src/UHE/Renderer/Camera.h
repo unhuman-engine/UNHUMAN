@@ -2,6 +2,8 @@
 
 #include <glm/glm.hpp>
 
+#include "UHE/Core/Core.h"
+
 namespace UHE {
 
 	class UHE_API Camera

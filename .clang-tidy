@@ -1,4 +1,16 @@
 ---
+# CI (.github/workflows/lint.yml) runs this on the lines a pull request
+# changes. bugprone-* findings fail the job; performance-* and modernize-* are
+# reported for the author to judge.
+#
+# Disabled bugprone checks, each because nearly every hit in this codebase is
+# intended rather than a bug:
+#   narrowing-conversions          int <-> float and u32 <-> int are everywhere
+#                                  in graphics and ImGui code
+#   exception-escape               flags main() and destructors that call into
+#                                  libraries which cannot throw in practice
+#   throwing-static-initialization flags every static std::vector/std::string
+#   switch-missing-default-case    switches over int-typed key codes
 Checks: >
   -*,
   bugprone-*,
@@ -6,10 +18,15 @@ Checks: >
   modernize-*,
   -modernize-use-trailing-return-type,
   -modernize-use-nodiscard,
-  -bugprone-easily-swappable-parameters
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-exception-escape,
+  -bugprone-throwing-static-initialization,
+  -bugprone-switch-missing-default-case
 
-WarningsAsErrors: ""
-HeaderFilterRegex: "src/.*"
+WarningsAsErrors: "bugprone-*"
+HeaderFilterRegex: "(UHE|UHE_EDITOR|UHEGAME|sandbox|tests|tools)/.*"
+ExcludeHeaderFilterRegex: ".*/vendor/.*"
 FormatStyle: file
 
 CheckOptions:

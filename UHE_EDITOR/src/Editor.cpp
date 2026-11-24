@@ -1011,14 +1011,18 @@ void Editor::SetProject(ProjectInfo info)
     m_ContentBrowserPanel.SetBaseDirectory(m_Project->AssetPath);
 
     const std::filesystem::path startScene = Project::StartScenePath(*m_Project);
+    // Read before opening the scene: the messages below must not depend on
+    // the scene calls leaving m_Project alone.
+    const std::string projectName = m_Project->Name;
+    const std::string projectRoot = m_Project->RootPath.string();
     std::error_code ec;
     if (!startScene.empty() && std::filesystem::is_regular_file(startScene, ec))
         OpenScene(startScene, false);
     else
         NewScene(false);
 
-    UHE_CORE_INFO("Opened project '{0}' ({1})", m_Project->Name, m_Project->RootPath.string());
-    Notify(NotificationCenter::Kind::Success, "Project opened", m_Project->Name);
+    UHE_CORE_INFO("Opened project '{0}' ({1})", projectName, projectRoot);
+    Notify(NotificationCenter::Kind::Success, "Project opened", projectName);
 }
 
 void Editor::CloseProject()
