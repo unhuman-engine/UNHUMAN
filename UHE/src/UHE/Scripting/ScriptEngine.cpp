@@ -116,6 +116,7 @@ constexpr int kBudgetCheckInterval = 10'000;
 /// count hook can find it. Coroutines copy the main thread's extra space.
 ScriptEngine::Impl*& OwnerOf(lua_State* state)
 {
+    // NOLINTNEXTLINE(bugprone-casting-through-void): the void* cast is inside Lua's lua_getextraspace macro.
     return *reinterpret_cast<ScriptEngine::Impl**>(lua_getextraspace(state));
 }
 
@@ -157,7 +158,17 @@ local function readonly(t, name)
     return setmetatable({}, {
         __index = t,
         __newindex = function(_, k) error("'" .. name .. "' is read-only (cannot set '" .. tostring(k) .. "')", 2) end,
-        __pairs = function() return next, t, nil end,
+        -- A closure, not `next, t, nil`: the generic for hands its state to
+        -- the caller, and `local _, real = pairs(string)` would then reach the
+        -- writable library behind the proxy.
+        __pairs = function()
+            local key = nil
+            return function()
+                local value
+                key, value = next(t, key)
+                return key, value
+            end
+        end,
         __len = function() return #t end,
         __metatable = false,
     })
