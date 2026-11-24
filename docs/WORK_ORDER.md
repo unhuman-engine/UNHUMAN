@@ -19,10 +19,10 @@ records in parallel.
 | 7 | Editor, UI, animation, scripting | Entity hierarchy, editor ergonomics (console, transform undo/redo, command palette, asset browser, play-in-editor), runtime UI, animation state graphs, Lua and sol2 | [#17](https://github.com/unhuman-engine/UNHUMAN/issues/17), [#28](https://github.com/unhuman-engine/UNHUMAN/issues/28), [#24](https://github.com/unhuman-engine/UNHUMAN/issues/24), [#41](https://github.com/unhuman-engine/UNHUMAN/issues/41), [#44](https://github.com/unhuman-engine/UNHUMAN/issues/44) |
 | 8 | CI/CD | Tier-0 gates and caching, sanitizer matrix and unit tests, Android compile gate, validation-strict GPU job with golden images, release and nightly | [#9](https://github.com/unhuman-engine/UNHUMAN/issues/9), [#10](https://github.com/unhuman-engine/UNHUMAN/issues/10), [#39](https://github.com/unhuman-engine/UNHUMAN/issues/39) |
 
-Dropped 2026-09-24: the standalone **FrameGraph frontend** stage (was #6, issue #33). It
-duplicated dependency tracking and put two graph layers between feature code and the
-backend; feature code now declares passes into the RenderGraph (stage 4) directly. It can
-be layered on later if renderer code ever needs a stable API that outlives backend changes.
+The **FrameGraph frontend** (was #6, issue #33) was dropped on 2026-09-24 and revived on
+2026-11-25, after the RenderGraph worked. It does not track dependencies a second time:
+it describes passes by usage with no Vulkan types and the RenderGraph realizes them. See
+[plans/PLAN-frame-graph.md](plans/PLAN-frame-graph.md).
 
 Cross-cutting at any time: documentation [#12](https://github.com/unhuman-engine/UNHUMAN/issues/12)
 and code cleanups [#40](https://github.com/unhuman-engine/UNHUMAN/issues/40).

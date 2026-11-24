@@ -131,21 +131,22 @@ without stalling frames; rapid shots don't hitch.
 
 ## M5 — Render graph completeness — issues #4, #7
 
-Only the RenderGraph layer. The separate FrameGraph frontend was dropped on
-2026-09-24: it duplicated dependency tracking and renderer code would have to cross two
-graph layers to add a pass. Feature code will declare passes directly into the render
-graph instead. Revisit only if renderer code needs a stable API that outlives backend
-changes — not before the render graph itself works.
+The render graph runs every frame (builder, compiler, executor). The FrameGraph
+frontend, dropped on 2026-09-24, was revived on 2026-11-25 once the render graph
+worked, as a thin layer that does not track dependencies itself: it describes passes
+by usage with no Vulkan types, and `VulkanFrameGraphBridge` declares them into the
+render graph, which still orders, culls and barriers the frame. Plan and status:
+[plans/PLAN-frame-graph.md](plans/PLAN-frame-graph.md).
 
 | Step | Deliverable | Status |
 |---|---|---|
-| 1 | RenderGraph builder + resource tracking: `VulkanRenderGraphBuilder`/`Resources`/`Types` get real bodies | `TODO` |
-| 2 | RenderGraph compiler: barriers, pass ordering, layouts from the graph | `TODO` |
-| 3 | RenderGraph executor: command list partitioning and submission | `TODO` |
-| 4 | Feature code declares passes ("shadow", "gbuffer", "lighting", "tonemap") instead of calling `Renderer3D::SubmitModel` directly | `TODO` |
+| 1 | RenderGraph builder + resource tracking: `VulkanRenderGraphBuilder`/`Resources`/`Types` get real bodies | `DONE` |
+| 2 | RenderGraph compiler: barriers, pass ordering, layouts from the graph | `DONE` (a barrier after every write since 2026-11-25) |
+| 3 | RenderGraph executor: command list partitioning and submission | `DONE` (single primary buffer; per-pass buffers wait for per-thread pools) |
+| 4 | Feature code declares passes ("shadow", "gbuffer", "lighting", "tonemap") instead of calling `Renderer3D::SubmitModel` directly | `IN PROGRESS` (Sandbox on the FrameGraph; Editor and AimLab on the render graph) |
 | 5 | Async compute / second queue: passes declare queue hints from the start even if the compiler ignores them | `DEFERRED` |
 | 6 | Graph validation + debug overlays (which pass produced this texture) | `DEFERRED` |
-| — | Separate FrameGraph frontend (logical resources, `FGHandle<T>`, blackboard, graph caching) — dropped, can be layered on later if ever needed | `CANCELLED` |
+| 7 | FrameGraph frontend (`FGHandle<T>`, usages, blackboard, parameters, graph-owned textures) over the render graph | `IN PROGRESS` ([plan](plans/PLAN-frame-graph.md)) |
 
 **Exit:** adding a pass means declaring it, not hand-writing barriers.
 
@@ -216,7 +217,7 @@ stop-work signal for its milestone.
 | D3 | Graph cache key (stable slots for shadows/clusters) | sync §6 | `DEFERRED` — no RenderGraph to cache until M5 |
 | D4 | Does `RenderGraph` stay inside `RHI::VULKAN` or move to `UHE/RHI` | sync §6 | `UNDECIDED` — stay in Vulkan until a second backend is real |
 | D5 | Descriptor ownership: global set once + optional per-pass sets | sync §6 | `UNDECIDED` |
-| D6 | Where FrameGraph lives (`UHE/RHI/FrameGraph/`) | — | `CANCELLED` 2026-09-24 — separate FrameGraph layer dropped; feature code declares passes into the RenderGraph directly |
+| D6 | Where FrameGraph lives (`UHE/RHI/FrameGraph/`) | — | `DECIDED` 2026-11-25 — `UHE/src/UHE/RHI/FrameGraph/`, Frostbite-style `AddPass<Data>(setup, execute)`; dropped 2026-09-24, revived once the render graph worked |
 | D7 | One graph per frame vs per view | sync §6 | `UNDECIDED` — handles are view-agnostic now |
 | D8 | When the graph is rebuilt (define the hash inputs) | sync §6 | `DEFERRED` — follow D3 |
 | D9 | Async compute ambition (queue hints from the start?) | sync §6 | `UNDECIDED` |
