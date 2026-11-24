@@ -63,6 +63,28 @@ int main()
         check(console.Execute("nope 1").find("unknown") != std::string::npos, "an unknown name says so");
     }
 
+    // Callers read cvars with a default instead of checking existence first,
+    // so the default is the contract: an unknown name or another type must
+    // return it, never a zero value or a converted one.
+    section("typed reads fall back");
+    {
+        Console console;
+        check(console.GetBool("missing.bool", true), "an unknown bool returns the fallback");
+        check(console.GetInt("missing.int", -4) == -4, "an unknown int returns the fallback");
+        check(console.GetFloat("missing.float", 2.5f) == 2.5f, "an unknown float returns the fallback");
+        check(console.GetString("missing.string", "dflt") == "dflt", "an unknown string returns the fallback");
+        check(!console.GetBool("missing.bool") && console.GetInt("missing.int") == 0 &&
+                  console.GetFloat("missing.float") == 0.0f && console.GetString("missing.string").empty(),
+              "without a fallback, an unknown name reads as the type's zero value");
+
+        check(console.RegisterVar("v.int", 3, "int"), "registers an int");
+        check(console.RegisterVar("v.text", std::string("3"), "string"), "registers a string");
+        check(console.GetFloat("v.int", 9.0f) == 9.0f, "an int is not read as a float");
+        check(console.GetBool("v.int", true), "an int is not read as a bool");
+        check(console.GetInt("v.text", 11) == 11, "a numeric string is not read as an int");
+        check(console.GetString("v.int", "x") == "x", "an int is not read as a string");
+    }
+
     section("commands");
     {
         Console console;

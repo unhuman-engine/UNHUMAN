@@ -328,6 +328,15 @@ static void TestFileSystemShim(const char* argv0)
     std::string resolved = FileSystem::Get().Resolve("icon/pointLight.png");
     CHECK(fs::path(resolved).generic_string().find("assets/icon/pointLight.png") != std::string::npos,
           "legacy path resolves through the mount");
+
+    // Fallback: a path no mount resolves still maps under <root>/assets, so a
+    // caller gets a path to report ("cannot open ...") rather than an empty
+    // string that would open the working directory.
+    const std::string missing = FileSystem::Get().Resolve("no/such/file.png");
+    CHECK(!missing.empty(), "an unresolvable path still returns a path");
+    CHECK(fs::path(missing) == FileSystem::Get().GetRootPath() / "assets" / "no/such/file.png",
+          "and it falls back to <root>/assets/<path>");
+    CHECK(!fs::exists(missing), "the fallback does not pretend the file exists");
 }
 
 int main(int argc, char** argv)
