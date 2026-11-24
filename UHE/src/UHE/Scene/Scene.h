@@ -241,6 +241,7 @@ template <> UHE_API void Scene::OnComponentAdded<TextComponent>(Entity entity, T
 template <> UHE_API void Scene::OnComponentAdded<SpriteAnimationComponent>(Entity entity, SpriteAnimationComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<NativeScriptComponent>(Entity entity, NativeScriptComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<ScriptComponent>(Entity entity, ScriptComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<AudioSourceComponent>(Entity entity, AudioSourceComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<RigidBody2DComponent>(Entity entity, RigidBody2DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<BoxColliderComponent>(Entity entity, BoxColliderComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<IDComponent>(Entity entity, IDComponent& components);

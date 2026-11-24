@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "UHE/Core/Core.h"
+
 namespace UHE
 {
 
@@ -15,7 +17,8 @@ namespace UHE
 /// after N ticks the state is the same whether they came from 30 FPS or 240.
 ///
 /// Pure logic, no engine dependencies: tests/scene drives it directly.
-class SimulationClock
+/// Exported: the editor sets the tick rate from a console command.
+class UHE_API SimulationClock
 {
 public:
     static constexpr std::uint32_t kDefaultTickRate = 120;
