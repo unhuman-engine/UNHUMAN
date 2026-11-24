@@ -4,11 +4,13 @@
 #include <vector>
 #include "RHITypes.h"
 #include "UHE/Core/Core.h"
+#include "UHE/RHI/FrameGraph/FrameGraphTypes.h"
 
 namespace UHE::RHI
 {
 
 class RHICommandBuffer;
+class FrameGraph;
 
 /**
  * \brief Backend-agnostic rendering device.
@@ -137,6 +139,19 @@ public:
 
     /// \returns the command buffer bound to the current frame. Valid between Begin() and End().
     virtual RHICommandBuffer& GetCurrentCommandBuffer() = 0;
+
+    // ── Frame graph ──────────────────────────────────────────────────────────
+
+    /**
+     * @brief The frame graph passes are declared into this frame, or nullptr without one.
+     *
+     * Declare between Begin() and End(), from a layer's OnUpdate. The device
+     * realizes the frame before the UI pass, so these passes record first, and
+     * resets the graph at the end of every frame: handles do not carry over.
+     */
+    [[nodiscard]] virtual FrameGraph* GetFrameGraph() { return nullptr; }
+    /// @brief Size and format of the image this frame presents, for FrameGraph::ImportBackbuffer.
+    [[nodiscard]] virtual FGTexture::Desc GetBackbufferDesc() { return {}; }
 };
 
 } // namespace UHE::RHI

@@ -346,7 +346,7 @@ void AimLabLayer::OnUpdate(UHE::Timestep ts)
         return; // no Vulkan device — nothing to declare against
 
     auto& executor = vulkanDevice->GetRenderGraphExecutor();
-    auto& graph = vulkanDevice->GetFrameGraph();
+    auto& graph = vulkanDevice->GetRenderGraph();
 
     const u32 fbWidth = m_Framebuffer->GetSpecification().Width;
     const u32 fbHeight = m_Framebuffer->GetSpecification().Height;

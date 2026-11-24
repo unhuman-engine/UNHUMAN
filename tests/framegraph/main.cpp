@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
+#include "UHE/RHI/FrameGraph/TransientTexturePool.h"
 
 using namespace UHE;
 using namespace UHE::RHI;
@@ -429,6 +430,81 @@ int main()
         check(frame.Passes[0].Type == FGPassType::Compute && frame.Passes[1].Type == FGPassType::Transfer,
               "pass types are lowered");
         check(!frame.Resources[1].IsTexture && frame.Resources[1].Buffer.Size == 1024, "buffers are lowered too");
+    }
+
+    section("backbuffer import");
+    {
+        FrameGraph fg;
+        const auto bb = fg.ImportBackbuffer(kBackbuffer);
+        check(fg.Ok() && bb.IsValid(), "the backbuffer imports without a texture handle");
+        const FGLoweredFrame frame = fg.Lower();
+        check(frame.Resources[0].Backbuffer && frame.Resources[0].Imported, "it is lowered as the backbuffer");
+        check(frame.Resources[0].FinalState == FGState::Present && frame.Resources[0].Name == "Backbuffer",
+              "named Backbuffer and left ready to present");
+        FrameGraph plain;
+        plain.Import("Backbuffer", kBackbuffer, FakeTexture(0xB0), FGState::Undefined, FGState::Present);
+        check(plain.Hash() != fg.Hash(), "and it hashes apart from an ordinary import");
+        fg.ImportBackbuffer(kBackbuffer);
+        check(HasError(fg, FGErrorType::DuplicateName), "a second backbuffer import in one frame is refused");
+        FrameGraph empty;
+        empty.ImportBackbuffer(FGTexture::Desc{});
+        check(HasError(empty, FGErrorType::EmptyDesc), "a zero-sized backbuffer says where the size comes from");
+    }
+
+    section("transient texture pool");
+    {
+        int created = 0;
+        int destroyed = 0;
+        std::vector<TextureHandle> live;
+        TransientTexturePool pool(
+            [&](const TextureDesc&)
+            {
+                ++created;
+                live.push_back(FakeTexture(0x5000 + static_cast<uintptr_t>(created)));
+                return live.back();
+            },
+            [&](TextureHandle) { ++destroyed; }, 3);
+
+        TextureDesc hdr;
+        hdr.width = 1280;
+        hdr.height = 720;
+        hdr.format = TextureFormat::RGBA16F;
+        hdr.usage = TextureUsage::ColorAttach | TextureUsage::Sampled;
+        TextureDesc depth = hdr;
+        depth.format = TextureFormat::D32_FLOAT;
+        depth.usage = TextureUsage::DepthAttach;
+
+        const TextureHandle a = pool.Acquire(hdr);
+        const TextureHandle b = pool.Acquire(hdr);
+        check(a != nullptr && b != nullptr && a != b, "two requests in one frame get two textures");
+        check(pool.Acquire(depth) != a && created == 3, "another shape gets its own texture");
+        pool.EndFrame();
+
+        const TextureHandle again = pool.Acquire(hdr);
+        check((again == a || again == b) && created == 3, "the next frame reuses instead of allocating");
+        TextureDesc labelled = hdr;
+        labelled.debugName = "Scene.HDR";
+        check(pool.Acquire(labelled) != nullptr && created == 3, "a debug name does not change the shape");
+        pool.EndFrame();
+
+        // A resize: the old shape is never asked for again and retires.
+        TextureDesc resized = hdr;
+        resized.width = 1920;
+        resized.height = 1080;
+        for (int frame = 0; frame < 3; ++frame)
+        {
+            check(pool.Acquire(resized) != nullptr, "the new size is served");
+            pool.EndFrame();
+        }
+        check(destroyed == 3, "textures unused for three frames are destroyed (two HDR, one depth)");
+        check(pool.Size() == 1, "only the texture still in use remains");
+        check(pool.CreatedCount() == 4 && pool.DestroyedCount() == 3, "and the counters agree");
+
+        pool.Clear();
+        check(destroyed == 4 && pool.Size() == 0, "Clear destroys the rest");
+
+        TransientTexturePool failing([](const TextureDesc&) { return TextureHandle{nullptr}; }, [](TextureHandle) {});
+        check(failing.Acquire(hdr) == nullptr && failing.Size() == 0, "a failed allocation is reported and not kept");
     }
 
     std::cout << '\n' << (g_failures == 0 ? "all frame graph checks passed" : "frame graph checks FAILED") << '\n';

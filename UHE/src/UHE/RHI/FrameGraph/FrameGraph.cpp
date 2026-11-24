@@ -332,6 +332,23 @@ FGHandle<FGTexture> FrameGraph::Import(const std::string& name, const FGTexture:
     return {index, 0, m_Frame};
 }
 
+FGHandle<FGTexture> FrameGraph::ImportBackbuffer(const FGTexture::Desc& desc)
+{
+    Resource resource;
+    resource.Name = "Backbuffer";
+    resource.IsTexture = true;
+    resource.Texture = desc;
+    resource.Imported = true;
+    resource.Backbuffer = true;
+    resource.InitialState = FGState::Undefined;
+    resource.FinalState = FGState::Present;
+    if (desc.Width == 0 || desc.Height == 0)
+        PushError(FGErrorType::EmptyDesc, "", resource.Name,
+                  "imports a zero-sized backbuffer; pass RHIDevice::GetBackbufferDesc()");
+    const u32 index = AddResource(std::move(resource), "");
+    return {index, 0, m_Frame};
+}
+
 FGHandle<FGBuffer> FrameGraph::Import(const std::string& name, const FGBuffer::Desc& desc, BufferHandle buffer)
 {
     Resource resource;
@@ -426,6 +443,7 @@ FGLoweredFrame FrameGraph::Lower() const
         lowered.Texture = resource.Texture;
         lowered.Buffer = resource.Buffer;
         lowered.Imported = resource.Imported;
+        lowered.Backbuffer = resource.Backbuffer;
         lowered.ImportedTexture = resource.ImportedTexture;
         lowered.ImportedBuffer = resource.ImportedBuffer;
         lowered.InitialState = resource.InitialState;
@@ -455,6 +473,7 @@ u64 FrameGraph::Hash() const
         hash.String(resource.Name);
         hash.Value(resource.IsTexture);
         hash.Value(resource.Imported);
+        hash.Value(resource.Backbuffer);
         if (resource.IsTexture)
         {
             const FGTexture::Desc& d = resource.Texture;

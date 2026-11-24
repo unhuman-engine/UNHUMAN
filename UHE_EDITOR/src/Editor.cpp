@@ -379,7 +379,7 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
     if (!vulkanDevice)
         return;
 
-    auto& graph = vulkanDevice->GetFrameGraph();
+    auto& graph = vulkanDevice->GetRenderGraph();
     const auto& spec = m_Framebuffer->GetSpecification();
     const u32 width = spec.Width;
     const u32 height = spec.Height;

@@ -115,6 +115,14 @@ public:
     FGHandle<FGTexture> Import(const std::string& name, const FGTexture::Desc& desc, TextureHandle texture,
                                FGState initial, FGState final);
     FGHandle<FGBuffer> Import(const std::string& name, const FGBuffer::Desc& desc, BufferHandle buffer);
+    /**
+     * @brief Brings in the image this frame presents, named "Backbuffer".
+     *
+     * The backend supplies the image, so there is no handle to pass; \p desc
+     * must be RHIDevice::GetBackbufferDesc(). Its contents start undefined and
+     * the frame leaves it ready to present; the UI pass draws on top of it.
+     */
+    FGHandle<FGTexture> ImportBackbuffer(const FGTexture::Desc& desc);
 
     /**
      * @brief Declares a pass. @p setup(FGBuilder&, Data&) runs now;
@@ -189,6 +197,7 @@ private:
         FGTexture::Desc Texture;
         FGBuffer::Desc Buffer;
         bool Imported = false;
+        bool Backbuffer = false;
         TextureHandle ImportedTexture = nullptr;
         BufferHandle ImportedBuffer = nullptr;
         FGState InitialState = FGState::Undefined;

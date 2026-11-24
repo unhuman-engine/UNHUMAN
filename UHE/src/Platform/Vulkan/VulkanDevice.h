@@ -2,6 +2,7 @@
 #include <optional>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
+#include "Platform/Vulkan/RenderGraph/VulkanFrameGraphBridge.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
 #include "Platform/Vulkan/VulkanBarrierEncoder.h"
@@ -15,6 +16,7 @@
 #include "Platform/Vulkan/VulkanPipelineState.h"
 #include "Platform/Vulkan/VulkanSwapChain.h"
 #include "UHE/Core/Core.h"
+#include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHIDevice.h"
 
 namespace UHE::RHI::VULKAN
@@ -78,7 +80,16 @@ public:
     [[nodiscard]] VulkanRenderGraphExecutor& GetRenderGraphExecutor() { return m_RenderGraphExecutor; }
     // Per-frame graph feature passes declare into (M5 step 4); Reset() by
     // EndFrameGraph() after recording.
-    [[nodiscard]] VulkanRenderGraph& GetFrameGraph() { return m_FrameGraph; }
+    [[nodiscard]] VulkanRenderGraph& GetRenderGraph() { return m_FrameGraph; }
+    /// \copydoc RHIDevice::GetFrameGraph
+    [[nodiscard]] FrameGraph* GetFrameGraph() override { return &m_Frontend; }
+    /// @brief Binds \p buffer to a render graph buffer slot for this frame.
+    void RegisterFrameBuffer(RGBufferHandle rgBuffer, BufferHandle buffer);
+    /// \copydoc RHIDevice::GetBackbufferDesc
+    [[nodiscard]] FGTexture::Desc GetBackbufferDesc() override;
+    /// @brief Imports this frame's swapchain image into the render graph. Every
+    /// importer (the UI pass, a frame graph backbuffer) gets the same slot.
+    RGTextureHandle ImportSwapchain();
     [[nodiscard]] bool FrameSkipped() const override { return m_FrameSkipped; }
     /// Recreates the swapchain after the next present (\copydoc RHIDevice::OnFramebufferResized).
     void OnFramebufferResized() override { m_FramebufferResized = true; }
@@ -136,6 +147,10 @@ private:
     void RecreateSwapchain();
     void RegisterSwapchainResources();
     void RegisterFrameTextureImpl(RGTextureHandle rgTexture, TextureHandle texture);
+    /// @brief Declares the frontend's passes into the render graph, once per frame.
+    void FlushFrontend();
+    /// @brief Resets the frontend for the next frame and ages the transient pool.
+    void EndFrontendFrame();
     /// @brief Records this frame's queued pixel copy, if any, after the graph.
     void RecordPixelReadback(vk::raii::CommandBuffer& cmd);
     /// @brief Takes the result of this slot's previous copy; its fence has passed.
@@ -188,6 +203,11 @@ private:
     // Frame graph + TaskGraph mapping (§14 step 5): per-frame declare →
     // resolve → record; TaskGraph topology refreshed every EndFrameGraph().
     VulkanRenderGraph m_FrameGraph;
+    // FrameGraph frontend: declared by layers, realized on m_FrameGraph once
+    // per frame by the bridge (FlushFrontend), reset at the end of End().
+    FrameGraph m_Frontend;
+    VulkanFrameGraphBridge m_FrameGraphBridge{*this};
+    bool m_FrontendFlushed = false;
     Jobsystem::UheJobsystem m_Jobsystem;
     Jobsystem::TaskGraph m_TaskGraph;
     std::vector<Jobsystem::TaskID> m_PassNodes;

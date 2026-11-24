@@ -157,6 +157,7 @@ struct FGLoweredResource
     FGTexture::Desc Texture;
     FGBuffer::Desc Buffer;
     bool Imported = false;
+    bool Backbuffer = false; ///< the image this frame presents; the backend supplies it
     TextureHandle ImportedTexture = nullptr;
     BufferHandle ImportedBuffer = nullptr;
     FGState InitialState = FGState::Undefined; ///< imported textures only
