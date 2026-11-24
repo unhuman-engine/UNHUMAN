@@ -1,13 +1,10 @@
 #include "AimLabLayer.h"
-#include <Platform/Vulkan/RenderGraph/VulkanRenderGraph.h>
-#include <Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h>
-#include <Platform/Vulkan/VulkanDevice.h>
-#include <Platform/Vulkan/VulkanTexture.h>
 #include <UHE/Audio/AudioEngine.h>
 #include <UHE/Core/Application.h>
 #include <UHE/Core/input.h>
 #include <UHE/Core/keyCodes.h>
 #include <UHE/Core/mouseButtonCodes.h>
+#include <UHE/RHI/FrameGraph/FrameGraph.h>
 #include <UHE/RHI/RHICommandBuffer.h>
 #include <UHE/RHI/RHIDevice.h>
 #include <UHE/Renderer3D/LightSystem.h>
@@ -17,27 +14,8 @@
 #include <imgui.h>
 #include <random>
 
-// ─── RenderGraph feature-pass migration (docs/architecture/rendergraph.md §14
-// step 5 / ROADMAP M5 step 4): this layer's scene pass declares against the
-// frame graph instead of calling cmd.BeginRenderPass/EndRenderPass (whose
-// legacy path hardcodes Undefined→attachment and attachment→ShaderRead
-// transitions every frame). Sync is the compiler's contract now.
-namespace
-{
-using UHE::RHI::LoadOp;
-using UHE::RHI::StoreOp;
-using UHE::RHI::VULKAN::ImageState;
-using UHE::RHI::VULKAN::RGTextureHandle;
-
-struct AimLabRGHandles
-{
-    RGTextureHandle color{};
-    RGTextureHandle entityTarget{};
-    RGTextureHandle depth{};
-    bool declared = false;
-};
-AimLabRGHandles s_AimLabRG;
-} // namespace
+// The scene is a frame graph pass: it declares its three attachments and the
+// render graph owns every transition (ROADMAP M5 step 4).
 
 // File-scoped statics for live tweaking the gun model
 static f32 s_GunScale = 0.13f;
@@ -340,63 +318,53 @@ void AimLabLayer::OnUpdate(UHE::Timestep ts)
     // Undefined→attachment transitions happen as pre-barriers from TopOfPipe,
     // and EndRenderPass's hardcoded →ShaderRead exits are gone (the ImGui
     // pass declares its reads instead). ===
-    auto& device = UHE::Renderer::GetDevice();
-    auto* vulkanDevice = dynamic_cast<UHE::RHI::VULKAN::VulkanDevice*>(&device);
-    if (vulkanDevice == nullptr)
-        return; // no Vulkan device — nothing to declare against
-
-    auto& executor = vulkanDevice->GetRenderGraphExecutor();
-    auto& graph = vulkanDevice->GetRenderGraph();
+    using namespace UHE::RHI;
+    FrameGraph* graph = UHE::Renderer::GetDevice().GetFrameGraph();
+    if (graph == nullptr)
+        return;
 
     const u32 fbWidth = m_Framebuffer->GetSpecification().Width;
     const u32 fbHeight = m_Framebuffer->GetSpecification().Height;
 
-    // ── Resources: persistent RG handles for the framebuffer attachments.
-    // Re-imported every frame (imported slots are identity-keyed by name, so
-    // the handles stay stable across Reset() cycles).
-    s_AimLabRG.declared = true;
-    s_AimLabRG.color =
-        graph.ImportTexture("AimLab.Color", 1, fbWidth, fbHeight, 1, ImageState::Undefined, ImageState::ShaderRead);
-    s_AimLabRG.entityTarget =
-        graph.ImportTexture("AimLab.Entity", 1, fbWidth, fbHeight, 1, ImageState::Undefined, ImageState::ShaderRead);
-    s_AimLabRG.depth =
-        graph.ImportTexture("AimLab.Depth", 1, fbWidth, fbHeight, 1, ImageState::Undefined, ImageState::Undefined);
+    // Imported every frame: the framebuffer is recreated on resize and frame
+    // graph handles do not outlive their frame. Colour and entity are sampled
+    // afterwards (the viewport image, picking), so the frame leaves them ShaderRead.
+    const FGHandle<FGTexture> color =
+        graph->Import("AimLab.Color", {fbWidth, fbHeight, TextureFormat::RGBA8_SRGB},
+                      m_Framebuffer->GetColorAttachments()[0], FGState::Undefined, FGState::ShaderRead);
+    const FGHandle<FGTexture> entityTarget =
+        graph->Import("AimLab.Entity", {fbWidth, fbHeight, TextureFormat::R32_SINT},
+                      m_Framebuffer->GetColorAttachments()[1], FGState::Undefined, FGState::ShaderRead);
+    const FGHandle<FGTexture> depth =
+        graph->Import("AimLab.Depth", {fbWidth, fbHeight, TextureFormat::D24_UNORM_S8},
+                      m_Framebuffer->GetDepthAttachment(), FGState::Undefined, FGState::Undefined);
 
-    // ── Pass declaration: Write + attachments (§7), then defer recording.
-    auto& scenePass = graph.AddPass("AimLab.Scene", UHE::RHI::VULKAN::RGPassType::Graphics);
-    scenePass.Write(s_AimLabRG.color)
-        .Write(s_AimLabRG.entityTarget)
-        .Write(s_AimLabRG.depth)
-        .Color({s_AimLabRG.color, LoadOp::Clear, StoreOp::Store, {0.1f, 0.1f, 0.15f, 1.0f}})
-        .Color({s_AimLabRG.entityTarget, LoadOp::Clear, StoreOp::Store, {-1.0f, -1.0f, -1.0f, -1.0f}})
-        .Depth({s_AimLabRG.depth, LoadOp::Clear, StoreOp::Store, 1.0f, 0})
-        .Execute([this](UHE::RHI::VULKAN::RGPassContext& context) { RecordScenePass(context); });
-
-    // ── Live Vulkan objects registered so the executor can resolve barriers
-    // and attachments (image/view/format from the live texture; the entity
-    // target's R32_SINT format drives its int-typed clear value).
-    vulkanDevice->RegisterFrameTexture(s_AimLabRG.color, m_Framebuffer->GetColorAttachments()[0]);
-    vulkanDevice->RegisterFrameTexture(s_AimLabRG.entityTarget, m_Framebuffer->GetColorAttachments()[1]);
-    vulkanDevice->RegisterFrameTexture(s_AimLabRG.depth, m_Framebuffer->GetDepthAttachment());
-
-    // Viewport/scissor are recorded inside the pass callback (they are pass
-    // state, not graph state).
+    struct SceneTargets
+    {
+        FGHandle<FGTexture> Color, Entity, Depth;
+    };
+    graph->AddPass<SceneTargets>(
+        "AimLab.Scene",
+        [&](FGBuilder& builder, SceneTargets& targets)
+        {
+            FGAttachment sky;
+            sky.ClearColor = {0.1f, 0.1f, 0.15f, 1.0f};
+            targets.Color = builder.Write(color, FGWrite::RenderTarget, sky);
+            FGAttachment noEntity; // -1: no entity under the crosshair
+            noEntity.ClearColor = {-1.0f, -1.0f, -1.0f, -1.0f};
+            targets.Entity = builder.Write(entityTarget, FGWrite::RenderTarget, noEntity);
+            targets.Depth = builder.Write(depth, FGWrite::DepthTarget);
+        },
+        [this](const SceneTargets&, FGContext& context) { RecordScenePass(context); });
 }
 
-void AimLabLayer::RecordScenePass(UHE::RHI::VULKAN::RGPassContext& context)
+void AimLabLayer::RecordScenePass(UHE::RHI::FGContext& context)
 {
-    // Runs inside the executor-opened scope: transitions/scope are the
-    // compiler's/executor's, this records draws only (§8.4 contract).
-    const vk::CommandBuffer cmd = context.Cmd();
+    // Runs inside the scope the render graph opened: this records draws only.
+    UHE::RHI::RHICommandBuffer& cmd = context.Cmd();
+    cmd.SetViewport(0.0f, 0.0f, static_cast<f32>(context.Width()), static_cast<f32>(context.Height()));
+    cmd.SetScissor(0, 0, context.Width(), context.Height());
 
-    const vk::Extent2D extent{m_Framebuffer->GetSpecification().Width, m_Framebuffer->GetSpecification().Height};
-    const vk::Viewport viewport{0.0f, 0.0f, static_cast<f32>(extent.width), static_cast<f32>(extent.height),
-                                0.0f, 1.0f};
-    cmd.setViewport(0, viewport, context.Dispatcher());
-    cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent}, context.Dispatcher());
-
-    // Render scene (same draw stream as before; Renderer3D now records into
-    // the pass's command buffer through the RHI facade).
     auto lights = UHE::RD3d::LightSystem::ExtractLights(m_ActiveScene->GetRegistry());
     UHE::Renderer3D::BeginScene(m_Camera, lights);
 

@@ -1,6 +1,10 @@
 #pragma once
 #include <UHE.h>
-#include <Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h>
+
+namespace UHE::RHI
+{
+class FGContext;
+}
 #include <UHE/Renderer/EditorCamera.h>
 #include <UHE/Renderer/Framebuffer.h>
 #include <UHE/Renderer3D/Animator.h>
@@ -22,7 +26,7 @@ public:
 
 private:
     void RespawnTarget(UHE::Entity target);
-    void RecordScenePass(UHE::RHI::VULKAN::RGPassContext& context);
+    void RecordScenePass(UHE::RHI::FGContext& context);
 
     UHE::Ref<UHE::Scene> m_ActiveScene;
     UHE::EditorCamera m_Camera;

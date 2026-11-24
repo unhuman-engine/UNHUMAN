@@ -13,9 +13,6 @@
 #include "EditorTheme.h"
 #include "EditorUI.h"
 #include "ImGuizmo.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
-#include "Platform/Vulkan/VulkanDevice.h"
 #include "UHE/AssetsManager/AssetImport.h"
 #include "UHE/AssetsManager/Project.h"
 #include "UHE/AssetsManager/VfsSystem.h"
@@ -23,6 +20,7 @@
 #include "UHE/Core/CommandLine.h"
 #include "UHE/Core/Console.h"
 #include "UHE/Math/Math.h"
+#include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer3D/Renderer3D.h"
@@ -237,8 +235,7 @@ void Editor::OnUpdate(UHE::Timestep ts)
     }
 
     auto& device = Renderer::GetDevice();
-    auto* vulkanDevice = dynamic_cast<RHI::VULKAN::VulkanDevice*>(&device);
-    const bool graphMode = m_RenderPath == RenderPath::RenderGraph && vulkanDevice != nullptr;
+    const bool graphMode = m_RenderPath == RenderPath::RenderGraph && device.GetFrameGraph() != nullptr;
     const bool runtimeScene = m_SceneState != SceneState::Edit;
 
     auto& cmd = device.GetCurrentCommandBuffer();
@@ -368,57 +365,55 @@ void Editor::OnUpdate(UHE::Timestep ts)
 
 void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
 {
-    using RHI::LoadOp;
-    using RHI::StoreOp;
-    using RHI::VULKAN::ImageState;
-    using RHI::VULKAN::RGPassContext;
-    using RHI::VULKAN::RGPassType;
-    using RHI::VULKAN::RGTextureHandle;
-
-    auto* vulkanDevice = dynamic_cast<RHI::VULKAN::VulkanDevice*>(&Renderer::GetDevice());
-    if (!vulkanDevice)
+    using namespace RHI;
+    FrameGraph* graph = Renderer::GetDevice().GetFrameGraph();
+    if (graph == nullptr)
         return;
 
-    auto& graph = vulkanDevice->GetRenderGraph();
     const auto& spec = m_Framebuffer->GetSpecification();
     const u32 width = spec.Width;
     const u32 height = spec.Height;
 
-    // Imported every frame: framebuffer textures are recreated on resize, and
-    // Reset() bumps generations, so cached handles would be stale.
-    RGTextureHandle color = graph.ImportTexture("Editor.Scene.Color", 1, width, height, 1,
-                                                ImageState::Undefined, ImageState::ShaderRead);
-    RGTextureHandle entity = graph.ImportTexture("Editor.Scene.Entity", 2, width, height, 1,
-                                                 ImageState::Undefined, ImageState::ShaderRead);
-    RGTextureHandle depth = graph.ImportTexture("Editor.Scene.Depth", 3, width, height, 1,
-                                                ImageState::Undefined, ImageState::Undefined);
+    // Imported every frame: the framebuffer's textures are recreated on resize,
+    // and a frame graph handle does not outlive its frame. The viewport panel
+    // and picking sample colour and entity after this, so the frame leaves them
+    // ShaderRead; depth is needed only inside the pass.
+    const FGHandle<FGTexture> color =
+        graph->Import("Editor.Scene.Color", {width, height, TextureFormat::RGBA8_SRGB},
+                      m_Framebuffer->GetColorAttachments()[0], FGState::Undefined, FGState::ShaderRead);
+    const FGHandle<FGTexture> entity =
+        graph->Import("Editor.Scene.Entity", {width, height, TextureFormat::R32_SINT},
+                      m_Framebuffer->GetColorAttachments()[1], FGState::Undefined, FGState::ShaderRead);
+    const FGHandle<FGTexture> depth =
+        graph->Import("Editor.Scene.Depth", {width, height, TextureFormat::D24_UNORM_S8},
+                      m_Framebuffer->GetDepthAttachment(), FGState::Undefined, FGState::Undefined);
 
-    auto& pass = graph.AddPass("Editor.Scene", RGPassType::Graphics);
-    pass.Write(color)
-        .Write(entity)
-        .Write(depth)
-        .Color({color, LoadOp::Clear, StoreOp::Store, {0.0f, 0.0f, 0.0f, 1.0f}})
-        .Color({entity, LoadOp::Clear, StoreOp::Store, {-1.0f, -1.0f, -1.0f, -1.0f}})
-        .Depth({depth, LoadOp::Clear, StoreOp::Store, 1.0f, 0})
-        .Execute([this, ts, runtime](RGPassContext& context)
-                 { RecordSceneGraphPass(context, ts, runtime); });
-
-    vulkanDevice->RegisterFrameTexture(color, m_Framebuffer->GetColorAttachments()[0]);
-    vulkanDevice->RegisterFrameTexture(entity, m_Framebuffer->GetColorAttachments()[1]);
-    vulkanDevice->RegisterFrameTexture(depth, m_Framebuffer->GetDepthAttachment());
+    struct SceneTargets
+    {
+        FGHandle<FGTexture> Color, Entity, Depth;
+    };
+    graph->AddPass<SceneTargets>(
+        "Editor.Scene",
+        [&](FGBuilder& builder, SceneTargets& targets)
+        {
+            targets.Color = builder.Write(color, FGWrite::RenderTarget);
+            // Entity IDs clear to -1: "no entity" under the cursor.
+            FGAttachment noEntity;
+            noEntity.ClearColor = {-1.0f, -1.0f, -1.0f, -1.0f};
+            targets.Entity = builder.Write(entity, FGWrite::RenderTarget, noEntity);
+            targets.Depth = builder.Write(depth, FGWrite::DepthTarget);
+        },
+        [this, ts, runtime](const SceneTargets&, FGContext& context) { RecordSceneGraphPass(context, ts, runtime); });
 }
 
-void Editor::RecordSceneGraphPass(RHI::VULKAN::RGPassContext& context, Timestep ts, bool runtime)
+void Editor::RecordSceneGraphPass(RHI::FGContext& context, Timestep ts, bool runtime)
 {
-    const vk::Extent2D extent = context.Extent();
-    if (extent.width == 0 || extent.height == 0)
+    if (context.Width() == 0 || context.Height() == 0)
         return;
 
-    const vk::CommandBuffer cmd = context.Cmd();
-    const vk::Viewport viewport{0.0f, 0.0f, static_cast<f32>(extent.width), static_cast<f32>(extent.height),
-                                0.0f, 1.0f};
-    cmd.setViewport(0, viewport, context.Dispatcher());
-    cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent}, context.Dispatcher());
+    RHI::RHICommandBuffer& cmd = context.Cmd();
+    cmd.SetViewport(0.0f, 0.0f, static_cast<f32>(context.Width()), static_cast<f32>(context.Height()));
+    cmd.SetScissor(0, 0, context.Width(), context.Height());
 
     if (runtime)
         m_ActiveScene->RenderRuntimeScene(ts);

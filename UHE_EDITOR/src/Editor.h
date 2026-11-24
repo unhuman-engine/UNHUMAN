@@ -17,9 +17,9 @@
 #include "UHE/Renderer/Framebuffer.h"
 #include "imgui.h"
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
-class RGPassContext;
+class FGContext;
 }
 
 namespace UHE
@@ -94,10 +94,10 @@ private:
     void UndoTransform();
     void RedoTransform();
 
-    // Render graph path: the simulation runs in OnUpdate and the scene draw
-    // stream is recorded by a deferred graph pass before the ImGui pass.
+    // Frame graph path: the simulation runs in OnUpdate and the scene draw
+    // stream is recorded by a frame graph pass before the ImGui pass.
     void DeclareSceneGraphPass(Timestep ts, bool runtime);
-    void RecordSceneGraphPass(UHE::RHI::VULKAN::RGPassContext& context, Timestep ts, bool runtime);
+    void RecordSceneGraphPass(UHE::RHI::FGContext& context, Timestep ts, bool runtime);
 
 private:
     Entity m_Square;
