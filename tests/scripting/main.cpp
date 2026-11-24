@@ -648,19 +648,48 @@ function OnCreate(self) Find("Counter"):Translate(0, 1, 0) end
         check(engine.Run("local n = 0 for _ in pairs(math) do n = n + 1 end assert(n > 10)", "pairs_math"),
               "a read-only library still iterates");
 
+        // Every way back to a shared table must stay read-only. pairs() hands
+        // out its iteration state, and if that state is the real library the
+        // proxy is bypassed: one script could then rewrite string.upper for all.
+        engine.Run("local _, state = pairs(string) "
+                   "pcall(function() state.upper = function() return 'patched' end end)",
+                   "escape_pairs");
+        check(engine.Run("assert(string.upper('a') == 'A')", "string_intact"),
+              "pairs() does not expose a writable library table");
+        check(engine.Run("assert(('a'):upper() == 'A')", "method_intact"), "string methods are intact as well");
+        engine.Run("pcall(function() local mt = getmetatable(math) mt.__newindex = nil end)", "escape_mt");
+        check(!engine.Run("math.floor = nil", "patch_after_mt"), "a proxy's metatable cannot be reached to unlock it");
+
         Scene scene;
         SpawnScripted(scene, "Writer",
                       WriteScript("writer.lua", "_G.Shared = 42\n"
                                                 "Log = nil\n"
+                                                // Every route back to a shared table, each tried quietly:
+                                                // iteration state, the environment's metatable, and the
+                                                // proxy it falls back to.
+                                                "local function try(f) pcall(f) end\n"
+                                                "local _, s = pairs(string)\n"
+                                                "try(function() s.upper = function() return 'patched' end end)\n"
+                                                "local mt = getmetatable(_G)\n"
+                                                "if type(mt) == 'table' then\n"
+                                                "  local shared = mt.__index\n"
+                                                "  try(function() shared.math = nil end)\n"
+                                                "  try(function() local _, g = pairs(shared) g.math = nil end)\n"
+                                                "  try(function() setmetatable(shared, nil) end)\n"
+                                                "end\n"
                                                 "function OnCreate(self) end\n"));
         SpawnScripted(scene, "Reader",
-                      WriteScript("reader.lua", "function OnCreate(self)\n"
-                                                "  assert(Shared == nil, 'saw another script global')\n"
-                                                "  assert(Log ~= nil, 'lost the Log API')\n"
-                                                "  assert(getmetatable(self) == false, 'reached the methods table')\n"
-                                                "end\n"));
+                      WriteScript("reader.lua",
+                                  "function OnCreate(self)\n"
+                                  "  assert(Shared == nil, 'saw another script global')\n"
+                                  "  assert(Log ~= nil, 'lost the Log API')\n"
+                                  "  assert(getmetatable(self) == false, 'reached the methods table')\n"
+                                  "  assert(string.upper('a') == 'A', 'string library was patched')\n"
+                                  "  assert(math ~= nil and math.floor(2.5) == 2, 'shared math was removed')\n"
+                                  "end\n"));
         Start(scene);
         check(engine.ErroredInstanceCount() == 0, "one script's globals are invisible to another");
+        check(engine.ErroredInstanceCount() == 0, "and no route through pairs or metatables reaches shared tables");
         engine.OnSceneStop(scene);
     }
 
