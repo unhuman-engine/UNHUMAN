@@ -56,9 +56,19 @@ public:
     VulkanDescriptorManager(const VulkanDescriptorManager&) = delete;
     VulkanDescriptorManager& operator=(const VulkanDescriptorManager&) = delete;
 
+    /// @brief The slot value meaning "not registered".
+    static constexpr u32 kInvalidSlot = 0xFFFFFFFFu;
+
+    /**
+     * @brief Builds the global bindless set.
+     * @throws std::runtime_error when the device has no descriptor indexing:
+     *         every shader indexes this set, so there is nothing to fall back to.
+     */
     void init(VulkanDevice& device);
 
-    /// Registers \p buffer and \returns its bindless slot (recycled when possible).
+    /// @brief Registers \p buffer and \returns its bindless slot (recycled when possible).
+    /// When every slot is taken the error is logged and slot 0 is returned, so a
+    /// shader reads a valid descriptor rather than indexing past the array.
     u32 RegisterBuffer(vk::raii::Device& device, vk::Buffer buffer, vk::DeviceSize size);
     /// Frees \p slot for reuse. The descriptor is not cleared; the next registrant overwrites it.
     void UnregisterBuffer(u32 slot);
@@ -72,7 +82,8 @@ public:
     /// Frees \p slot for reuse.
     void UnregisterMaterialBuffer(u32 slot);
 
-    /// Registers \p imageView/\p sampler and \returns its bindless slot.
+    /// @brief Registers \p imageView/\p sampler and \returns its bindless slot.
+    /// Exhaustion behaves like RegisterBuffer: logged, and slot 0 is returned.
     u32 BindTexture(vk::raii::Device& device, vk::ImageView imageView, vk::Sampler sampler);
     /// Frees \p slot for reuse.
     void UnbindTexture(u32 slot);
@@ -111,6 +122,13 @@ public:
     [[nodiscard]] VulkanDescriptorPool* GetFallbackPool() { return &m_FallbackDescriptorPool; }
 
 private:
+    /**
+     * @brief Takes a slot from \p freeList, else the next unused one.
+     * @param what names the array in the exhaustion error.
+     * @todo grow the arrays instead of failing at MAX_BINDLESS_RESOURCES.
+     */
+    static u32 AcquireSlot(std::vector<u32>& freeList, u32& next, const char* what);
+
     vk::Device mdevice;
     VulkanDescriptorSet m_GlobalDescriptorSet;
     VulkanDescriptorPool m_FallbackDescriptorPool;

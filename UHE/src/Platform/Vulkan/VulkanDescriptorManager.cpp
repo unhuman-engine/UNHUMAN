@@ -118,30 +118,43 @@ void VulkanDescriptorManager::init(VulkanDevice& device)
     }
     else
     {
-        m_FallbackDescriptorPool.Init(&device.GetVulkanContext());
-        m_FallbackDescriptorPool.CreateDescriptorPool();
+        // Device selection already rejects such a GPU; this guards a context
+        // built some other way. Handing out slots of a set that does not exist
+        // made every shader index garbage.
+        throw std::runtime_error("VulkanDescriptorManager: the device has no descriptor indexing, which the "
+                                 "bindless global set requires");
     }
+}
+
+u32 VulkanDescriptorManager::AcquireSlot(std::vector<u32>& freeList, u32& next, const char* what)
+{
+    if (!freeList.empty())
+    {
+        const u32 slot = freeList.back();
+        freeList.pop_back();
+        return slot;
+    }
+    if (next < MAX_BINDLESS_RESOURCES)
+    {
+        return next++;
+    }
+
+    static bool reported = false;
+    if (!reported)
+    {
+        reported = true;
+        UHE_CORE_ERROR("Vulkan: all {} bindless {} slots are in use; new ones alias slot 0", MAX_BINDLESS_RESOURCES,
+                       what);
+    }
+    return 0;
 }
 
 u32 VulkanDescriptorManager::RegisterBuffer(vk::raii::Device& device, vk::Buffer buffer, vk::DeviceSize size)
 {
     if (!m_IsBindless)
-        return -1; // Or handle standard non-bindless registration if applicable
+        return kInvalidSlot;
 
-    u32 bindingIndex = 0;
-    if (!m_FreeBufferIndices.empty())
-    {
-        bindingIndex = m_FreeBufferIndices.back();
-        m_FreeBufferIndices.pop_back();
-    }
-    else
-    {
-        if (m_NextBufferIndex >= MAX_BINDLESS_RESOURCES)
-        {
-            return static_cast<u32>(-1);
-        }
-        bindingIndex = m_NextBufferIndex++;
-    }
+    const u32 bindingIndex = AcquireSlot(m_FreeBufferIndices, m_NextBufferIndex, "buffer");
 
     vk::DescriptorBufferInfo bufferInfo{.buffer = buffer, .offset = 0, .range = size};
 
@@ -152,9 +165,11 @@ u32 VulkanDescriptorManager::RegisterBuffer(vk::raii::Device& device, vk::Buffer
     return bindingIndex;
 }
 
+/// @note Slot 0 is never recycled: once the arrays are exhausted it is the
+/// alias every extra registrant gets, so freeing it would hand it out twice.
 void VulkanDescriptorManager::UnregisterBuffer(u32 slot)
 {
-    if (slot != static_cast<u32>(-1))
+    if (slot != kInvalidSlot && slot != 0)
     {
         m_FreeBufferIndices.push_back(slot);
     }
@@ -163,22 +178,9 @@ void VulkanDescriptorManager::UnregisterBuffer(u32 slot)
 u32 VulkanDescriptorManager::RegisterMaterialBuffer(vk::raii::Device& device, vk::Buffer buffer, vk::DeviceSize size)
 {
     if (!m_IsBindless)
-        return static_cast<u32>(-1);
+        return kInvalidSlot;
 
-    u32 bindingIndex = 0;
-    if (!m_FreeMaterialBufferIndices.empty())
-    {
-        bindingIndex = m_FreeMaterialBufferIndices.back();
-        m_FreeMaterialBufferIndices.pop_back();
-    }
-    else
-    {
-        if (m_NextMaterialBufferIndex >= MAX_BINDLESS_RESOURCES)
-        {
-            return static_cast<u32>(-1);
-        }
-        bindingIndex = m_NextMaterialBufferIndex++;
-    }
+    const u32 bindingIndex = AcquireSlot(m_FreeMaterialBufferIndices, m_NextMaterialBufferIndex, "material buffer");
 
     vk::DescriptorBufferInfo bufferInfo{.buffer = buffer, .offset = 0, .range = size};
 
@@ -191,7 +193,7 @@ u32 VulkanDescriptorManager::RegisterMaterialBuffer(vk::raii::Device& device, vk
 
 void VulkanDescriptorManager::UnregisterMaterialBuffer(u32 slot)
 {
-    if (slot != static_cast<u32>(-1))
+    if (slot != kInvalidSlot && slot != 0)
     {
         m_FreeMaterialBufferIndices.push_back(slot);
     }
@@ -199,22 +201,9 @@ void VulkanDescriptorManager::UnregisterMaterialBuffer(u32 slot)
 u32 VulkanDescriptorManager::BindTexture(vk::raii::Device& device, vk::ImageView imageView, vk::Sampler sampler)
 {
     if (!m_IsBindless)
-        return -1;
+        return kInvalidSlot;
 
-    u32 slot = 0;
-    if (!m_FreeTextureIndices.empty())
-    {
-        slot = m_FreeTextureIndices.back();
-        m_FreeTextureIndices.pop_back();
-    }
-    else
-    {
-        if (m_NextTextureIndex >= MAX_BINDLESS_RESOURCES)
-        {
-            return static_cast<u32>(-1);
-        }
-        slot = m_NextTextureIndex++;
-    }
+    const u32 slot = AcquireSlot(m_FreeTextureIndices, m_NextTextureIndex, "texture");
 
     vk::DescriptorImageInfo imageInfo{
         .sampler = sampler, .imageView = imageView, .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
@@ -228,7 +217,7 @@ u32 VulkanDescriptorManager::BindTexture(vk::raii::Device& device, vk::ImageView
 
 void VulkanDescriptorManager::UnbindTexture(u32 slot)
 {
-    if (slot != static_cast<u32>(-1))
+    if (slot != kInvalidSlot && slot != 0)
     {
         m_FreeTextureIndices.push_back(slot);
     }

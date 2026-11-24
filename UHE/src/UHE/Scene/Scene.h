@@ -5,6 +5,7 @@
 #include <box2d/types.h>
 #include <example/stb_image.h>
 #include "UHE/Core/Timestep.h"
+#include "UHE/Core/SimulationClock.h"
 #include "UHE/Renderer/EditorCamera.h"
 #include "UHE/Scene/Components.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
@@ -21,6 +22,7 @@ struct TagComponent;
 struct SpriteRendererComponent;
 struct SpriteAnimationComponent;
 struct NativeScriptComponent;
+struct ScriptComponent;
 struct RigidBody2DComponent;
 struct BoxColliderComponent;
 struct IDComponent;
@@ -108,8 +110,23 @@ public:
     // combined OnUpdate* functions keep the immediate path unchanged.
     void OnUpdateEditorSimulation(Timestep ts);
     void RenderEditorScene(Timestep ts, EditorCamera& camera);
-    void OnUpdateRuntimeSimulation(Timestep ts);
+    /// One rendered frame of play mode: feeds `frame` to the simulation clock,
+    /// runs the fixed ticks it is due (StepSimulation), then advances the
+    /// per-frame systems (animators, audio) by the frame time.
+    void OnUpdateRuntimeSimulation(Timestep frame);
+    /// Draws the runtime scene. Physics-driven transforms are blended between
+    /// the last two ticks by the clock's Alpha(), so a display rate that does
+    /// not divide the tick rate does not judder.
     void RenderRuntimeScene(Timestep ts);
+
+    /// Runs exactly one fixed tick (issue #49): native and Lua scripts with the
+    /// fixed step as their dt, then 2D and 3D physics. This is the unit of
+    /// simulated time: the editor's Step button runs one, and a headless
+    /// server can call it directly to step a scene deterministically.
+    /// Requires OnRuntimeStart().
+    void StepSimulation();
+    [[nodiscard]] SimulationClock& GetSimulationClock() { return m_SimulationClock; }
+    [[nodiscard]] const SimulationClock& GetSimulationClock() const { return m_SimulationClock; }
 
     void OnRuntimeStart();
     void OnRuntimeStop();
@@ -118,6 +135,10 @@ public:
 
     static Ref<Scene> Copy(Ref<Scene> other);
     entt::registry& GetRegistry() { return m_registry; }
+
+    /// The scene's physics system. Scripts drive rigid bodies through it
+    /// (velocity and force), so it is reachable rather than private.
+    [[nodiscard]] Physics::PhysicsSystem3D& GetPhysicsSystem3D() { return m_PhysicsSystem3D; }
 
     static bool& GetShowLightIcons() { static bool s_ShowLightIcons = true; return s_ShowLightIcons; }
 
@@ -156,6 +177,16 @@ private:
     // per frame from the RelationshipComponent tree.
     void UpdateWorldTransformCache();
 
+    // Advances every AnimatorComponent, including the animation graph. Shared
+    // by the editor and runtime update paths so both see identical behaviour.
+    void StepAnimators(Timestep ts);
+
+    // Starts/stops AudioSourceComponents and mirrors their options to the live
+    // voice. Editor mode only honours explicit Play buttons; runtime also runs
+    // Autoplay sources.
+    void UpdateAudioSources(Timestep ts, bool runtime);
+    void StopAudioSources();
+
     void RenderSprites(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
     void RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
     void RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
@@ -181,6 +212,18 @@ private:
 
     b2WorldId m_PhysicsWorldId = b2_nullWorldId;
     Physics::PhysicsSystem3D m_PhysicsSystem3D;
+
+    // Issue #49: simulated time, decoupled from the render delta.
+    SimulationClock m_SimulationClock;
+    // Local transforms of physics-driven entities as they were before the most
+    // recent tick; rendering blends from these to the current ones.
+    std::unordered_map<entt::entity, TransformComponent> m_PreviousTickPose;
+    // False after a manual StepSimulation(): the user asked to see exactly
+    // that tick, not a blend toward it.
+    bool m_InterpolateRender = false;
+    // Set while RenderRuntimeScene builds the world cache: blended local
+    // transforms that override TransformComponent for that build only.
+    std::unordered_map<entt::entity, glm::mat4> m_RenderLocalOverride;
     
     Ref<Texture2D> m_DirLightIcon;
     Ref<Texture2D> m_PointLightIcon;
@@ -197,6 +240,8 @@ template <> UHE_API void Scene::OnComponentAdded<SpriteRendererComponent>(Entity
 template <> UHE_API void Scene::OnComponentAdded<TextComponent>(Entity entity, TextComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<SpriteAnimationComponent>(Entity entity, SpriteAnimationComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<NativeScriptComponent>(Entity entity, NativeScriptComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<ScriptComponent>(Entity entity, ScriptComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<AudioSourceComponent>(Entity entity, AudioSourceComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<RigidBody2DComponent>(Entity entity, RigidBody2DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<BoxColliderComponent>(Entity entity, BoxColliderComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<IDComponent>(Entity entity, IDComponent& components);

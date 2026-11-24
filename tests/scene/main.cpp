@@ -13,6 +13,7 @@
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer/EditorCamera.h"
 #include "UHE/Math/Math.h"
+#include "UHE/Core/SimulationClock.h"
 
 #include <cassert>
 #include <iostream>
@@ -255,6 +256,129 @@ static void TestStaleRelationships()
     CHECK(scene->GetRootEntities().size() == 2, "self-parent repaired to root");
 }
 
+// --- 7. issue #49: the fixed-step clock ---
+static void TestSimulationClock()
+{
+    std::cout << "[simulation clock]\n";
+    SimulationClock clock; // 120 Hz, at most 30 ticks per advance
+    CHECK(clock.GetFixedStepNanoseconds() == 8'333'333, "120 Hz is 8333333 ns per tick");
+    CHECK(clock.Advance(1.0 / 60.0) == 2, "a 60 FPS frame runs two ticks");
+    CHECK(clock.Advance(1.0 / 240.0) == 0, "half a tick runs none");
+    CHECK(clock.Advance(1.0 / 240.0) == 1, "and the remainder carries into the next frame");
+
+    SimulationClock counted;
+    u64 ticks = 0;
+    for (int i = 0; i < 1000; ++i)
+        ticks += counted.Advance(1.0 / 144.0);
+    // 1000 frames of llround(1e9 / 144) = 6944444 ns, over 8333333 ns ticks.
+    CHECK(ticks == 6'944'444'000ull / 8'333'333ull, "1000 frames at 144 FPS give exactly the integer tick count");
+
+    SimulationClock capped;
+    CHECK(capped.Advance(10.0) == SimulationClock::kDefaultMaxTicksPerAdvance, "a 10 s hitch is capped");
+    CHECK(capped.Alpha() >= 0.0f && capped.Alpha() < 1.0f, "and keeps less than one tick of backlog");
+
+    SimulationClock paused;
+    paused.SetPaused(true);
+    CHECK(paused.Advance(1.0) == 0, "a paused clock runs no ticks");
+    paused.SetPaused(false);
+    CHECK(paused.Advance(1.0 / 240.0) == 0 && paused.Alpha() > 0.49f && paused.Alpha() < 0.51f,
+          "and accumulated nothing while paused");
+
+    SimulationClock indexed;
+    indexed.OnTickCompleted();
+    indexed.OnTickCompleted();
+    CHECK(indexed.GetTickIndex() == 2, "the tick index counts completed ticks");
+    indexed.Reset();
+    CHECK(indexed.GetTickIndex() == 0 && indexed.Alpha() == 0.0f, "Reset returns to tick 0");
+}
+
+// A box falling onto a floor in both physics engines.
+static Ref<Scene> MakeFallingScene()
+{
+    auto scene = CreateRef<Scene>();
+    Entity box3d = scene->CreateEntity("Box3D");
+    box3d.GetComponent<TransformComponent>().Translation = {0.3f, 5.0f, -0.2f};
+    box3d.GetComponent<TransformComponent>().Rotation = {0.2f, 0.4f, 0.1f};
+    box3d.AddComponent<RigidBody3DComponent>().Type = RigidBody3DComponent::BodyType::Dynamic;
+    box3d.AddComponent<BoxCollider3DComponent>();
+
+    Entity floor3d = scene->CreateEntity("Floor3D");
+    floor3d.GetComponent<TransformComponent>().Scale = {20.0f, 1.0f, 20.0f};
+    floor3d.AddComponent<RigidBody3DComponent>(); // static
+    floor3d.AddComponent<BoxCollider3DComponent>();
+
+    Entity box2d = scene->CreateEntity("Box2D");
+    box2d.GetComponent<TransformComponent>().Translation = {0.0f, 4.0f, 0.0f};
+    box2d.AddComponent<RigidBody2DComponent>().Type = RigidBody2DComponent::BodyType::Dynamic;
+    box2d.AddComponent<BoxColliderComponent>();
+
+    Entity floor2d = scene->CreateEntity("Floor2D");
+    floor2d.GetComponent<TransformComponent>().Translation = {0.0f, -2.0f, 0.0f};
+    floor2d.AddComponent<RigidBody2DComponent>();
+    floor2d.AddComponent<BoxColliderComponent>();
+    return scene;
+}
+
+static TransformComponent PoseOf(Scene& scene, const std::string& name)
+{
+    auto view = scene.GetRegistry().view<TagComponent, TransformComponent>();
+    for (auto entity : view)
+        if (view.get<TagComponent>(entity).Tag == name)
+            return view.get<TransformComponent>(entity);
+    return {};
+}
+
+static bool SamePose(const TransformComponent& a, const TransformComponent& b)
+{
+    return a.Translation == b.Translation && a.Rotation == b.Rotation; // bit-exact
+}
+
+// --- 8. issue #49 acceptance: frame rate does not change the simulation ---
+static void TestFixedStepDeterminism()
+{
+    std::cout << "[fixed-step determinism]\n";
+    constexpr u64 kTicks = 240; // two simulated seconds
+
+    auto runAt = [&](double fps)
+    {
+        Ref<Scene> scene = MakeFallingScene();
+        scene->OnRuntimeStart();
+        while (scene->GetSimulationClock().GetTickIndex() < kTicks)
+            scene->OnUpdateRuntimeSimulation(Timestep(static_cast<float>(1.0 / fps)));
+        return scene;
+    };
+
+    Ref<Scene> slow = runAt(30.0);
+    Ref<Scene> fast = runAt(144.0);
+    Ref<Scene> stepped = MakeFallingScene();
+    stepped->OnRuntimeStart();
+    for (u64 i = 0; i < kTicks; ++i)
+        stepped->StepSimulation();
+
+    CHECK(slow->GetSimulationClock().GetTickIndex() == kTicks &&
+              fast->GetSimulationClock().GetTickIndex() == kTicks,
+          "30 FPS and 144 FPS both land on tick 240");
+    CHECK(PoseOf(*slow, "Box3D").Translation.y < 4.0f, "the 3D box fell");
+    CHECK(PoseOf(*slow, "Box2D").Translation.y < 3.0f, "the 2D box fell");
+    CHECK(SamePose(PoseOf(*slow, "Box3D"), PoseOf(*fast, "Box3D")), "3D pose is identical at 30 and 144 FPS");
+    CHECK(SamePose(PoseOf(*slow, "Box2D"), PoseOf(*fast, "Box2D")), "2D pose is identical at 30 and 144 FPS");
+    CHECK(SamePose(PoseOf(*slow, "Box3D"), PoseOf(*stepped, "Box3D")) &&
+              SamePose(PoseOf(*slow, "Box2D"), PoseOf(*stepped, "Box2D")),
+          "and identical to 240 manual single steps");
+
+    // Pause: frames keep coming, the simulation does not move.
+    const TransformComponent before = PoseOf(*fast, "Box3D");
+    fast->GetSimulationClock().SetPaused(true);
+    for (int i = 0; i < 30; ++i)
+        fast->OnUpdateRuntimeSimulation(Timestep(1.0f / 60.0f));
+    CHECK(fast->GetSimulationClock().GetTickIndex() == kTicks && SamePose(before, PoseOf(*fast, "Box3D")),
+          "a paused clock freezes the simulation while frames continue");
+
+    slow->OnRuntimeStop();
+    fast->OnRuntimeStop();
+    stepped->OnRuntimeStop();
+}
+
 int main()
 {
     Scene::GetShowLightIcons() = false; // no texture loading in headless tests
@@ -266,6 +390,8 @@ int main()
     TestScriptLifetime();
     TestRuntimePhysics();
     TestStaleRelationships();
+    TestSimulationClock();
+    TestFixedStepDeterminism();
 
     Physics::PhysicsSystem3D::Shutdown();
 

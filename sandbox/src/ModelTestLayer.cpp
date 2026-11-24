@@ -3,13 +3,19 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>
 #include "UHE/RHI/RHICommandBuffer.h"
+#include "Platform/Vulkan/VulkanDevice.h"
 
+#include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 
 ModelTestLayer::ModelTestLayer() : Layer("ModelTestLayer") {}
 
 void ModelTestLayer::OnAttach()
 {
+    // Shader edits show up while the sandbox runs, which is how the smoke test
+    // covers hot reload without a restart.
+    UHE::ShaderCache::Get().SetHotReloadEnabled(true);
+
     // Load the basic test GLTF
     std::string path = (UHE::FileSystem::Get().GetRootPath() / "../sandbox/assets/models/Box.gltf").string();
     if (!m_Model.loadModel(path))
@@ -22,8 +28,9 @@ void ModelTestLayer::OnAttach()
 
     // Create a depth texture for the swapchain render pass
     auto& device = UHE::Renderer::GetDevice();
-    uint32_t width = UHE::Application::Get().GetWindow().GetWidth();
-    uint32_t height = UHE::Application::Get().GetWindow().GetHeight();
+    auto& swapChain = static_cast<UHE::RHI::VULKAN::VulkanDevice&>(device).getSwapChainClass();
+    uint32_t width = swapChain.GetExtent().width;
+    uint32_t height = swapChain.GetExtent().height;
 
     UHE::RHI::TextureDesc depthDesc{};
     depthDesc.width = width;
@@ -31,6 +38,8 @@ void ModelTestLayer::OnAttach()
     depthDesc.format = UHE::RHI::TextureFormat::D24_UNORM_S8;
     depthDesc.usage = UHE::RHI::TextureUsage::DepthAttach | UHE::RHI::TextureUsage::Sampled;
     m_DepthTexture = device.CreateTexture(depthDesc);
+    m_DepthWidth = width;
+    m_DepthHeight = height;
 }
 
 void ModelTestLayer::OnDetach()
@@ -71,9 +80,35 @@ void ModelTestLayer::OnUpdate(UHE::Timestep ts)
     auto& device = UHE::Renderer::GetDevice();
     auto& cmd = device.GetCurrentCommandBuffer();
 
-    uint32_t width = UHE::Application::Get().GetWindow().GetWidth();
-    uint32_t height = UHE::Application::Get().GetWindow().GetHeight();
+    // The swapchain is the authority on the frame's extent: the window's own
+    // size can still be the pre-resize one, and a render area taller than the
+    // attachment is invalid.
+    auto& swapChain = static_cast<UHE::RHI::VULKAN::VulkanDevice&>(device).getSwapChainClass();
+    uint32_t width = swapChain.GetExtent().width;
+    uint32_t height = swapChain.GetExtent().height;
 
+    // The depth attachment has to cover the render area, and for a swapchain
+    // pass that is the swapchain's extent. One created at attach time goes
+    // stale on the first resize, and an attachment smaller than the render area
+    // is invalid. The wait is deliberate: an earlier frame can still be reading
+    // the old attachment, and this only runs on a resize.
+    if (width != m_DepthWidth || height != m_DepthHeight)
+    {
+        device.WaitIdle();
+        if (m_DepthTexture)
+        {
+            device.DestroyTexture(m_DepthTexture);
+            m_DepthTexture = nullptr;
+        }
+        UHE::RHI::TextureDesc depthDesc{};
+        depthDesc.width = width;
+        depthDesc.height = height;
+        depthDesc.format = UHE::RHI::TextureFormat::D24_UNORM_S8;
+        depthDesc.usage = UHE::RHI::TextureUsage::DepthAttach | UHE::RHI::TextureUsage::Sampled;
+        m_DepthTexture = device.CreateTexture(depthDesc);
+        m_DepthWidth = width;
+        m_DepthHeight = height;
+    }
     UHE::RHI::RenderPassDesc passDesc{};
     passDesc.renderWidth = width;
     passDesc.renderHeight = height;
@@ -93,6 +128,7 @@ void ModelTestLayer::OnUpdate(UHE::Timestep ts)
     defaultLight.ColorIntensity = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
     lights.push_back(defaultLight);
 
+    UHE::Renderer3D::SetSwapchainTarget(true);
     UHE::Renderer3D::BeginScene(m_Camera, lights);
 
     // Render the model with some rotation

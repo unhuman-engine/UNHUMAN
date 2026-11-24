@@ -138,6 +138,27 @@ static bool AssertFailedImpl(const char* inExpression, const char* inMessage, co
 
 // -- Engine System --
 
+namespace
+{
+/// @brief One worker pool for every scene's world. A pool per scene meant an
+/// editor in play mode (edit scene + runtime copy) ran two sets of cores-1
+/// threads. Worlds are stepped one after another on the main thread, so they
+/// can share it.
+JPH::JobSystemThreadPool* s_JobSystem = nullptr;
+
+JPH::JobSystemThreadPool* SharedJobSystem()
+{
+    if (s_JobSystem == nullptr)
+    {
+        // hardware_concurrency() may be 0 ("unknown"): at least one worker.
+        const int cores = static_cast<int>(std::thread::hardware_concurrency());
+        s_JobSystem =
+            new JPH::JobSystemThreadPool(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, std::max(1, cores - 1));
+    }
+    return s_JobSystem;
+}
+} // namespace
+
 void PhysicsSystem3D::Init()
 {
     JPH::RegisterDefaultAllocator();
@@ -153,16 +174,27 @@ void PhysicsSystem3D::Init()
 
 void PhysicsSystem3D::Shutdown()
 {
+    // Every world must be gone by now; the pool's threads are joined here.
+    delete s_JobSystem;
+    s_JobSystem = nullptr;
+
     JPH::UnregisterTypes();
     delete JPH::Factory::sInstance;
     JPH::Factory::sInstance = nullptr;
 }
 
+PhysicsSystem3D::~PhysicsSystem3D()
+{
+    ShutdownScene();
+}
+
 void PhysicsSystem3D::InitializeScene()
 {
+    // A second play session on the same scene must not leak the first world.
+    ShutdownScene();
+
     m_TempAllocator = new JPH::TempAllocatorImpl(10 * 1024 * 1024);
-    m_JobSystem = new JPH::JobSystemThreadPool(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers,
-                                               std::thread::hardware_concurrency() - 1);
+    m_JobSystem = SharedJobSystem(); // borrowed, never deleted here
 
     m_BPLayerInterface = new BPLayerInterfaceImpl();
     m_BroadPhaseLayerFilter = new ObjectVsBroadPhaseLayerFilterImpl();
@@ -188,22 +220,28 @@ void PhysicsSystem3D::ShutdownScene()
     delete static_cast<ObjectLayerPairFilterImpl*>(m_ObjectLayerPairFilter);
     delete static_cast<ObjectVsBroadPhaseLayerFilterImpl*>(m_BroadPhaseLayerFilter);
     delete static_cast<BPLayerInterfaceImpl*>(m_BPLayerInterface);
+    m_ObjectLayerPairFilter = nullptr;
+    m_BroadPhaseLayerFilter = nullptr;
+    m_BPLayerInterface = nullptr;
 
-    delete m_JobSystem;
-    m_JobSystem = nullptr;
+    m_JobSystem = nullptr; // shared: owned by Init/Shutdown
     delete m_TempAllocator;
     m_TempAllocator = nullptr;
 }
 
 void PhysicsSystem3D::Update(Timestep ts)
 {
+    if (m_PhysicsSystem == nullptr || m_JobSystem == nullptr || s_JobSystem == nullptr)
+    {
+        return;
+    }
     const int cCollisionSteps = 1;
     m_PhysicsSystem->Update(ts, cCollisionSteps, m_TempAllocator, m_JobSystem);
 }
 
 JPH::BodyInterface* PhysicsSystem3D::GetBodyInterface()
 {
-    return &m_PhysicsSystem->GetBodyInterface();
+    return m_PhysicsSystem != nullptr ? &m_PhysicsSystem->GetBodyInterface() : nullptr;
 }
 
 glm::vec3 PhysicsSystem3D::JoltToGlm(const float* joltVec3)

@@ -1,13 +1,83 @@
 # Scripting
 
-Status: `DESIGN`. Issue [#28](https://github.com/unhuman-engine/UNHUMAN/issues/28).
-Roadmap M6.3, decision D18. Code lands in `UHE/src/UHE/Scripting/` (new module)
-and `ScriptComponent` in `Scene/Components.h`. Written against `improve_vulkan`
-at `c271467`.
+Status: `IMPLEMENTED` for phase 1 plus hot reload (issue
+[#28](https://github.com/unhuman-engine/UNHUMAN/issues/28), roadmap M6.3,
+decision D18). Code is in `UHE/src/UHE/Scripting/`, `ScriptComponent` in
+`Scene/Components.h`, and the harness in `tests/scripting/`.
 
 Issue #28 only states that Lua is the preferred choice. This document supplies
-the missing design: what is embedded, where it sits, how scripts attach to
-entities, how they run and fail, how the API is bound, and a phased plan.
+the design: what is embedded, where it sits, how scripts attach to entities, how
+they run and fail, how the API is bound, and a phased plan. The **Implemented**
+section below says which parts of it are in the tree and where the code deviates.
+
+## Implemented
+
+What a script is given, and what happens around it:
+
+| Piece | Where | Notes |
+|---|---|---|
+| The VM, sandbox and bindings | `Scripting/ScriptEngine.{h,cpp}` | One `sol::state`, main thread, opened by `Application` |
+| Attachment | `ScriptComponent` in `Scene/Components.h` | `ScriptPath` (project-relative), `Enabled`, runtime `RuntimeIndex` |
+| Lifecycle | `OnCreate(self)`, `OnUpdate(self, dt)`, `OnDestroy(self)` | Driven from `Scene::OnUpdateEditorSimulation` / `OnUpdateRuntimeSimulation` |
+| `self` | a table per instance | Keeps the script's own fields; carries the entity methods through a shared metatable |
+| Entity API | `GetName`/`SetName`, `GetPosition`/`SetPosition`/`Translate`, `GetRotation`/`SetRotation`, `GetScale`/`SetScale`, `GetID`, `IsValid`, `Destroy`, `Spawn`, `Find` | Every call re-resolves the entity through the registry, so a destroyed entity answers "invalid" instead of reading freed memory |
+| Rigid bodies | `HasRigidBody`, `Get`/`SetLinearVelocity`, `Get`/`SetAngularVelocity`, `ApplyForce` | What makes a script a controller rather than a cutscene |
+| Engine API | `Log.{info,warn,error}`, `Input.IsKeyPressed`, `Input.IsMouseButtonPressed`, `Input.GetMousePosition` | Input checks for a window first, so a headless run answers `false` instead of asking GLFW about a null context |
+| Hot reload | `ScriptEngine::Tick` | Source mtimes polled four times a second from the scene step; an edit recompiles and re-runs `OnCreate`. The editor and the sandbox enable it, **File > Reload Scripts** forces it |
+| Editor view | `Editor/src/Panel/ScriptsPanel.{h,cpp}` | One row per attached script, fed by `ScriptEngine::Instances(Scene&)`; `ReloadEntity` backs the per-row Reload button |
+| Errors | every call is a protected call | Logged with the chunk name and a traceback, the instance is disabled, the frame continues |
+
+Deviations from the design below, all deliberate:
+
+- **`sol::state& Lua()` is not in the public header.** sol2 is a large template
+  library; `ScriptEngine.h` exposes `lua_State* State()` instead, and only
+  `ScriptEngine.cpp` includes sol2.
+- **`ScriptComponent` holds a path, not `AssetHandle<ScriptAsset>`.** The asset
+  manager is not wired into the engine yet (nothing loads through it), so a
+  handle would be a promise the tree cannot keep. The path resolves through
+  `ResolveAssetPath`, the same seam textures and models use.
+- **A Lua panic aborts** rather than "stopping the script". A panic means the VM
+  was used outside a protected call, which is a bug in the host: Lua unwinds by
+  `longjmp`, and returning from the handler would unwind through C++ frames.
+  Every script call is protected, so this should be unreachable.
+- **The instruction watchdog is DONE** (`ScriptEngine::SetInstructionBudget`,
+  50M instructions per outermost call by default): an endless loop errors and
+  disables its instance. No per-instance coroutines or frame-time budget yet,
+  and no reflection-driven component access: those are phase 2 items below.
+- **Globals are isolated.** Each script runs in its own environment whose `_G`
+  is itself; the shared globals and plain library tables behind it are
+  read-only proxies, `rawset` is removed and the string and entity metatables
+  are hidden, so one script cannot patch what another sees.
+- **`GetID` returns a string.** An entity id is a random 64-bit UUID and a Lua
+  integer is signed, so half of them cannot be represented as a number.
+
+A working example ships with the editor's assets
+(`UHE_EDITOR/assets/scripts/orbit.lua`): attach it to an entity with the inspector
+and it orbits the origin, logging where it is.
+
+## In the editor
+
+The editor is where a script is created, attached and watched, so the workflow
+does not require leaving it:
+
+| Action | Where |
+|---|---|
+| Create a script | **New Script** in the Content Browser: writes a `.lua` with the three hooks into the folder being browsed, under a free name |
+| Attach one to an entity | Right-click a `.lua` → **Attach to selected entity**. It adds the component, or retargets it, and stores the path project-relative so the scene stays portable |
+| See and change it | **Properties → Script (Lua)**: path, enabled toggle, the instance's state, and Reload / Open buttons |
+| See every script at once | The **Scripts** panel: one row per attached script with entity, file, state (`running` / `error` / `waiting`), the failure text in place, and per-row Reload / Open |
+| Force a recompile | **File > Reload Scripts** (the Scripts panel's **Reload All** does the same) |
+| Edit live | Hot reload is on in the editor: save the file and the instance restarts from `OnCreate` |
+
+An example ships with the editor's assets,
+`UHE_EDITOR/assets/scripts/orbit.lua` -- attach it to any entity and it orbits
+the origin.
+
+What the harness proves (`tests/scripting`, 53 checks, no GPU): the sandbox, the
+lifecycle order, `self` state across frames, the entity API, a controller loop
+that converges on a target, an error disabling one instance while the next keeps
+running, a missing file, hot reload, `Enabled = false` pausing, and the script
+surviving a scene save/load round trip.
 
 ## Decision
 
@@ -158,36 +228,37 @@ runtime bundle, with source used in development.
 
 ## Phases
 
-Phase 1, the core: vendor Lua and sol2, implement `Init` and `Shutdown` with the
-sandbox and panic handler, bind math, entity transform, input, time and logging,
-add `ScriptComponent` and `ScriptSystem` with `OnCreate`, `OnUpdate` and
-`OnDestroy`, and route calls through protected functions with error logging. Done
-when a script moves a cube, reacts to a key, and an error logs instead of
-crashing.
+Phase 1, the core: **DONE**. Lua and sol2 are vendored, `Init`/`Shutdown` open the
+sandbox, the entity, input and logging bindings exist, `ScriptComponent` runs
+`OnCreate`/`OnUpdate`/`OnDestroy`, and every call is protected with error
+logging. A script moves an entity, reads a key, and an error logs instead of
+crashing -- all covered by `tests/scripting`.
 
-Phase 2, ergonomics and safety: reflection-driven component access, coroutines
-with a frame budget and watchdog, hot reload by re-running `OnCreate`, and editor
-console error reporting.
+Phase 2, ergonomics and safety: **hot reload DONE** (mtime poll, recompile,
+re-run `OnCreate`; script logs and errors reach the editor console through the
+normal log sink), **instruction watchdog DONE**. Still open: reflection-driven
+component access, coroutines with a frame budget.
 
-Phase 3, editor and events: script inspector, play and stop lifecycle wired to
-scene start and stop, event hooks, entity create and destroy from script, API
-annotation export, and debugger attach.
+Phase 3, editor and events: **script inspector and Scripts panel DONE**, entity
+create/destroy from script DONE (`Spawn`, `Find`, `Destroy`), and attach-from-
+Content-Browser DONE. Still open: event hooks (`OnEvent`), API annotation export,
+debugger attach.
 
 Phase 4, shipping: bytecode caching in the cook step, the module becoming
 optional for non-script builds, and profiler integration.
 
 ## Decisions
 
-| Item | Proposal |
+| Item | As implemented |
 |---|---|
-| Language | Lua 5.4 with sol2, settled |
-| VM count | One VM until isolation is needed |
-| Binding style | sol2 runtime bindings, reflection registry in phase 2 |
-| Execution | Coroutines with a frame budget; plain calls in phase 1 |
-| Sandbox | No os, io, debug or package; engine API only |
-| Storage | Assets by ID, source in development and bytecode when shipped |
-| Threading | Main thread only |
-| Shipping form | Optional module, compiled out for non-script builds |
+| Language | Lua 5.4.7 vendored in `UHE/vendor/lua`, sol2 vendored in `UHE/vendor/sol2` (single header, pinned commit: the 3.3.0 release does not compile under C++23) |
+| VM count | One `sol::state`, owned by `ScriptEngine::Get()`, opened by `Application` |
+| Binding style | sol2 runtime bindings; `sol` appears in `ScriptEngine.cpp` only |
+| Execution | Plain protected calls under an instruction budget; coroutines and the frame budget are still open |
+| Sandbox | `base`, `math`, `string`, `table`, `utf8`, `coroutine`; `debug` is opened only to capture `debug.traceback` and then dropped. `load`, `loadfile`, `dofile`, `require`, `print` and `rawset` are removed; shared globals are read-only |
+| Storage | `ScriptComponent::ScriptPath`, project-relative, resolved by `ResolveAssetPath`; bytecode cooking is not done |
+| Threading | Main thread only: the VM is driven from the scene step |
+| Shipping form | Always built; hot reload is off unless an app turns it on |
 
 ## Pitfalls
 

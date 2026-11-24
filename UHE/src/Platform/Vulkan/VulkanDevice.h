@@ -1,4 +1,5 @@
 #pragma once
+#include <optional>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
@@ -53,6 +54,7 @@ public:
     PipelineHandle CreateComputePipeline(const ComputePipelineDesc& desc) override;
 
     void ReadPixel(TextureHandle handle, int x, int y, void* outData) override;
+    bool ReadPixelAsync(TextureHandle handle, int x, int y, void* outData) override;
 
     void DestroyBuffer(BufferHandle handle) override;
     void DestroyTexture(TextureHandle handle) override;
@@ -77,6 +79,8 @@ public:
     // EndFrameGraph() after recording.
     [[nodiscard]] VulkanRenderGraph& GetFrameGraph() { return m_FrameGraph; }
     [[nodiscard]] bool FrameSkipped() const override { return m_FrameSkipped; }
+    /// Recreates the swapchain after the next present (\copydoc RHIDevice::OnFramebufferResized).
+    void OnFramebufferResized() override { m_FramebufferResized = true; }
 
     // Set by VulkanCommandBuffer::BeginRenderPass when a frame's legacy scene
     // pass rendered directly into the swapchain (leaving it in the Present
@@ -118,6 +122,8 @@ public:
     [[nodiscard]] inline VulkanInstance& getInstanceClass() { return m_Instance; }
     [[nodiscard]] inline VulkanPhysicalDevice& getPhysicalDevClass() { return m_PhysicalDevice; }
     [[nodiscard]] inline VulkanSwapChain& getSwapChainClass() { return m_SwapChain; }
+    /// \copydoc RHIDevice::GetSwapchainFormat
+    [[nodiscard]] TextureFormat GetSwapchainFormat() override { return m_SwapChain.GetSwapchainFormat(); }
     [[nodiscard]] inline const u32& ImageIndex() { return m_ImageIndex; }
     [[nodiscard]] inline VulkanDescriptorManager* GetDescriptorManager() { return &m_DescriptorManager; }
     [[nodiscard]] inline VulkanContext& GetVulkanContext() { return m_Context; }
@@ -129,6 +135,10 @@ private:
     void RecreateSwapchain();
     void RegisterSwapchainResources();
     void RegisterFrameTextureImpl(RGTextureHandle rgTexture, TextureHandle texture);
+    /// @brief Records this frame's queued pixel copy, if any, after the graph.
+    void RecordPixelReadback(vk::raii::CommandBuffer& cmd);
+    /// @brief Takes the result of this slot's previous copy; its fence has passed.
+    void CollectPixelReadback();
 
     // ─── Immediate Submission (Uploads) ───────────────────────────
 
@@ -182,6 +192,24 @@ private:
     // stores it). Registration must key on THIS handle — the raw image index is
     // not the RG slot index (imports allocate sequentially from 0).
     RGTextureHandle m_SwapchainRGHandle{};
+
+    /// @brief One 4-byte readback per frame slot, for ReadPixelAsync.
+    struct PixelReadback
+    {
+        vk::Buffer Buffer = nullptr;
+        VmaAllocation Allocation = VK_NULL_HANDLE;
+        bool InFlight = false; ///< a copy was submitted and not yet collected
+    };
+    std::array<PixelReadback, MAX_FRAMES_IN_FLIGHT> m_PixelReadbacks{};
+    /// @brief The copy asked for during the current frame, recorded in End().
+    struct PixelRequest
+    {
+        TextureHandle Texture = nullptr;
+        int X = 0;
+        int Y = 0;
+    };
+    std::optional<PixelRequest> m_PixelRequest;
+    std::optional<u32> m_LastPixel; ///< newest collected value
 
     // Immediate submit context
     vk::raii::Fence m_UploadFence = nullptr;

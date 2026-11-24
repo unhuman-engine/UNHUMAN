@@ -10,7 +10,8 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-latest
+    # LunarG only publishes apt packages up to noble (24.04); ubuntu-latest moves past it.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
@@ -76,6 +77,12 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel
+
+      # CPU-only unit tests (no GPU, no display). Building them was never the
+      # problem: nothing ran them, so a harness that stopped linking or a
+      # check that started failing stayed green. See AGENTS.md "Tests and CI".
+      - name: Unit tests
+        run: ctest --test-dir build -L unit --output-on-failure
 
       - name: Prepare artifact
         run: |

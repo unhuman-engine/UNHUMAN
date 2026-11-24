@@ -140,7 +140,13 @@ static const int kFeatureDiffuseTransmission = 1 << 7;
 
 struct FragmentOutput {
     [[vk::location(0)]] float4 Color : SV_Target0;
+    // The editor's pass has a second, integer target and picks through it. A
+    // pass whose only attachment is the swapchain has no such target, and a
+    // fragment output with no matching attachment is invalid, so that pass
+    // compiles this source with UHE_NO_ENTITY_ID.
+#ifndef UHE_NO_ENTITY_ID
     [[vk::location(1)]] int EntityID : SV_Target1;
+#endif
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -304,7 +310,9 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
     {
         float unlitAlpha = (m.flags.x == 2) ? baseColor.a : 1.0;
         output.Color = float4(baseColor.rgb, unlitAlpha);
+#ifndef UHE_NO_ENTITY_ID
         output.EntityID = pc.entityID;
+#endif
         return output;
     }
 
@@ -618,7 +626,9 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
         outAlpha *= (1.0 - transmission);
 
     output.Color = float4(finalColor, outAlpha);
+#ifndef UHE_NO_ENTITY_ID
     output.EntityID = pc.entityID;
+#endif
 
     return output;
 }

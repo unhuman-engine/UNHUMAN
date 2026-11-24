@@ -1,0 +1,7 @@
+# LeakSanitizer suppressions for the unit tests (CI: sanitizers.yml).
+# Each entry is a process-lifetime allocation in vendor code that has no way to
+# be released, never an engine leak. Keep entries specific to one function.
+
+# basisu builds its transcoder lookup tables once per process and has no
+# matching deinit (UHE/vendor/basis_universal/transcoder/basisu_transcoder.h).
+leak:basisu_transcoder_init

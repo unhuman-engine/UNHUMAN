@@ -175,6 +175,15 @@ set_tests_properties(jobs.stress PROPERTIES LABELS "unit;thread")
 Then `ctest -L unit` runs the fast tests without a GPU, and `ctest -L gpu` runs
 the ones that need a Vulkan ICD and a display.
 
+The validation gate is the model for that split: the policy — what counts as an
+error, whether `UHE_VALIDATION_FATAL` stops the run, and how a message the layer
+repeats once per frame is collapsed — lives in
+`UHE/src/Platform/Vulkan/ValidationGate.*` with no Vulkan header in sight, so
+`tests/validation` exercises it as a plain `unit` test. The layer itself is only
+reachable from a real run, which is what `script/check_validation.sh` and the
+readiness gate in `sanitizers.yml` are for; a unit test cannot prove that a
+pipeline matched the pass it was bound in.
+
 The standalone job-system test binary described in the jobsystem document, with
 its ten-thousand-job counter test, ParallelFor, DAG stress and soak runs, is the
 most valuable test suite and needs no GPU, which makes it ideal for TSan and

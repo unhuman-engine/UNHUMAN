@@ -10,6 +10,12 @@ set(SCENE_SRC_DIR ${CMAKE_SOURCE_DIR}/UHE/src/UHE)
 add_executable(shader_test
     main.cpp
     ${SCENE_SRC_DIR}/Renderer/SlangCompiler.cpp
+    # The reflection reader, the artifact store/library and the pipeline helpers
+    # the renderers build from them: all of it is device-free, so the harness
+    # covers the whole path a shader takes from source to pipeline inputs.
+    ${SCENE_SRC_DIR}/Renderer/ShaderReflection.cpp
+    ${SCENE_SRC_DIR}/Renderer/ShaderCache.cpp
+    ${SCENE_SRC_DIR}/Renderer/ShaderResources.cpp
     # Reuses the rendergraph log stub (UHE::Log statics without ImGui).
     ${CMAKE_SOURCE_DIR}/tests/rendergraph/log_stub.cpp
 )
@@ -43,6 +49,9 @@ if(MSVC)
 endif()
 
 target_link_libraries(shader_test PRIVATE slang::slang)
+# The harness loads Slang at run time; wait for its runtime copy
+# (UHE/CMakeLists.txt). Defined later in the tree, resolved at generate time.
+add_dependencies(shader_test uhe_slang_runtime)
 
 # The slang package target is normally registered by UHE/CMakeLists.txt; find
 # it here too, because tests/ is processed before UHE in the root CMakeLists.

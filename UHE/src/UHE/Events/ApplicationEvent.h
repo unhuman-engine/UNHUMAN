@@ -73,4 +73,35 @@ namespace UHE {
 
 	};
 
+	/**
+	 * @brief Files dropped onto the window from the OS file explorer.
+	 *
+	 * Carries the dropped paths plus the cursor position at drop time, so a
+	 * layer can decide which panel received the drop.
+	 */
+	class UHE_API WindowFileDropEvent : public Event
+	{
+	public:
+		WindowFileDropEvent(std::vector<std::string> paths, float x, float y)
+			: m_Paths(std::move(paths)), m_X(x), m_Y(y) {}
+
+		const std::vector<std::string>& GetPaths() const { return m_Paths; }
+		float GetX() const { return m_X; }
+		float GetY() const { return m_Y; }
+
+		std::string ToString() const override
+		{
+			std::stringstream ss;
+			ss << "WindowFileDropEvent: " << m_Paths.size() << " file(s) at " << m_X << ", " << m_Y;
+			return ss.str();
+		}
+
+		EVENT_CLASS_TYPE(WindowFileDrop)
+		EVENT_CLASS_CATEGORY(EventCategoryApplication | EventCategoryInput)
+
+	private:
+		std::vector<std::string> m_Paths;
+		float m_X, m_Y;
+	};
+
 }

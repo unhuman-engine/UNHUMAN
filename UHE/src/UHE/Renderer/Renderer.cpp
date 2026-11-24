@@ -26,7 +26,11 @@ void Renderer::Shutdown() {
 }
 
 void Renderer::OnWindowResize(u32 width, u32 height) {
-    // TODO: Recreate swapchain when needed
+    // The device sizes the swapchain from the surface itself; it only needs to
+    // know a resize happened. A zero size is a minimize, which the application
+    // handles by not rendering.
+    if (s_Device && width > 0 && height > 0)
+        s_Device->OnFramebufferResized();
 }
 
 RHI::RHIDevice& Renderer::GetDevice() {

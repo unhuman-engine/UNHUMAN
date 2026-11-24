@@ -5,6 +5,7 @@
 // skeletal hierarchies, state machines, keyframe reduction, and two-bone analytic IK.
 #include "UHE/Renderer3D/Animator.h"
 #include "UHE/Renderer3D/AnimationStateMachine.h"
+#include "UHE/Animation/AnimationGraph.h"
 #include "UHE/Renderer3D/AnimationCompression.h"
 #include "UHE/Renderer3D/IKSolver.h"
 #include "UHE/Jobsystem/Jobsystem.h"
@@ -366,6 +367,85 @@ static void TestStateMachine()
     CHECK(fsm3.GetCurrentState() == "B", "exit time releases at threshold");
 }
 
+static void TestAnimationGraph()
+{
+    std::cout << "[animation graph]\n";
+    auto model = MakeTestModel();
+    AddTestClips(model);
+    Animator animator(model);
+
+    AnimationGraph graph;
+    graph.Enabled = true;
+    graph.EntryState = 0;
+    graph.States.push_back({"Idle", "walk", {0.0f, 0.0f}, 1.0f, true});
+    graph.States.push_back({"Run", "run", {220.0f, 0.0f}, 2.0f, true});
+
+    AnimationGraphTransition toRun;
+    toRun.From = 0;
+    toRun.To = 1;
+    toRun.Parameter = "speed";
+    toRun.Condition = AnimGraphCondition::Greater;
+    toRun.Threshold = 0.5f;
+    toRun.Duration = 0.1f;
+    graph.Transitions.push_back(toRun);
+
+    AnimationGraphTransition toIdle = toRun;
+    toIdle.From = 1;
+    toIdle.To = 0;
+    toIdle.Condition = AnimGraphCondition::Less;
+    graph.Transitions.push_back(toIdle);
+
+    graph.Parameters.push_back({"speed", 0.0f});
+
+    auto machine = BuildStateMachine(graph);
+    CHECK(machine != nullptr, "graph compiles to a state machine");
+    CHECK(machine->HasState("Idle") && machine->HasState("Run"), "states are compiled by name");
+
+    machine->Enter("Idle", animator, 0.0f);
+    CHECK(machine->GetCurrentState() == "Idle", "entry state entered");
+
+    graph.SetParameter("speed", 0.9f);
+    SyncStateMachineParameters(graph, *machine);
+    machine->Update(animator);
+    CHECK(machine->GetCurrentState() == "Run", "float parameter drives the graph");
+    CHECK(Near(animator.GetTimeScale(), 2.0f), "state speed reaches the animator");
+
+    graph.SetParameter("speed", 0.1f);
+    SyncStateMachineParameters(graph, *machine);
+    machine->Update(animator);
+    CHECK(machine->GetCurrentState() == "Idle", "reverse transition works");
+
+    // Trigger semantics: a value above 0.5 fires once and is consumed.
+    AnimationGraph triggerGraph;
+    triggerGraph.Enabled = true;
+    triggerGraph.States.push_back({"A", "walk", {0.0f, 0.0f}, 1.0f, true});
+    triggerGraph.States.push_back({"B", "run", {0.0f, 0.0f}, 1.0f, true});
+    AnimationGraphTransition jump;
+    jump.From = 0;
+    jump.To = 1;
+    jump.Parameter = "jump";
+    jump.Condition = AnimGraphCondition::Trigger;
+    triggerGraph.Transitions.push_back(jump);
+    triggerGraph.Parameters.push_back({"jump", 1.0f});
+
+    auto triggerMachine = BuildStateMachine(triggerGraph);
+    triggerMachine->Enter("A", animator, 0.0f);
+    SyncStateMachineParameters(triggerGraph, *triggerMachine);
+    CHECK(Near(triggerGraph.Parameters[0].Value, 0.0f), "trigger parameter is consumed");
+    triggerMachine->Update(animator);
+    CHECK(triggerMachine->GetCurrentState() == "B", "trigger transition fires");
+    triggerMachine->Update(animator);
+    CHECK(triggerMachine->GetCurrentState() == "B", "consumed trigger does not re-fire");
+
+    // The compile hash notices editor edits and ignores runtime-only changes.
+    const u64 before = HashGraph(graph);
+    graph.States[1].Clip = "walk";
+    CHECK(before != HashGraph(graph), "clip edit changes the compile hash");
+    const u64 afterClip = HashGraph(graph);
+    graph.SetParameter("speed", 0.42f);
+    CHECK(afterClip == HashGraph(graph), "parameter values do not force a rebuild");
+}
+
 static void TestCompression()
 {
     std::cout << "[compression]\n";
@@ -477,6 +557,7 @@ int main()
     TestRootMotion();
     TestMultiSkin();
     TestStateMachine();
+    TestAnimationGraph();
     TestCompression();
     TestIK();
 

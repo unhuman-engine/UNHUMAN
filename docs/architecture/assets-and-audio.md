@@ -5,7 +5,7 @@
 > at any time. Related issue:
 > [#24](https://github.com/unhuman-engine/UNHUMAN/issues/24) for visualization. The
 > audio backend itself landed earlier with miniaudio.
-> **Code lands in:** `UHE/src/UHE/AssestsManager/`, `UHE/src/UHE/Audio/`,
+> **Code lands in:** `UHE/src/UHE/AssetsManager/`, `UHE/src/UHE/Audio/`,
 > `UHE/src/UHE/Renderer3D/`.
 > **Snapshot:** written against the current tree; re-verify `file:line`
 > references after phases A to C land.
@@ -35,8 +35,8 @@ real clients of the job system, so building them also exercises it.
 
 | Piece | Location | State |
 |---|---|---|
-| Path resolver | `AssestsManager/VfsSystem.h/.cpp` | Singleton, linear search for `UHE_EDITOR/assets`, `Resolve` prepends the root |
-| Shader manager | `AssestsManager/ShaderManager.h` | Stub, `void Init()` |
+| Path resolver | `AssetsManager/VfsSystem.h/.cpp` | Singleton, linear search for `UHE_EDITOR/assets`, `Resolve` prepends the root |
+| Shaders | `Renderer/ShaderCache.h` | Artifact load, compile, reflection, hot reload (see [shaders.md](shaders.md)); the old `ShaderManager` stub was deleted |
 | Model loading | `Renderer3D/LoadModel.h/.cpp` | Synchronous `Model::loadModel(path)` using fastgltf |
 | Textures | `Renderer/Texture.h` | `Texture2D` by path (stb_image) and from memory; KTX2/Basis decoded via `Renderer/KTX2.h` (LDR, level 0 + file-authored chains, issue #42); sampler state (wrap/filter/colour space/anisotropy/maxLod) per `RHI::SamplerDesc`; per-load texture dedup in the glTF loader |
 | UUID | `Core/UIID.h/.cpp` | Exists, random `u64`; the uniqueness set is unused |
@@ -227,6 +227,44 @@ class Vfs {
 targets use the same mounts instead of building paths by hand. The old
 `FileSystem::Resolve` can remain a shim forwarding to the VFS during migration.
 
+### Projects
+
+Implemented. A project is a directory holding a YAML manifest
+(`Project.uheproject`) and an `Assets/` folder; it owns the game content, while
+the folder shipped next to the binary keeps the engine's own assets.
+
+```
+projects/GameSnake/
+  Project.uheproject      Project: { Name, EngineVersion, StartScene }
+  Assets/                 mounted as game:
+```
+
+- `UHE::Project` (`AssetsManager/Project.h`) creates, loads, saves and validates
+  manifests; `Project::Mount` points `game:` at `<project>/Assets` and `engine:`
+  at the binary's asset folder. Re-mounting replaces a prefix in place, so the
+  project stays ahead of the engine folder and can shadow a file by name.
+- `ResolveAssetPath` (`AssetsManager/VfsSystem.h`) is the single seam used by
+  content loaders (`Texture2D::Create`, `Model::loadModel`): absolute and
+  already-resolvable paths pass through, otherwise `game:` is tried before
+  `engine:`. Scene-serialized paths such as `Textures/wall.png` therefore resolve
+  inside whichever project is open.
+- The editor opens a project before anything else: `-project <dir>` opens that
+  project directly, otherwise the most recent project still on disk is reopened,
+  and `-launcher` starts on the launcher instead. The launcher lists the projects
+  the editor knows about (persisted in `editor_projects.ini` in the engine's own
+  folder — `FileSystem::GetRootPath()`, next to `assets/` and `logs/`, rather than
+  the working directory, which changes with how the editor was started), creates
+  new ones, opens any folder that has a manifest, and lists the starter projects
+  under `projects/`. A single click opens an entry, and File > Project Manager...
+  returns to the launcher. Scene dialogs start inside the project's `Assets/`
+  folder, and the status bar shows the open project.
+- Importing goes through `ImportAssetFile` (`AssetsManager/AssetImport.h`): files
+  dropped from the OS file explorer are copied into the project before anything
+  references them (name clashes are numbered, never overwritten) and are placed in
+  the scene when they land on the viewport; the Content Browser's `Import` button
+  does the same from a file dialog. Components store the project-relative path, so
+  a scene stays portable with its project.
+
 ### Cook step
 
 Eventually, source assets are imported into a binary runtime format with flat
@@ -350,6 +388,13 @@ Phase E, optional polish: hot reload for shaders, textures and audio, streaming
 for music, and pooled readback and upload. The cook pipeline, mod override
 layering and platform variants remain deferred.
 
+Shader hot reload is done and lives in [shaders.md](shaders.md): source mtimes are
+polled, the edit is compiled in-process and written back to its artifact, and the
+renderers rebuild the pipelines built from it. Scripts reload the same way
+([scripting.md](scripting.md)): an edited `.lua` is recompiled and its instance
+restarted from `OnCreate`. Textures and audio still reload through the asset
+registry's generation scheme only.
+
 ## Open questions
 
 - Handle lifetime policy: strong `Ref` in handles, which is safe but keeps assets
@@ -362,4 +407,4 @@ layering and platform variants remain deferred.
 - Threading contract: a main-thread-only audio API, which is simpler, or a
   command queue, which is more flexible.
 - Hot reload scope: all asset types, or shaders and textures first.
-- Renaming `AssestsManager` and `UIID` while churn is low.
+- Renaming `AssetsManager` and `UIID` while churn is low.

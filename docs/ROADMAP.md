@@ -27,6 +27,7 @@ is marked done because a doc says so.
 | W3 | Renderer features + material correctness | #29, #25 | [backlog/renderer.md](backlog/renderer.md) |
 | W4 | Jobs, assets, audio | #5 | [jobsystem.md](architecture/jobsystem.md), [assets-and-audio.md](architecture/assets-and-audio.md) |
 | W5 | Tooling: CI, docs, editor, animation, scripting | #9, #10, #12, #17, #24, #28 | [ci-cd.md](architecture/ci-cd.md) |
+| W6 | Robotics training + client/server split | — | [robotics-and-clients.md](architecture/robotics-and-clients.md) |
 
 Dependency shape: **W1 → W2 → W3 (passes/shading)** because barriers must have an owner before
 multi-pass work is safe. **W3 materials and W4 are independent** and can be interleaved when W1/W2
@@ -42,11 +43,11 @@ stubs make every "is this implemented?" question cost a file read.
 | Task | Where | Issue | Status |
 |---|---|---|---|
 | Docs reorganisation: `docs/` tree, index, this roadmap, filename typo fix, stale TODO mirrors | `docs/**`, `IDEA.md`, `readme.md` | #12 | `DONE` (uncommitted) |
-| Fix `IsEnable("")` in semaphore detection → timeline semaphores are **never** on today | `UHE/src/Platform/Vulkan/VulkanSemaphore.cpp:11` | #2 | `TODO` |
-| `VulkanBinaryFence.h:12` re-declares `VulkanBinarySemaphore` (ODR/redefinition if both headers land in one TU) | `UHE/src/Platform/Vulkan/VulkanBinaryFence.h` | #2 | `TODO` |
-| Delete or wire the dead `requiredDeviceExtension` member | `UHE/src/Platform/Vulkan/VulkanLogicalDevice.h:40-43` | #2 | `TODO` |
+| Fix `IsEnable("")` in semaphore detection → timeline semaphores are **never** on today | `UHE/src/Platform/Vulkan/VulkanSemaphore.cpp:11` | #2 | `DONE` (selection goes through `GetSyncTier()`) |
+| `VulkanBinaryFence.h:12` re-declares `VulkanBinarySemaphore` (ODR/redefinition if both headers land in one TU) | `UHE/src/Platform/Vulkan/VulkanBinaryFence.h` | #2 | `DONE` |
+| Delete or wire the dead `requiredDeviceExtension` member | `UHE/src/Platform/Vulkan/VulkanLogicalDevice.h:40-43` | #2 | `DONE` (deleted; #40) |
 | Barrier `oldLayout` is hardcoded `Undefined` (illegal after first use) | `UHE/src/Platform/Vulkan/VulkanCommandBuffer.cpp:100,149,181` | #2, #4 | `TODO` |
-| Delete dead stubs: `RenderGraph/JobSystem.*` (superseded by `UHE/Jobsystem`), decide on `RenderGraph/RenderGraphVulkan.*` + `ShaderSystem/VulkanShaderManager.*` | `UHE/src/Platform/Vulkan/{RenderGraph,ShaderSystem}/` | #4, #7 | `TODO` |
+| Delete dead stubs: `RenderGraph/JobSystem.*` (superseded by `UHE/Jobsystem`), decide on `RenderGraph/RenderGraphVulkan.*` + `ShaderSystem/VulkanShaderManager.*` | `UHE/src/Platform/Vulkan/{RenderGraph,ShaderSystem}/` | #4, #7 | `DONE` (all deleted; `ShaderCache` replaces the shader stubs) |
 | CI "Now" list (§12.1–12.5 of the CI doc): concurrency+permissions+SHA pinning, caching, format/warnings gates, CTest+`UHE_TESTS`+`ci` preset, vendor CMake fixes in-tree instead of CI rewriting them | `.github/workflows/**`, `ci/` | #9, #10 | `TODO` |
 | Renderer checklist truth-up — `add job system` is done (`c271467`), close it in #7 | #7, [backlog/renderer.md](backlog/renderer.md) | #7 | `TODO` |
 | Tracking hygiene: `.worktrees/` ignored (done); `imgui.ini` is tracked *and* in `.gitignore` (ignore is a no-op — `git rm --cached` or drop the line) | `.gitignore` | — | `IN PROGRESS` |
@@ -117,7 +118,7 @@ parsed*, and it fixes visible wrongness (foliage renders black).
 | 1 | Per-thread job queues + work-stealing deques (kill the single hot-path mutex) | jobsystem §10.1 | `TODO` |
 | 2 | Job continuations (child jobs instead of OS-stack recursion) | jobsystem §10.2 | `TODO` |
 | 3 | `ParallelFor` cache-line-aligned batch hints | jobsystem §10.5 | `TODO` |
-| 4 | Asset Phase A: fix `UUID` uniqueness, `AssetManager` registry + path→ID + refcount + sync `Load`, migrate model/texture/audio loads. Renames while churn is cheap: `AssestsManager`→`AssetManager`, `UIID`→`UUID` | assets §2.1–§2.3, §5A | `TODO` |
+| 4 | Asset Phase A: fix `UUID` uniqueness, `AssetManager` registry + path→ID + refcount + sync `Load`, migrate model/texture/audio loads. Renames while churn is cheap: `AssetsManager`→`AssetManager`, `UIID`→`UUID` | assets §2.1–§2.3, §5A | `TODO` |
 | 5 | Asset Phase B: `IAssetLoader` (worker load + main-thread finalize), `LoadAsync` on the Jobsystem, `AssetManager::Update` delivery; audio decoded-sound cache, `Voice` handles, master volume, auto listener | assets §2.5, §3.1–§3.2, §5B | `TODO` |
 | 6 | Asset Phase C: mount-based VFS, scenes serialize `AssetID` with path fallback | assets §2.8, §2.10, §5C | `TODO` |
 | 7 | Asset Phase D: dependency graph via `TaskGraph`, audio buses/ducking, event assets | assets §2.6, §3.4, §5D | `TODO` |
@@ -156,7 +157,8 @@ changes — not before the render graph itself works.
 |---|---|---|---|
 | 1 | Entity hierarchy v2: root/children in entt + editor tree (today a model entity has exactly one parent, no root-child concept) | #17 | `TODO` |
 | 2 | Animation & audio visualization — needs a lib decision (OpenTimelineIO is a *video editor* format; check whether it fits before committing) | #24 | `UNDECIDED` |
-| 3 | Scripting host — Lua is the working proposal; scope is ECS binding + hot reload, no native FFI breadth | #28 | `UNDECIDED` |
+| 3 | Scripting host — Lua 5.4 with sol2: sandboxed VM, `ScriptComponent` with OnCreate/OnUpdate/OnDestroy, entity and rigid-body bindings, hot reload, instruction budget, isolated globals. No native FFI, no coroutines yet | #28 | `IN PROGRESS` — phase 1 done, see [scripting.md](architecture/scripting.md) |
+| 4 | In-app console: cvars + commands (`UHE/Core/Console`), command line in the editor's Console panel with history and Tab completion | #44 | `DONE` |
 
 ---
 
@@ -226,7 +228,7 @@ stop-work signal for its milestone.
 | D15 | Android ambition: compile gate only, or device smoke | ci §14 | `UNDECIDED` — compile gate is the high-value one |
 | D16 | clang-tidy appetite: changed-files baseline vs repo-wide + suppressions | ci §14 | `UNDECIDED` |
 | D17 | Animation/audio visualization library | #24 | `UNDECIDED` |
-| D18 | Scripting language + binding scope (Lua proposal) | #28 | `UNDECIDED` |
+| D18 | Scripting language + binding scope | #28 | `DECIDED` — Lua 5.4 + sol2, curated API, scripts are project-relative paths until the asset manager is live ([scripting.md](architecture/scripting.md)) |
 | D19 | Solar/AMD-specific low-end floor: Vega 7 (GFX9) must stay a supported target | IDEA.md | `DECIDED` — 1.1/1.2 must work on it |
 
 ---

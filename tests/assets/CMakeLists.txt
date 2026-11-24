@@ -11,8 +11,8 @@ add_executable(assets_test
     ${CMAKE_SOURCE_DIR}/tests/rendergraph/log_stub.cpp
     # Real units under test
     ${SCENE_SRC_DIR}/Core/UUID.cpp
-    ${SCENE_SRC_DIR}/AssestsManager/AssetManager.cpp
-    ${SCENE_SRC_DIR}/AssestsManager/VfsSystem.cpp
+    ${SCENE_SRC_DIR}/AssetsManager/AssetManager.cpp
+    ${SCENE_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${SCENE_SRC_DIR}/Jobsystem/Jobsystem.cpp
 )
 

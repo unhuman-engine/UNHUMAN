@@ -2,12 +2,13 @@
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Font.h"
 #include "UHE/Renderer/Renderer.h"
-#include "UHE/Renderer/SlangCompiler.h"
+#include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Renderer/ShaderResources.h"
 #include "UHE/Scene/Components.h"
 
 namespace UHE
@@ -142,46 +143,62 @@ void Renderer2D::Init()
         s_Data.WhiteTexture, std::span<const u8>(reinterpret_cast<const u8*>(&whiteTextureData), sizeof(u32)));
     s_Data.TextureSlots[0] = reinterpret_cast<RHI::RHITexture*>(s_Data.WhiteTexture)->GetTextureIndex();
 
-    // Compile Shader
-    std::string shaderPath = (FileSystem::Get().GetRootPath() / "assets/shaders/Texture.slang").string();
-    auto compiledShaders = SlangCompiler::CompileToSPIRV(shaderPath);
+    // Shaders and the pipelines built from them: created together, and re-created
+    // together when a shader changes on disk.
+    CreateShaderResources();
 
-    if (compiledShaders.find(RHI::ShaderStage::Vertex) != compiledShaders.end())
+    static bool listenerRegistered = false;
+    if (!listenerRegistered)
     {
-        RHI::ShaderDesc vsDesc{};
-        vsDesc.stage = RHI::ShaderStage::Vertex;
-        vsDesc.spirvData = (const uint8_t*)compiledShaders[RHI::ShaderStage::Vertex].data();
-        vsDesc.spirvSize = compiledShaders[RHI::ShaderStage::Vertex].size();
-        s_Data.QuadVertexShader = device.CreateShader(vsDesc);
-        UHE_CORE_ASSERT(s_Data.QuadVertexShader, "Vertex Shader Creation Failed!");
-    }
-    else
-    {
-        UHE_CORE_ERROR("Vertex Shader not compiled!");
+        listenerRegistered = true;
+        ShaderCache::Get().AddReloadListener([](ShaderCache::Handle) { Renderer2D::ReloadShaders(); });
     }
 
-    if (compiledShaders.find(RHI::ShaderStage::Fragment) != compiledShaders.end())
+    s_Data.QuadVertexPositions[0] = {-0.5f, -0.5f, 0.0f, 1.0f};
+    s_Data.QuadVertexPositions[1] = {0.5f, -0.5f, 0.0f, 1.0f};
+    s_Data.QuadVertexPositions[2] = {0.5f, 0.5f, 0.0f, 1.0f};
+    s_Data.QuadVertexPositions[3] = {-0.5f, 0.5f, 0.0f, 1.0f};
+
+}
+
+void Renderer2D::CreateShaderResources()
+{
+    auto& device = Renderer::GetDevice();
+    ShaderCache& library = ShaderCache::Get();
+
+    const std::filesystem::path shaderDir = FileSystem::Get().GetRootPath() / "assets/shaders";
+    const ShaderCache::Handle quadHandle = library.Load((shaderDir / "Texture.slang").string());
+    const ShaderCache::Handle textHandle = library.Load((shaderDir / "Text.slang").string());
+
+    const ShaderCache::Shader* quad = library.Get(quadHandle);
+    const ShaderCache::Shader* text = library.Get(textHandle);
+    if (quad == nullptr || text == nullptr)
     {
-        RHI::ShaderDesc fsDesc{};
-        fsDesc.stage = RHI::ShaderStage::Fragment;
-        fsDesc.spirvData = (const uint8_t*)compiledShaders[RHI::ShaderStage::Fragment].data();
-        fsDesc.spirvSize = compiledShaders[RHI::ShaderStage::Fragment].size();
-        s_Data.QuadFragmentShader = device.CreateShader(fsDesc);
-        UHE_CORE_ASSERT(s_Data.QuadFragmentShader, "Fragment Shader Creation Failed!");
+        UHE_CORE_ERROR("Renderer2D: a sprite shader failed to load; 2D will not draw");
+        return;
     }
-    else
-    {
-        UHE_CORE_ERROR("Fragment Shader not compiled!");
-    }
+
+    s_Data.QuadVertexShader = CreateStageShader(device, *quad, RHI::ShaderStage::Vertex, "Texture.vertex");
+    s_Data.QuadFragmentShader = CreateStageShader(device, *quad, RHI::ShaderStage::Fragment, "Texture.fragment");
+    s_Data.TextVertexShader = CreateStageShader(device, *text, RHI::ShaderStage::Vertex, "Text.vertex");
+    s_Data.TextFragmentShader = CreateStageShader(device, *text, RHI::ShaderStage::Fragment, "Text.fragment");
 
     RHI::GraphicsPipelineDesc pipeDesc{};
     pipeDesc.vertexShader = s_Data.QuadVertexShader;
     pipeDesc.fragmentShader = s_Data.QuadFragmentShader;
-    pipeDesc.vertexLayout = {
-        {RHI::ShaderDataType::Float3, "a_Position"},    {RHI::ShaderDataType::Float4, "a_Color"},
-        {RHI::ShaderDataType::Float2, "a_TexCoord"},    {RHI::ShaderDataType::Float, "a_TexIndex"},
-        {RHI::ShaderDataType::Float, "a_TilingFactor"}, {RHI::ShaderDataType::Float, "a_EntityID"}};
-    pipeDesc.pushConstantSize = sizeof(Renderer2DPushConstants);
+    // The vertex layout and the push constant range come from the module itself,
+    // not from a list here that has to be kept in step with the shader.
+    pipeDesc.vertexLayout = ReflectedVertexLayout(*quad);
+    pipeDesc.pushConstantSize = ReflectedPushConstantSize(*quad);
+
+    // The pipeline's range came from the shader's reflection, so this is where a
+    // host struct that drifted from the Slang one shows up -- before an upload
+    // writes past the block the pipeline was built with.
+    if (pipeDesc.pushConstantSize != sizeof(Renderer2DPushConstants))
+    {
+        UHE_CORE_ERROR("Renderer2D: push constants are {0} bytes in the shader and {1} in the host struct",
+                       pipeDesc.pushConstantSize, sizeof(Renderer2DPushConstants));
+    }
     pipeDesc.blendMode = RHI::BlendMode::Alpha;
     pipeDesc.depthTest = true;
     pipeDesc.depthWrite = true;
@@ -194,54 +211,51 @@ void Renderer2D::Init()
     s_Data.QuadPipeline = device.CreateGraphicsPipeline(pipeDesc);
     UHE_CORE_ASSERT(s_Data.QuadPipeline, "Failed to create QuadPipeline!");
 
-    s_Data.QuadVertexPositions[0] = {-0.5f, -0.5f, 0.0f, 1.0f};
-    s_Data.QuadVertexPositions[1] = {0.5f, -0.5f, 0.0f, 1.0f};
-    s_Data.QuadVertexPositions[2] = {0.5f, 0.5f, 0.0f, 1.0f};
-    s_Data.QuadVertexPositions[3] = {-0.5f, 0.5f, 0.0f, 1.0f};
-
-    // Compile Text Shader
-    std::string textShaderPath = (FileSystem::Get().GetRootPath() / "assets/shaders/Text.slang").string();
-    auto compiledTextShaders = SlangCompiler::CompileToSPIRV(textShaderPath);
-
-    if (compiledTextShaders.find(RHI::ShaderStage::Vertex) != compiledTextShaders.end())
-    {
-        RHI::ShaderDesc vsDesc{};
-        vsDesc.stage = RHI::ShaderStage::Vertex;
-        vsDesc.spirvData = (const uint8_t*)compiledTextShaders[RHI::ShaderStage::Vertex].data();
-        vsDesc.spirvSize = compiledTextShaders[RHI::ShaderStage::Vertex].size();
-        s_Data.TextVertexShader = device.CreateShader(vsDesc);
-        UHE_CORE_ASSERT(s_Data.TextVertexShader, "Text Vertex Shader Creation Failed!");
-    }
-
-    if (compiledTextShaders.find(RHI::ShaderStage::Fragment) != compiledTextShaders.end())
-    {
-        RHI::ShaderDesc fsDesc{};
-        fsDesc.stage = RHI::ShaderStage::Fragment;
-        fsDesc.spirvData = (const uint8_t*)compiledTextShaders[RHI::ShaderStage::Fragment].data();
-        fsDesc.spirvSize = compiledTextShaders[RHI::ShaderStage::Fragment].size();
-        s_Data.TextFragmentShader = device.CreateShader(fsDesc);
-        UHE_CORE_ASSERT(s_Data.TextFragmentShader, "Text Fragment Shader Creation Failed!");
-    }
-
     RHI::GraphicsPipelineDesc textPipeDesc{};
     textPipeDesc.vertexShader = s_Data.TextVertexShader;
     textPipeDesc.fragmentShader = s_Data.TextFragmentShader;
-    textPipeDesc.vertexLayout = {{RHI::ShaderDataType::Float3, "a_Position"},
-                                 {RHI::ShaderDataType::Float4, "a_Color"},
-                                 {RHI::ShaderDataType::Float2, "a_TexCoord"},
-                                 {RHI::ShaderDataType::Float, "a_TexIndex"},
-                                 {RHI::ShaderDataType::Float, "a_EntityID"}};
-    textPipeDesc.pushConstantSize = sizeof(Renderer2DPushConstants);
+    textPipeDesc.vertexLayout = ReflectedVertexLayout(*text);
+    textPipeDesc.pushConstantSize = ReflectedPushConstantSize(*text);
     textPipeDesc.blendMode = RHI::BlendMode::Alpha;
     textPipeDesc.depthTest = true;
     textPipeDesc.depthWrite = true;
     textPipeDesc.colorAttachmentCount = 2;
     textPipeDesc.colorFormats[0] = RHI::TextureFormat::RGBA8_SRGB;
     textPipeDesc.colorFormats[1] = RHI::TextureFormat::R32_SINT;
-    textPipeDesc.pushConstantSize = sizeof(Renderer2DPushConstants);
 
     s_Data.TextPipeline = device.CreateGraphicsPipeline(textPipeDesc);
     UHE_CORE_ASSERT(s_Data.TextPipeline, "Failed to create TextPipeline!");
+}
+
+void Renderer2D::DestroyShaderResources()
+{
+    auto& device = Renderer::GetDevice();
+
+    device.DestroyGraphicsPipeline(s_Data.QuadPipeline);
+    device.DestroyShader(s_Data.QuadVertexShader);
+    device.DestroyShader(s_Data.QuadFragmentShader);
+    device.DestroyGraphicsPipeline(s_Data.TextPipeline);
+    device.DestroyShader(s_Data.TextVertexShader);
+    device.DestroyShader(s_Data.TextFragmentShader);
+
+    // Nulled, not left dangling: a second destroy of the same handle would free
+    // someone else's object.
+    s_Data.QuadPipeline = nullptr;
+    s_Data.QuadVertexShader = nullptr;
+    s_Data.QuadFragmentShader = nullptr;
+    s_Data.TextPipeline = nullptr;
+    s_Data.TextVertexShader = nullptr;
+    s_Data.TextFragmentShader = nullptr;
+}
+
+void Renderer2D::ReloadShaders()
+{
+    // Frames already queued reference the modules and pipelines being replaced.
+    Renderer::GetDevice().WaitIdle();
+
+    DestroyShaderResources();
+    CreateShaderResources();
+    UHE_CORE_INFO("Renderer2D: pipelines rebuilt from the reloaded shaders");
 }
 
 void Renderer2D::Shutdown()
@@ -252,17 +266,12 @@ void Renderer2D::Shutdown()
     delete[] s_Data.QuadVertexBufferBase;
 
     delete[] s_Data.TextVertexBufferBase;
-    device.DestroyGraphicsPipeline(s_Data.TextPipeline);
-    device.DestroyShader(s_Data.TextVertexShader);
-    device.DestroyShader(s_Data.TextFragmentShader);
+    DestroyShaderResources();
     for (int i = 0; i < 2; i++)
     {
         device.DestroyBuffer(s_Data.TextVertexBuffers[i]);
     }
 
-    device.DestroyGraphicsPipeline(s_Data.QuadPipeline);
-    device.DestroyShader(s_Data.QuadVertexShader);
-    device.DestroyShader(s_Data.QuadFragmentShader);
     for (int i = 0; i < 2; i++)
     {
         device.DestroyBuffer(s_Data.QuadVertexBuffers[i]);

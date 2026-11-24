@@ -20,13 +20,21 @@ class UHE_API PhysicsSystem3D
 {
 public:
     PhysicsSystem3D() = default;
-    ~PhysicsSystem3D() = default;
+    // Releases the scene's world if it is still running: a scene destroyed in
+    // play mode (closed, or replaced by another) never reaches OnRuntimeStop.
+    ~PhysicsSystem3D();
+    // Owns raw Jolt objects; a copy would release them twice.
+    PhysicsSystem3D(const PhysicsSystem3D&) = delete;
+    PhysicsSystem3D& operator=(const PhysicsSystem3D&) = delete;
 
     static void Init();
+    /// @brief Unregisters Jolt and joins the shared worker pool; destroy every scene first.
     static void Shutdown();
 
     void InitializeScene();
+    /// Safe to call when no world exists, and more than once.
     void ShutdownScene();
+    [[nodiscard]] bool IsSceneInitialized() const { return m_PhysicsSystem != nullptr; }
     void Update(Timestep ts);
 
     // Getters for internal Jolt classes
@@ -40,7 +48,7 @@ public:
 private:
     JPH::PhysicsSystem* m_PhysicsSystem = nullptr;
     JPH::TempAllocatorImpl* m_TempAllocator = nullptr;
-    JPH::JobSystemThreadPool* m_JobSystem = nullptr;
+    JPH::JobSystemThreadPool* m_JobSystem = nullptr; ///< @brief The shared pool, borrowed.
 
     void* m_BPLayerInterface = nullptr;
     void* m_BroadPhaseLayerFilter = nullptr;

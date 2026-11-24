@@ -4,6 +4,8 @@
 
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/Renderer2D.h"
+#include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Scripting/ScriptEngine.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 
 #include "UHE/Core/Log.h"
@@ -37,6 +39,9 @@ namespace UHE{
 		Renderer3D::Init();
 		Physics::PhysicsSystem3D::Init();
 		Audio::AudioEngine::Init();
+		// One VM for the process, on the main thread: a Lua state is not
+		// thread-safe and every script call happens from a scene step.
+		ScriptEngine::Get().Init();
 
 		m_ImGuiLayer = ImGuiLayer::Create();
 		PushOverlay(m_ImGuiLayer);		
@@ -47,6 +52,7 @@ namespace UHE{
 		Renderer::GetDevice().WaitIdle();
 		Renderer::GetDevice().ResetCommandBuffers();
 		m_LayerStack.Clear();
+		ScriptEngine::Get().Shutdown();
 		Audio::AudioEngine::Shutdown();
 		Physics::PhysicsSystem3D::Shutdown();
 		Renderer3D::Shutdown();
@@ -109,24 +115,42 @@ namespace UHE{
         OnEvent(e);
     }
 
-	while (m_Running)
-	{   
-		UHE::Profiler::BeginFrame();
+    // The first frame's delta starts here, not at glfwInit: loading time is not
+    // simulation time.
+    m_LastFrameTime = glfwGetTime();
+
+    while (m_Running)
+    {
+        // Input first: a frame updates on the input that arrived before it,
+        // then simulates, then renders. Polling after End() made every frame
+        // act on the previous frame's input.
+        m_Window->OnUpdate();
+        if (!m_Running)
+            break; // the poll delivered a close
+
+        UHE::Profiler::BeginFrame();
 		{
 			UHE_PROFILE_SCOPE("Frame");
 			{
 				UHE_PROFILE_SCOPE("application");
-				float time = (float)glfwGetTime();
 
-				Timestep timestep = time - m_LastFrameTime;
-				m_LastFrameTime = time;
+                // Sampled as double: a float clock loses millisecond precision
+                // after a few hours of uptime.
+                const double time = glfwGetTime();
+                Timestep timestep = static_cast<float>(time - m_LastFrameTime);
+                m_LastFrameTime = time;
 
 				if (timestep > 0.25f)
 					timestep = 0.25f;
 
 				if (!m_Minimized) {
 					Audio::AudioEngine::Update();
-					
+
+					// Shader hot reload, before anything records GPU work: a reload
+					// destroys and rebuilds pipelines, so it cannot happen mid-frame.
+					// A no-op unless the app enabled it (the editor does).
+					ShaderCache::Get().Tick();
+
 					Renderer::GetDevice().Begin();
 					// §9.1.4 resize policy: Begin may recreate the swapchain and skip
 					// the frame — layers must not record GPU work this iteration.
@@ -145,26 +169,12 @@ namespace UHE{
 
 					Renderer::GetDevice().End();
 				}
-
-				m_Window->OnUpdate();
-				
-				{
-					UHE_PROFILE_SCOPE("TracyDummyTestWork");
-					float result = 0.0f;
-					for (int i = 0; i < 100000; i++) {
-						result += std::sin((float)i) * std::cos((float)i);
-					}
-					if (result == 0.12345f) { // Prevent compiler optimization
-						UHE_CORE_INFO("Dummy work result: {}", result);
-					}
-				}
 			}
 			UHE_PROFILE_FRAMEMARK;
 		}
 		UHE::Profiler::EndFrame();
-	}
-
-	};
+    }
+    };
 	bool Application::OnWindowClose(WindowCloseEvent& e) 
 	{   
 		m_Running = false;

@@ -159,9 +159,23 @@ std::unordered_map<RHI::ShaderStage, std::string> SlangCompiler::CompileToGLSL(c
     return result;
 }
 
-std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> SlangCompiler::CompileToSPIRV(const std::string& filepath)
+std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>>
+SlangCompiler::CompileToSPIRV(const std::string& filepath,
+                              const std::vector<std::pair<std::string, std::string>>& defines, std::string* diagnostics)
 {
     std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> result;
+    if (diagnostics)
+        diagnostics->clear();
+    // Collects what Slang said, for the caller; logging stays as it was.
+    auto note = [diagnostics](const char* text)
+    {
+        if (diagnostics && text && text[0])
+        {
+            if (!diagnostics->empty())
+                *diagnostics += '\n';
+            *diagnostics += text;
+        }
+    };
 
     Slang::ComPtr<slang::IGlobalSession> slangGlobalSession;
     slang::createGlobalSession(slangGlobalSession.writeRef());
@@ -171,8 +185,19 @@ std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> SlangCompiler::Compil
     targetDesc.format = SLANG_SPIRV;
     targetDesc.profile = slangGlobalSession->findProfile("spirv_1_5");
 
+    // The macro names and values must outlive the session: `SessionDesc` holds
+    // pointers into them.
+    std::vector<slang::PreprocessorMacroDesc> macros;
+    macros.reserve(defines.size());
+    for (const auto& [name, value] : defines)
+    {
+        macros.push_back(slang::PreprocessorMacroDesc{name.c_str(), value.c_str()});
+    }
+
     sessionDesc.targets = &targetDesc;
     sessionDesc.targetCount = 1;
+    sessionDesc.preprocessorMacros = macros.empty() ? nullptr : macros.data();
+    sessionDesc.preprocessorMacroCount = static_cast<SlangInt>(macros.size());
     sessionDesc.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
 
     Slang::ComPtr<slang::ISession> session;
@@ -186,11 +211,15 @@ std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> SlangCompiler::Compil
         const char* msg = (const char*)diagnosticBlob->getBufferPointer();
         if (msg && msg[0])
             UHE_CORE_WARN("Slang compiler diagnostics:\n{0}", msg);
+        if (!module)
+            note(msg);
     }
 
     if (!module)
     {
         UHE_CORE_ERROR("Failed to load slang module: {0}", filepath);
+        if (diagnostics && diagnostics->empty())
+            *diagnostics = "failed to load '" + filepath + "'";
         return result;
     }
 
@@ -239,9 +268,11 @@ std::unordered_map<RHI::ShaderStage, std::vector<uint8_t>> SlangCompiler::Compil
         else
         {
             UHE_CORE_ERROR("Failed to generate SPIR-V code for entry point: {0}", ep.name);
+            note((std::string(ep.name) + ": no SPIR-V generated").c_str());
             if (diagnosticBlob)
             {
                 UHE_CORE_ERROR("Error: {0}", (const char*)diagnosticBlob->getBufferPointer());
+                note((const char*)diagnosticBlob->getBufferPointer());
             }
         }
     }

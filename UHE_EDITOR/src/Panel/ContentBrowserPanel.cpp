@@ -1,13 +1,17 @@
 #include "ContentBrowserPanel.h"
 #include "EditorTheme.h"
 #include "EditorUI.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/AssetImport.h"
+#include "UHE/AssetsManager/VfsSystem.h"
+#include "UHE/Audio/AudioEngine.h"
+#include "UHE/Utils/PlatfromUtils.h"
 #include "imgui.h"
 #include "uhepch.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <system_error>
 
@@ -63,6 +67,50 @@ ContentBrowserPanel::ContentBrowserPanel() {
   m_FileIcon = Texture2D::Create((rootPath / "assets/icon/file.png").string());
   m_PngIcon = Texture2D::Create((rootPath / "assets/icon/png.png").string());
   m_modelPng = Texture2D::Create((rootPath / "assets/icon/3dmodel.png").string());
+}
+
+void ContentBrowserPanel::SetBaseDirectory(const std::filesystem::path &directory) {
+  // Icons stay engine-owned; only the browsed tree moves into the project.
+  m_BaseDirectory = directory;
+  m_CurrentDirectory = directory;
+  m_SelectedPath.clear();
+}
+
+std::vector<std::filesystem::path>
+ContentBrowserPanel::ImportFiles(const std::vector<std::string> &sources) {
+  std::vector<std::filesystem::path> imported;
+  imported.reserve(sources.size());
+
+  for (const std::string &source : sources) {
+    std::string error;
+    const std::filesystem::path destination =
+        ImportAssetFile(source, m_CurrentDirectory, &error);
+    if (destination.empty()) {
+      UHE_CORE_WARN("Import failed for '{0}': {1}", source, error);
+      continue;
+    }
+    imported.push_back(destination);
+  }
+
+  if (!imported.empty()) {
+    // Drop cached previews: the folder gained files.
+    Refresh();
+    m_SelectedPath = imported.front();
+  }
+  return imported;
+}
+
+void ContentBrowserPanel::ImportFromDialog() {
+  // One filter string covering everything the editor can reference today.
+  const std::string file = FileDialogs::OpenFile(
+      "Assets (*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.hdr;*.ktx2;*.glb;*.gltf;*.fbx;*.obj;*.unhuman)\0"
+      "*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.hdr;*.ktx2;*.glb;*.gltf;*.fbx;*.obj;*.unhuman\0"
+      "All files (*.*)\0*.*\0",
+      m_CurrentDirectory.string());
+  if (file.empty())
+    return;
+
+  ImportFiles({file});
 }
 
 void ContentBrowserPanel::DrawDirectoryTree(
@@ -160,6 +208,9 @@ void ContentBrowserPanel::DrawGrid(
     if (clicked)
       m_SelectedPath = path;
 
+    if (!isDirectory)
+      DrawFileContextMenu(path);
+
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip("%s\n%s", path.filename().string().c_str(), path.string().c_str());
       if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && isDirectory)
@@ -221,6 +272,9 @@ void ContentBrowserPanel::DrawList(
       if (isDirectory && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
         m_CurrentDirectory = path;
     }
+    if (!isDirectory)
+      DrawFileContextMenu(path);
+
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("%s", path.string().c_str());
 
@@ -251,6 +305,82 @@ void ContentBrowserPanel::DrawList(
   }
 
   ImGui::EndTable();
+}
+
+void ContentBrowserPanel::DrawFileContextMenu(const std::filesystem::path& path) {
+  if (!ImGui::BeginPopupContextItem())
+    return;
+
+  const bool isScript = path.extension() == ".lua";
+  if (isScript) {
+    if (ImGui::MenuItem("Attach to selected entity")) {
+      if (m_OnAttachScript)
+        m_OnAttachScript(path);
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Adds (or retargets) a Script component on the entity selected in the hierarchy.");
+    if (ImGui::MenuItem("Open in editor")) {
+      FileDialogs::OpenInDefaultApp(path.string());
+    }
+    ImGui::Separator();
+  }
+
+  const std::string extension = ToLower(path.extension().string());
+  const bool isAudio = extension == ".wav" || extension == ".ogg";
+  if (isAudio) {
+    if (ImGui::MenuItem("Play (2D)")) {
+      Audio::SoundOptions options;
+      Audio::AudioEngine::Play(path.string(), options);
+    }
+    if (ImGui::MenuItem("Play (3D at origin)")) {
+      Audio::SoundOptions options;
+      options.Spatial = true;
+      Audio::AudioEngine::Play(path.string(), options);
+    }
+    ImGui::Separator();
+  }
+
+  if (ImGui::MenuItem("Reveal path")) {
+    ImGui::SetClipboardText(path.string().c_str());
+  }
+  ImGui::EndPopup();
+}
+
+void ContentBrowserPanel::CreateScript() {
+  // A starter file with the three hooks, under a name that is not taken.
+  static constexpr const char* kTemplate =
+      "-- Attached to an entity with a Script component.\n"
+      "-- The engine runs these three; `self` is the entity.\n"
+      "\n"
+      "function OnCreate(self)\n"
+      "    -- once, before the first update\n"
+      "end\n"
+      "\n"
+      "function OnUpdate(self, dt)\n"
+      "    -- every step; dt is the frame's seconds\n"
+      "end\n"
+      "\n"
+      "function OnDestroy(self)\n"
+      "    -- when the entity goes away\n"
+      "end\n";
+
+  std::error_code ec;
+  std::filesystem::path target = m_CurrentDirectory / "NewScript.lua";
+  for (int index = 1; std::filesystem::exists(target, ec) && index < 1000; ++index) {
+    target = m_CurrentDirectory / ("NewScript" + std::to_string(index) + ".lua");
+  }
+
+  std::ofstream file(target, std::ios::trunc);
+  if (!file) {
+    UHE_CORE_WARN("Could not create '{0}'", target.string());
+    return;
+  }
+  file << kTemplate;
+  file.close();
+
+  m_SelectedPath = target;
+  m_TextureCache.clear();
+  UHE_CORE_INFO("Created script '{0}'", target.string());
 }
 
 void ContentBrowserPanel::OnImGuiRender() {
@@ -292,11 +422,26 @@ void ContentBrowserPanel::OnImGuiRender() {
     ImGui::Spacing();
     const float availW = ImGui::GetContentRegionAvail().x;
     const float listButtonW = 62.0f;
+    const float importButtonW = 74.0f;
+    // The search field gives up its width to every button on this row, or the
+    // last one lands outside the panel and is simply not there.
+    const float scriptButtonW = 84.0f;
     EditorUI::SearchField("##ContentSearch", m_SearchBuffer, sizeof(m_SearchBuffer),
-                          "Search assets...", std::max(80.0f, availW - listButtonW - 6.0f));
+                          "Search assets...",
+                          std::max(80.0f, availW - listButtonW - importButtonW - scriptButtonW - 30.0f));
     ImGui::SameLine(0.0f, 6.0f);
     if (ImGui::Button(m_ListMode ? "Grid" : "List", ImVec2(listButtonW, 0.0f)))
       m_ListMode = !m_ListMode;
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ImGui::Button("Import", ImVec2(importButtonW, 0.0f)))
+      ImportFromDialog();
+    ImGui::SameLine(0.0f, 6.0f);
+    if (ImGui::Button("New Script", ImVec2(scriptButtonW, 0.0f)))
+      CreateScript();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Creates a .lua with the OnCreate/OnUpdate/OnDestroy hooks in this folder.");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Copy a file from outside the project into this folder");
 
     // Collect, filter and sort entries once per frame.
     const std::string needle = ToLower(m_SearchBuffer);

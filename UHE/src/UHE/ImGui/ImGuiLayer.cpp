@@ -5,7 +5,7 @@
 
 #include "UHE/Events/Event.h"
 #include "UHE/Core/Application.h"
-#include "UHE/AssestsManager/VfsSystem.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Renderer/Renderer.h"
 #include "Platform/Vulkan/UI/VulkanImGuiBackend.h"
 #include "Platform/Vulkan/VulkanDevice.h"

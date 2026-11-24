@@ -339,6 +339,10 @@ set(MSDF_ATLAS_NO_ARTERY_FONT ON    CACHE BOOL "" FORCE)
 set(MSDF_ATLAS_DYNAMIC_RUNTIME ON   CACHE BOOL "" FORCE)
 add_subdirectory(UHE/vendor/msdf-atlas-gen)
 
+# Lua 5.4, vendored: the scripting host (UHE/src/UHE/Scripting). sol2 is
+# header-only and is added as an include directory by UHE/CMakeLists.txt.
+add_subdirectory(UHE/vendor/lua)
+
 # Disable Jolt Physics tests and viewers to drastically reduce compile times
 set(TARGET_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)
@@ -357,10 +361,21 @@ add_subdirectory(UHE/vendor/tracy)
 
 #main engine core
 add_subdirectory(UHE)
+#build tools (offline shader compiler)
+add_subdirectory(tools)
+
 #sandbox
 add_subdirectory(sandbox)
 add_subdirectory(UHE_EDITOR)
 add_subdirectory(UHEGAME)
+
+# Every app ships the assets the shaders live in, so each one needs the
+# artifacts to exist before its post-build asset copy runs.
+foreach(uhe_app Sandbox UHE_EDITOR UHEGAME)
+    if(TARGET ${uhe_app})
+        add_dependencies(${uhe_app} uhe_shaders)
+    endif()
+endforeach()
 
 
 get_property(all_targets DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY BUILDSYSTEM_TARGETS)
