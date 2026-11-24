@@ -503,6 +503,60 @@ int main()
         CHECK(edgeOk, "GBuffer node lists Lighting as a dependent");
     }
 
+    // ── Write after write: two rendering scopes on one attachment ─────────────
+    // The scene renders into the swapchain, then the UI pass loads it and draws
+    // on top. Same layout, same guard - but they are separate rendering scopes,
+    // and the second must wait for the first's writes. A barrier only on layout
+    // or guard changes left this pair unordered.
+    {
+        VulkanRenderGraph rg;
+        RGTextureHandle swap = rg.ImportTexture("Swapchain", 1, 64, 64, 1, ImageState::Undefined, ImageState::Present);
+        rg.AddPass("Scene")
+            .Write(swap)
+            .Color({swap, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        RGTextureHandle again = rg.ImportTexture("Swapchain", 1, 64, 64, 1, ImageState::Undefined, ImageState::Present);
+        rg.AddPass("UI")
+            .Write(again)
+            .Color({again, LoadOp::Load, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        const RGCompileResult result = rg.Compile();
+        CHECK(result.Ok() && result.frame.passes.size() == 2, "two writers of one import compile");
+        if (result.frame.passes.size() == 2)
+        {
+            const RGCompiledPass& ui = result.frame.passes[1];
+            bool ordered = false;
+            for (const RGCompiledImageBarrier& b : ui.preImageBarriers)
+                ordered = ordered ||
+                          (b.oldState == ImageState::ColorAttachment && b.newState == ImageState::ColorAttachment &&
+                           b.srcAccess == Access::ColorWrite && b.dstAccess == Access::ColorWrite);
+            CHECK(ordered, "the second writer waits on the first with a colour write barrier");
+        }
+
+        // Reads still transition once: a texture sampled by two passes needs
+        // no barrier between them.
+        VulkanRenderGraph reads;
+        RGTextureHandle tex = reads.ImportTexture("Lut", 2, 16, 16, 1, ImageState::ShaderRead, ImageState::ShaderRead);
+        RGTextureHandle outA = reads.ImportTexture("OutA", 3, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        RGTextureHandle outB = reads.ImportTexture("OutB", 4, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        reads.AddPass("A")
+            .Read(tex)
+            .Write(outA)
+            .Color({outA, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        reads.AddPass("B")
+            .Read(tex)
+            .Write(outB)
+            .Color({outB, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        const RGCompileResult readResult = reads.Compile();
+        bool lutBarrierInB = false;
+        if (readResult.frame.passes.size() == 2)
+            for (const RGCompiledImageBarrier& b : readResult.frame.passes[1].preImageBarriers)
+                lutBarrierInB = lutBarrierInB || b.texture == tex;
+        CHECK(readResult.Ok() && !lutBarrierInB, "a second read of a sampled texture adds no barrier");
+    }
+
     std::cout << (g_failures == 0 ? "\nALL CHECKS PASSED\n" : "\nFAILURES PRESENT\n");
     return g_failures == 0 ? 0 : 1;
 }

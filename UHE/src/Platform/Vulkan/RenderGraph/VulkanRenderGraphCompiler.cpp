@@ -24,6 +24,13 @@ struct RGUseRequirement
     Access access = Access::None;
 };
 
+/// @brief A guard that wrote: whatever touches the resource next must wait for it.
+bool IsWriteAccess(Access access)
+{
+    return access == Access::ColorWrite || access == Access::DepthWrite || access == Access::ShaderWrite ||
+           access == Access::TransferWrite || access == Access::MemoryWrite;
+}
+
 RGUseRequirement TextureReadRequirement(RGPassType passType)
 {
     if (passType == RGPassType::Transfer)
@@ -414,17 +421,20 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
                 track.access = req.access;
                 track.used = true;
             }
-            else if (track.stage != req.stage || track.access != req.access)
+            else if (track.stage != req.stage || track.access != req.access || IsWriteAccess(track.access))
             {
-                // Same layout, different guard — access-only barrier.
+                // Same layout, different guard — access-only barrier. Also
+                // after any write: two passes rendering into one attachment in
+                // a row are separate rendering scopes, and nothing orders the
+                // second's load and writes after the first's without this.
                 compiled.preImageBarriers.push_back({reqs.textureHandles.at(slot), track.state,
                                                      req.state, track.stage, req.stage,
                                                      track.access, req.access});
                 track.stage = req.stage;
                 track.access = req.access;
             }
-            // Same state + same guard: no barrier (layout minimality — a texture
-            // read as SRV by two passes transitions once).
+            // Same state + same guard after a read: no barrier (layout
+            // minimality — a texture read as SRV by two passes transitions once).
         }
 
         for (const auto& [slot, req] : reqs.buffers)
