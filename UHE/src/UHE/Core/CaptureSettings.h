@@ -1,9 +1,8 @@
 #pragma once
 
-#include "UHE/Core/Core.h"
-
 #include <optional>
 #include <string>
+#include "UHE/Core/Core.h"
 
 namespace UHE
 {

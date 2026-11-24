@@ -7,13 +7,12 @@
 // which is the lost wake-up a ShutDown that stores its flag outside the
 // queue mutex allowed.
 
-#include "UHE/Jobsystem/Jobsystem.h"
-#include "UHE/Jobsystem/Taskgraph.h"
-
 #include <atomic>
 #include <iostream>
 #include <string>
 #include <vector>
+#include "UHE/Jobsystem/Jobsystem.h"
+#include "UHE/Jobsystem/Taskgraph.h"
 
 using namespace UHE::Jobsystem;
 

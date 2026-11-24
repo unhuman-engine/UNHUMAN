@@ -29,11 +29,10 @@
 #include <iterator>
 #include <string>
 #include <vector>
-
+#include "UHE/RHI/RHITypes.h"
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer/ShaderReflection.h"
 #include "UHE/Renderer/SlangCompiler.h"
-#include "UHE/RHI/RHITypes.h"
 
 namespace
 {
@@ -140,13 +139,12 @@ int main(int argc, char** argv)
             {
                 const UHE::ShaderVertexInput& input = reflection.VertexInputs[i];
                 const ExpectedAttribute& wanted = kBasic3DVertexLayout[i];
-                check(input.Location == i, std::string("attribute ") + std::to_string(i) + " is at location " +
-                                               std::to_string(i));
-                check(input.Type == wanted.Type, std::string("attribute ") + std::to_string(i) + " (" +
-                                                     wanted.Name + ") has the format the layout declares");
+                check(input.Location == i,
+                      std::string("attribute ") + std::to_string(i) + " is at location " + std::to_string(i));
+                check(input.Type == wanted.Type, std::string("attribute ") + std::to_string(i) + " (" + wanted.Name +
+                                                     ") has the format the layout declares");
             }
-            check(reflection.PushConstantSize == 192,
-                  "the push constant block is 192 bytes, matching the host struct");
+            check(reflection.PushConstantSize == 192, "the push constant block is 192 bytes, matching the host struct");
         }
 
         if (fragmentIt != compiled.end())
@@ -193,8 +191,8 @@ int main(int argc, char** argv)
         // The variant without the entity-id output must be a different module:
         // that difference is the whole reason the variant exists.
         const auto withId = UHE::SlangCompiler::CompileToSPIRV(shaderDir + "/Basic3D.slang");
-        const auto withoutId = UHE::SlangCompiler::CompileToSPIRV(shaderDir + "/Basic3D.slang",
-                                                                  {{"UHE_NO_ENTITY_ID", "1"}});
+        const auto withoutId =
+            UHE::SlangCompiler::CompileToSPIRV(shaderDir + "/Basic3D.slang", {{"UHE_NO_ENTITY_ID", "1"}});
         const auto withIt = withId.find(UHE::RHI::ShaderStage::Fragment);
         const auto withoutIt = withoutId.find(UHE::RHI::ShaderStage::Fragment);
         check(withIt != withId.end() && withoutIt != withoutId.end(), "both fragment variants compile");
@@ -246,8 +244,7 @@ int main(int argc, char** argv)
             check(freshIt != fresh.end(), std::string(artifactCase.source) + " compiles for comparison");
             if (freshIt != fresh.end())
             {
-                check(bytes == freshIt->second,
-                      artifact.filename().string() + " is byte-identical to a fresh compile");
+                check(bytes == freshIt->second, artifact.filename().string() + " is byte-identical to a fresh compile");
             }
         }
 
@@ -289,10 +286,10 @@ int main(int argc, char** argv)
         }
 
         std::vector<u8> written;
-        check(UHE::ReadShaderArtifact(UHE::ShaderArtifactPath(tempDir / "Basic3D.slang", "default",
-                                                              UHE::RHI::ShaderStage::Vertex),
-                                      written),
-              "compiling wrote the vertex artifact");
+        check(
+            UHE::ReadShaderArtifact(
+                UHE::ShaderArtifactPath(tempDir / "Basic3D.slang", "default", UHE::RHI::ShaderStage::Vertex), written),
+            "compiling wrote the vertex artifact");
         check(library.Load((tempDir / "Basic3D.slang").string()) == handle, "a second load is the same handle");
 
         // A second load with the artifact in place takes the fast path.
@@ -305,15 +302,13 @@ int main(int argc, char** argv)
 
         check(library.Poll().empty(), "polling an unchanged source reloads nothing");
 
-        const std::filesystem::path artifact = UHE::ShaderArtifactPath(tempDir / "Basic3D.slang", "default",
-                                                                      UHE::RHI::ShaderStage::Vertex);
+        const std::filesystem::path artifact =
+            UHE::ShaderArtifactPath(tempDir / "Basic3D.slang", "default", UHE::RHI::ShaderStage::Vertex);
         const auto artifactTimeBefore = std::filesystem::last_write_time(artifact, ec);
 
         // Touch the source: the edit is what hot reload exists for.
         std::filesystem::last_write_time(tempDir / "Basic3D.slang",
-                                         std::filesystem::file_time_type::clock::now() +
-                                             std::chrono::seconds(10),
-                                         ec);
+                                         std::filesystem::file_time_type::clock::now() + std::chrono::seconds(10), ec);
 
         const std::vector<UHE::ShaderCache::Handle> polled = library.Poll();
         check(polled.size() == 1, "polling a touched source reports one reload");
@@ -323,8 +318,7 @@ int main(int argc, char** argv)
         check(reloaded != nullptr && reloaded->Stages.size() == 2, "the reload kept both stages");
 
         // And it wrote the artifact back, so the next launch is on the fast path.
-        check(std::filesystem::last_write_time(artifact, ec) > artifactTimeBefore,
-              "the reload rewrote the artifact");
+        check(std::filesystem::last_write_time(artifact, ec) > artifactTimeBefore, "the reload rewrote the artifact");
 
         // A broken edit: reported once, with Slang's message, and the last good
         // stages stay in place.

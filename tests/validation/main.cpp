@@ -11,8 +11,6 @@
 // What this test cannot check is that the severity bits still match the layer's:
 // that is a static_assert in VulkanInstance.cpp, where the Vulkan header is in
 // scope.
-#include "Platform/Vulkan/ValidationGate.h"
-
 #include <array>
 #include <cstdint>
 #include <iostream>
@@ -20,21 +18,22 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include "Platform/Vulkan/ValidationGate.h"
 
 using namespace UHE::RHI::VULKAN::Validation;
 
 static int g_failures = 0;
 
-#define CHECK(cond, msg)                                                                           \
-    do                                                                                             \
-    {                                                                                              \
-        if (cond)                                                                                  \
-            std::cout << "  ok  - " << msg << '\n';                                                \
-        else                                                                                       \
-        {                                                                                          \
-            std::cout << "  FAIL - " << msg << '\n';                                               \
-            ++g_failures;                                                                          \
-        }                                                                                          \
+#define CHECK(cond, msg)                                                                                               \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (cond)                                                                                                      \
+            std::cout << "  ok  - " << msg << '\n';                                                                    \
+        else                                                                                                           \
+        {                                                                                                              \
+            std::cout << "  FAIL - " << msg << '\n';                                                                   \
+            ++g_failures;                                                                                              \
+        }                                                                                                              \
     } while (0)
 
 static void CheckClassify()
@@ -90,12 +89,10 @@ static void CheckRepeatFilter()
         // The whole point: the layer repeats a defect every frame, and only the
         // first occurrence carries information. 2, 4, 8 ... are the checkpoints.
         const std::array<RepeatVerdict, 16> expected = {
-            RepeatVerdict::First,      RepeatVerdict::Report,     RepeatVerdict::Suppressed,
-            RepeatVerdict::Report,     RepeatVerdict::Suppressed, RepeatVerdict::Suppressed,
-            RepeatVerdict::Suppressed, RepeatVerdict::Report,     RepeatVerdict::Suppressed,
-            RepeatVerdict::Suppressed, RepeatVerdict::Suppressed, RepeatVerdict::Suppressed,
-            RepeatVerdict::Suppressed, RepeatVerdict::Suppressed, RepeatVerdict::Suppressed,
-            RepeatVerdict::Report};
+            RepeatVerdict::First,      RepeatVerdict::Report,     RepeatVerdict::Suppressed, RepeatVerdict::Report,
+            RepeatVerdict::Suppressed, RepeatVerdict::Suppressed, RepeatVerdict::Suppressed, RepeatVerdict::Report,
+            RepeatVerdict::Suppressed, RepeatVerdict::Suppressed, RepeatVerdict::Suppressed, RepeatVerdict::Suppressed,
+            RepeatVerdict::Suppressed, RepeatVerdict::Suppressed, RepeatVerdict::Suppressed, RepeatVerdict::Report};
         bool sequenceOk = true;
         unsigned lines = 0;
         for (std::size_t i = 0; i < expected.size(); ++i)
@@ -173,8 +170,7 @@ static void CheckRepeatFilter()
         {
             total += filter.Count("thread#" + std::to_string(t));
         }
-        CHECK(total == static_cast<unsigned>(kThreads * kPerThread),
-              "concurrent reports are all counted");
+        CHECK(total == static_cast<unsigned>(kThreads * kPerThread), "concurrent reports are all counted");
         CHECK(filter.Size() == kThreads, "one entry per thread's message");
     }
 }

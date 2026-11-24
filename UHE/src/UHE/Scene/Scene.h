@@ -1,14 +1,14 @@
 #pragma once
 
-#include <unordered_map>
-#include <unordered_set>
 #include <box2d/types.h>
 #include <example/stb_image.h>
-#include "UHE/Core/Timestep.h"
+#include <unordered_map>
+#include <unordered_set>
 #include "UHE/Core/SimulationClock.h"
+#include "UHE/Core/Timestep.h"
+#include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer/EditorCamera.h"
 #include "UHE/Scene/Components.h"
-#include "UHE/Physics/PhysicsSystem3D.h"
 #include "entt.hpp"
 class b2World;
 
@@ -224,7 +224,7 @@ private:
     // Set while RenderRuntimeScene builds the world cache: blended local
     // transforms that override TransformComponent for that build only.
     std::unordered_map<entt::entity, glm::mat4> m_RenderLocalOverride;
-    
+
     Ref<Texture2D> m_DirLightIcon;
     Ref<Texture2D> m_PointLightIcon;
 

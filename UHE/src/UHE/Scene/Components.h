@@ -7,12 +7,12 @@
 #include "UHE/Core/Core.h"
 #include "UHE/Core/Timestep.h"
 #include "UHE/Core/UUID.h"
+#include "UHE/Renderer/Font.h"
 #include "UHE/Renderer/Texture.h"
-#include "UHE/Renderer3D/LoadModel.h"
 #include "UHE/Renderer3D/Animator.h"
+#include "UHE/Renderer3D/LoadModel.h"
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
-#include "UHE/Renderer/Font.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
@@ -198,7 +198,8 @@ struct UHE_API AudioSourceComponent
     }
 };
 
-struct UHE_API RigidBody2DComponent{
+struct UHE_API RigidBody2DComponent
+{
     enum class BodyType
     {
         Static = 0,

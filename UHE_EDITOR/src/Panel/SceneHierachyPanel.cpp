@@ -1,21 +1,20 @@
 #include "SceneHierachyPanel.h"
-#include "EditorUI.h"
-#include "glm/trigonometric.hpp"
-#include "imgui/imgui_internal.h"
-#include <imgui/imgui.h>
-#include <imgui_internal.h>
-#include <misc/cpp/imgui_stdlib.h>
-#include <glm/glm.hpp>
-#include <glm/gtc/type_ptr.hpp>
-#include "UHE/AssetsManager/VfsSystem.h"
-#include "EditorTheme.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <imgui/imgui.h>
+#include <imgui_internal.h>
+#include <misc/cpp/imgui_stdlib.h>
+#include "EditorTheme.h"
+#include "EditorUI.h"
 #include "SceneHierarchyStyle.h"
+#include "UHE/AssetsManager/VfsSystem.h"
+#include "glm/trigonometric.hpp"
+#include "imgui/imgui_internal.h"
 
 namespace UHE {
-
 
 // Issue #17: outliner icons, lazily loaded once per panel instance.
 void* SceneHierarchyPanel::LoadOutlinerIcon(const char *assetName) {

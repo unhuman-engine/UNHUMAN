@@ -3,16 +3,15 @@
 // Exercises playback controls, multi-mode interpolation (Step, Linear, CubicSpline),
 // cross-fade pose blending, notifies/events, root motion extraction, multi-skin
 // skeletal hierarchies, state machines, keyframe reduction, and two-bone analytic IK.
-#include "UHE/Renderer3D/Animator.h"
-#include "UHE/Renderer3D/AnimationStateMachine.h"
-#include "UHE/Animation/AnimationGraph.h"
-#include "UHE/Renderer3D/AnimationCompression.h"
-#include "UHE/Renderer3D/IKSolver.h"
-#include "UHE/Jobsystem/Jobsystem.h"
-
 #include <cmath>
 #include <glm/gtx/quaternion.hpp>
 #include <iostream>
+#include "UHE/Animation/AnimationGraph.h"
+#include "UHE/Jobsystem/Jobsystem.h"
+#include "UHE/Renderer3D/AnimationCompression.h"
+#include "UHE/Renderer3D/AnimationStateMachine.h"
+#include "UHE/Renderer3D/Animator.h"
+#include "UHE/Renderer3D/IKSolver.h"
 
 using namespace UHE;
 using namespace UHE::RD3d;

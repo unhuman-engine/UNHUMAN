@@ -770,21 +770,18 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
                         AnimationGraphTransition transition;
                         transition.From = transitionNode["From"] ? transitionNode["From"].as<int>() : -1;
                         transition.To = transitionNode["To"] ? transitionNode["To"].as<int>() : -1;
-                        transition.Parameter = transitionNode["Parameter"]
-                                                   ? transitionNode["Parameter"].as<std::string>()
-                                                   : std::string();
-                        transition.Condition = transitionNode["Condition"]
-                                                   ? static_cast<AnimGraphCondition>(
-                                                         transitionNode["Condition"].as<int>())
-                                                   : AnimGraphCondition::Greater;
+                        transition.Parameter =
+                            transitionNode["Parameter"] ? transitionNode["Parameter"].as<std::string>() : std::string();
+                        transition.Condition =
+                            transitionNode["Condition"]
+                                ? static_cast<AnimGraphCondition>(transitionNode["Condition"].as<int>())
+                                : AnimGraphCondition::Greater;
                         transition.Threshold =
                             transitionNode["Threshold"] ? transitionNode["Threshold"].as<f32>() : 0.5f;
-                        transition.Duration =
-                            transitionNode["Duration"] ? transitionNode["Duration"].as<f32>() : 0.2f;
+                        transition.Duration = transitionNode["Duration"] ? transitionNode["Duration"].as<f32>() : 0.2f;
                         transition.HasExitTime =
                             transitionNode["HasExitTime"] ? transitionNode["HasExitTime"].as<bool>() : false;
-                        transition.ExitTime =
-                            transitionNode["ExitTime"] ? transitionNode["ExitTime"].as<f32>() : 1.0f;
+                        transition.ExitTime = transitionNode["ExitTime"] ? transitionNode["ExitTime"].as<f32>() : 1.0f;
                         graph.Transitions.push_back(std::move(transition));
                     }
                 }

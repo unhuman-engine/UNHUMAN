@@ -1,5 +1,4 @@
 #include "Platform/Vulkan/ValidationGate.h"
-
 #include <cctype>
 #include <cstdlib>
 

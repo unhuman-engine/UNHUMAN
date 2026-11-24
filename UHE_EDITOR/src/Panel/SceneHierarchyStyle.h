@@ -2,27 +2,43 @@
 
 // Colours shared by the scene hierarchy (outliner) and its component
 // inspector. Internal to these two translation units.
-#include "EditorTheme.h"
 #include <imgui/imgui.h>
+#include "EditorTheme.h"
 
 namespace UHE
 {
 
 // Theme-driven accents (previously hardcoded violet constants). Fully
 // qualified: EditorTheme is a global-namespace library, not part of UHE.
-inline ImVec4 kAccent()       { return ::EditorTheme::Accent(); }
-inline ImVec4 kAccentHover()  { return ::EditorTheme::AccentHover(); }
-inline ImVec4 kAccentActive() { return ::EditorTheme::AccentActive(); }
-inline ImVec4 kAccentMuted()  { return ::EditorTheme::AccentMuted(); }
+inline ImVec4 kAccent()
+{
+    return ::EditorTheme::Accent();
+}
+inline ImVec4 kAccentHover()
+{
+    return ::EditorTheme::AccentHover();
+}
+inline ImVec4 kAccentActive()
+{
+    return ::EditorTheme::AccentActive();
+}
+inline ImVec4 kAccentMuted()
+{
+    return ::EditorTheme::AccentMuted();
+}
 // Readable label color for accent-filled controls (fixes white-on-white on
 // light-accent themes like Carbon).
-inline ImVec4 kAccentText()   { return ::EditorTheme::AccentForeground(); }
+inline ImVec4 kAccentText()
+{
+    return ::EditorTheme::AccentForeground();
+}
 
 // Dimmed label text derived from the active theme's text color (the old
 // near-white constants were unreadable on the light theme).
-inline ImVec4 DimText(float alpha) {
-  ImVec4 c = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-  return ImVec4(c.x, c.y, c.z, alpha);
+inline ImVec4 DimText(float alpha)
+{
+    ImVec4 c = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+    return ImVec4(c.x, c.y, c.z, alpha);
 }
 inline constexpr ImVec4 kAxisX{0.75f, 0.22f, 0.28f, 1.0f};
 inline constexpr ImVec4 kAxisXHover{0.85f, 0.32f, 0.35f, 1.0f};

@@ -1,8 +1,8 @@
 #include "uhepch.h"
 #include "Texture.h"
-#include "UHE/Renderer/Renderer.h"
-#include "UHE/AssetsManager/VfsSystem.h"
 #include "Platform/Vulkan/VulkanTexture2D.h"
+#include "UHE/AssetsManager/VfsSystem.h"
+#include "UHE/Renderer/Renderer.h"
 
 namespace UHE {
 
