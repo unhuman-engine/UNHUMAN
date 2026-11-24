@@ -262,6 +262,9 @@ bool ShaderCache::LoadInto(Entry& entry, const std::filesystem::path& source, co
     std::vector<ShaderStageBinary> fromArtifact;
     bool anyArtifact = false;
     bool staleArtifact = false;
+    bool invalidArtifact = false;
+    bool hasVertex = false;
+    bool hasFragment = false;
     for (const RHI::ShaderStage stage : kStages)
     {
         const std::filesystem::path path = ShaderArtifactPath(source, variant.Name, stage);
@@ -280,10 +283,28 @@ bool ShaderCache::LoadInto(Entry& entry, const std::filesystem::path& source, co
         binary.Stage = stage;
         binary.SPIRV = std::move(bytes);
         binary.Reflection = ReflectSPIRV(binary.SPIRV);
+        if (!binary.Reflection.Valid)
+        {
+            invalidArtifact = true;
+        }
+        hasVertex = hasVertex || stage == RHI::ShaderStage::Vertex;
+        hasFragment = hasFragment || stage == RHI::ShaderStage::Fragment;
         fromArtifact.push_back(std::move(binary));
     }
 
-    if (anyArtifact && !staleArtifact)
+    // The artifacts are a cache, trusted only when complete and well formed. A
+    // graphics shader needs vertex and fragment together: loading one without
+    // the other hands the pipeline half a shader. A file that is not valid
+    // SPIR-V (truncated copy, disk error) would reach pipeline creation as
+    // garbage. Either way, compiling the source rebuilds the artifacts.
+    const bool incompleteArtifact = hasVertex != hasFragment;
+    if (anyArtifact && (incompleteArtifact || invalidArtifact))
+    {
+        UHE_CORE_WARN("Shader '{0}' [{1}]: {2} artifact, compiling the source instead", Describe(source), variant.Name,
+                      invalidArtifact ? "invalid" : "incomplete");
+    }
+
+    if (anyArtifact && !staleArtifact && !incompleteArtifact && !invalidArtifact)
     {
         entry.Data.Stages = std::move(fromArtifact);
         entry.Data.FromArtifact = true;
