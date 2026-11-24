@@ -1,0 +1,436 @@
+// FrameGraph frontend harness: Frostbite-style passes declare logical
+// resources by usage, the blackboard carries data between features, every
+// misuse is reported with the pass and resource it concerns, and the lowered
+// frame (what the backend consumes) carries exactly what was declared. Pure
+// CPU: the context is a fake that records what a pass asks for.
+
+#include <iostream>
+#include <string>
+#include <vector>
+#include "UHE/RHI/FrameGraph/FrameGraph.h"
+
+using namespace UHE;
+using namespace UHE::RHI;
+
+namespace
+{
+int g_failures = 0;
+
+void check(bool condition, const std::string& what)
+{
+    std::cout << (condition ? "  ok   - " : "  FAIL - ") << what << '\n';
+    g_failures += condition ? 0 : 1;
+}
+
+void section(const char* name)
+{
+    std::cout << "\n[ " << name << " ]\n";
+}
+
+/// Stands in for the backend: a fixed command buffer is not needed, so Cmd()
+/// is never called by these passes; Get() maps handles to fake objects.
+class FakeContext final : public FGContext
+{
+public:
+    FakeContext(const std::string& pass, const Blackboard& board) : FGContext(pass, board) {}
+    RHICommandBuffer& Cmd() override { std::abort(); }
+    TextureHandle Get(FGHandle<FGTexture> handle) const override
+    {
+        return reinterpret_cast<TextureHandle>(static_cast<uintptr_t>(0x1000 + handle.Index));
+    }
+    BufferHandle Get(FGHandle<FGBuffer> handle) const override
+    {
+        return reinterpret_cast<BufferHandle>(static_cast<uintptr_t>(0x2000 + handle.Index));
+    }
+    u32 Width() const override { return 1280; }
+    u32 Height() const override { return 720; }
+};
+
+TextureHandle FakeTexture(uintptr_t id)
+{
+    return reinterpret_cast<TextureHandle>(id);
+}
+
+bool HasError(const FrameGraph& fg, FGErrorType type, const std::string& pass = "")
+{
+    for (const FGError& error : fg.Errors())
+        if (error.Type == type && (pass.empty() || error.Pass == pass))
+            return true;
+    return false;
+}
+
+const FGTexture::Desc kHdr{1280, 720, TextureFormat::RGBA16F};
+const FGTexture::Desc kDepth{1280, 720, TextureFormat::D32_FLOAT};
+const FGTexture::Desc kBackbuffer{1280, 720, TextureFormat::BGRA8_SRGB};
+
+struct SceneData
+{
+    FGHandle<FGTexture> Hdr;
+    FGHandle<FGTexture> Depth;
+};
+struct TonemapData
+{
+    FGHandle<FGTexture> Output;
+};
+struct Backbuffer
+{
+    FGHandle<FGTexture> Handle;
+};
+
+/// The frame the engine is heading for: Scene -> Tonemap -> backbuffer.
+void DeclareSceneAndTonemap(FrameGraph& fg, std::vector<std::string>* executed = nullptr)
+{
+    fg.Board().Add<Backbuffer>(
+        Backbuffer{fg.Import("Backbuffer", kBackbuffer, FakeTexture(0xB0), FGState::Undefined, FGState::Present)});
+    const SceneData& scene = fg.AddPass<SceneData>(
+        "Scene",
+        [](FGBuilder& b, SceneData& d)
+        {
+            d.Hdr = b.Write(b.Create("SceneHDR", kHdr), FGWrite::RenderTarget);
+            d.Depth = b.Write(b.Create("SceneDepth", kDepth), FGWrite::DepthTarget);
+        },
+        [executed](const SceneData& d, FGContext& ctx)
+        {
+            if (executed != nullptr)
+                executed->push_back(ctx.PassName() + ":" + std::to_string(d.Hdr.Version));
+        });
+    fg.Board().Add<SceneData>(scene);
+
+    fg.AddPass<TonemapData>(
+        "Tonemap",
+        [&fg](FGBuilder& b, TonemapData& d)
+        {
+            b.Read(fg.Board().Get<SceneData>().Hdr);
+            d.Output = b.Write(fg.Board().Get<Backbuffer>().Handle, FGWrite::RenderTarget,
+                               FGAttachment{LoadOp::Clear, StoreOp::Store});
+        },
+        [executed](const TonemapData&, FGContext& ctx)
+        {
+            if (executed != nullptr)
+                executed->push_back(ctx.PassName() + ":" + std::to_string(ctx.Board().Get<SceneData>().Hdr.Index));
+        });
+}
+} // namespace
+
+int main()
+{
+    section("a scene -> tonemap frame");
+    {
+        FrameGraph fg;
+        DeclareSceneAndTonemap(fg);
+        check(fg.Ok(), "the frame declares without errors");
+        check(fg.PassCount() == 2 && fg.ResourceCount() == 3, "two passes, three resources");
+
+        const FGLoweredFrame frame = fg.Lower();
+        check(frame.Passes.size() == 2 && frame.Passes[0].Name == "Scene" && frame.Passes[1].Name == "Tonemap",
+              "lowered passes keep declaration order");
+        check(frame.Resources[0].Imported && frame.Resources[0].ImportedTexture == FakeTexture(0xB0),
+              "the backbuffer is lowered as an import of the given texture");
+        check(frame.Resources[0].InitialState == FGState::Undefined &&
+                  frame.Resources[0].FinalState == FGState::Present,
+              "with its initial and final states");
+        check(!frame.Resources[1].Imported && frame.Resources[1].Texture.Format == TextureFormat::RGBA16F,
+              "SceneHDR is a created texture with its desc");
+
+        const FGLoweredPass& scene = frame.Passes[0];
+        check(scene.Accesses.size() == 2 && scene.Accesses[0].IsWrite &&
+                  scene.Accesses[0].Write == FGWrite::RenderTarget && scene.Accesses[0].Version == 1,
+              "Scene writes SceneHDR as a render target, producing version 1");
+        check(scene.Accesses[1].Write == FGWrite::DepthTarget, "and SceneDepth as its depth target");
+
+        const FGLoweredPass& tonemap = frame.Passes[1];
+        check(tonemap.Accesses.size() == 2 && !tonemap.Accesses[0].IsWrite && tonemap.Accesses[0].Resource == 1 &&
+                  tonemap.Accesses[0].Version == 1,
+              "Tonemap reads the version Scene produced");
+        check(tonemap.Accesses[1].Resource == 0 && tonemap.Accesses[1].Version == 1 &&
+                  tonemap.Accesses[1].Attachment.Load == LoadOp::Clear,
+              "and writes the backbuffer with its attachment ops");
+    }
+
+    section("execute callbacks");
+    {
+        FrameGraph fg;
+        std::vector<std::string> executed;
+        DeclareSceneAndTonemap(fg, &executed);
+        const FGLoweredFrame frame = fg.Lower();
+        for (const FGLoweredPass& pass : frame.Passes)
+        {
+            FakeContext context(pass.Name, fg.Board());
+            fg.ExecutePass(pass.Index, context);
+        }
+        check(executed.size() == 2, "each pass runs once when the backend executes it");
+        check(executed.size() == 2 && executed[0] == "Scene:1", "execute sees the pass data setup filled in");
+        check(executed.size() == 2 && executed[1] == "Tonemap:1", "and the blackboard from the context");
+        check(fg.PassName(0) == "Scene", "pass names are kept for the backend");
+
+        FakeContext context("x", fg.Board());
+        fg.ExecutePass(99, context);
+        check(true, "executing an index that does not exist is a no-op");
+        check(context.Get(fg.Board().Get<SceneData>().Hdr) == reinterpret_cast<TextureHandle>(0x1001),
+              "the context maps a handle to its physical texture");
+    }
+
+    section("blackboard");
+    {
+        Blackboard board;
+        struct Camera
+        {
+            float Fov = 60.0f;
+        };
+        struct Lights
+        {
+            int Count = 0;
+        };
+        check(!board.Has<Camera>() && board.TryGet<Camera>() == nullptr, "an empty board has nothing");
+        board.Add<Camera>(Camera{75.0f});
+        board.Add<Lights>(Lights{3});
+        check(board.Get<Camera>().Fov == 75.0f && board.Get<Lights>().Count == 3, "entries are found by type");
+        board.Add<Camera>(Camera{90.0f});
+        check(board.Get<Camera>().Fov == 90.0f && board.Size() == 2, "adding a type again replaces it");
+        board.Get<Lights>().Count = 4;
+        check(board.Get<Lights>().Count == 4, "entries are mutable through Get");
+        const Blackboard& constBoard = board;
+        check(constBoard.TryGet<Lights>() != nullptr, "and readable through a const board");
+        board.Clear();
+        check(board.Size() == 0 && !board.Has<Camera>(), "Clear empties it");
+    }
+
+    section("parameters and the frame hash");
+    {
+        FrameGraph a;
+        FrameGraph b;
+        DeclareSceneAndTonemap(a);
+        DeclareSceneAndTonemap(b);
+        check(a.Hash() == b.Hash(), "identical frames hash identically");
+        check(a.Lower().Hash == a.Hash(), "the lowered frame carries the hash");
+
+        a.SetParameter("Shadows.Cascades", i64{4});
+        check(a.Hash() != b.Hash(), "a parameter changes the hash");
+        b.SetParameter("Shadows.Cascades", i64{4});
+        check(a.Hash() == b.Hash(), "the same parameter value restores it");
+        check(a.GetParameter<i64>("Shadows.Cascades") == i64{4}, "a parameter reads back as its type");
+        check(!a.GetParameter<double>("Shadows.Cascades"), "and not as another type");
+        check(!a.GetParameter<i64>("Missing"), "an unknown parameter is nullopt");
+        a.SetParameter("Tonemap", std::string("aces"));
+        b.SetParameter("Tonemap", std::string("reinhard"));
+        check(a.Hash() != b.Hash(), "string parameters are hashed by value");
+
+        FrameGraph c;
+        FrameGraph d;
+        c.Import("Backbuffer", kBackbuffer, FakeTexture(0xB0), FGState::Undefined, FGState::Present);
+        d.Import("Backbuffer", kBackbuffer, FakeTexture(0xB1), FGState::Undefined, FGState::Present);
+        check(c.Hash() != d.Hash(), "a recreated imported texture changes the hash");
+        FrameGraph e;
+        e.Import("Backbuffer", {1920, 1080, TextureFormat::BGRA8_SRGB}, FakeTexture(0xB0), FGState::Undefined,
+                 FGState::Present);
+        check(c.Hash() != e.Hash(), "a resize changes the hash");
+    }
+
+    section("reset and stale handles");
+    {
+        FrameGraph fg;
+        DeclareSceneAndTonemap(fg);
+        const FGHandle<FGTexture> oldHdr = fg.Board().Get<SceneData>().Hdr;
+        const u32 frame = fg.Frame();
+        fg.Reset();
+        check(fg.PassCount() == 0 && fg.ResourceCount() == 0 && fg.Board().Size() == 0 && fg.Ok(),
+              "Reset drops passes, resources, the blackboard and errors");
+        check(fg.Frame() == frame + 1, "and starts a new frame");
+
+        fg.Import("Backbuffer", kBackbuffer, FakeTexture(0xB0), FGState::Undefined, FGState::Present);
+        fg.Import("Other", kHdr, FakeTexture(0xC0), FGState::ShaderRead, FGState::ShaderRead);
+        struct Empty
+        {
+        };
+        fg.AddPass<Empty>("Late", [&](FGBuilder& b, Empty&) { b.Read(oldHdr); }, [](const Empty&, FGContext&) {});
+        check(HasError(fg, FGErrorType::InvalidHandle, "Late"),
+              "a handle from the previous frame is refused, even though its index exists again");
+    }
+
+    section("versions");
+    {
+        FrameGraph fg;
+        struct Data
+        {
+            FGHandle<FGTexture> First, Second;
+        };
+        const Data& data = fg.AddPass<Data>(
+            "Writer",
+            [](FGBuilder& b, Data& d)
+            {
+                const auto created = b.Create("Target", kHdr);
+                d.First = b.Write(created, FGWrite::RenderTarget);
+            },
+            [](const Data&, FGContext&) {});
+        const Data& again = fg.AddPass<Data>(
+            "Overwriter", [&](FGBuilder& b, Data& d) { d.Second = b.Write(data.First, FGWrite::RenderTarget); },
+            [](const Data&, FGContext&) {});
+        check(fg.Ok() && data.First.Version == 1 && again.Second.Version == 2, "each write produces a new version");
+
+        struct Empty
+        {
+        };
+        fg.AddPass<Empty>(
+            "StaleReader", [&](FGBuilder& b, Empty&) { b.Read(data.First); }, [](const Empty&, FGContext&) {});
+        check(HasError(fg, FGErrorType::StaleVersion, "StaleReader"),
+              "reading a version a later write replaced is refused");
+        fg.AddPass<Empty>(
+            "StaleWriter", [&](FGBuilder& b, Empty&) { (void)b.Write(data.First, FGWrite::RenderTarget); },
+            [](const Empty&, FGContext&) {});
+        check(HasError(fg, FGErrorType::StaleVersion, "StaleWriter"), "and so is writing it");
+        fg.AddPass<Empty>(
+            "Reader", [&](FGBuilder& b, Empty&) { b.Read(again.Second); }, [](const Empty&, FGContext&) {});
+        check(!HasError(fg, FGErrorType::StaleVersion, "Reader"), "the latest version reads fine");
+    }
+
+    section("misuse is reported, by pass and resource");
+    {
+        struct Empty
+        {
+        };
+        const auto none = [](const Empty&, FGContext&) {};
+
+        FrameGraph fg;
+        const auto backbuffer =
+            fg.Import("Backbuffer", kBackbuffer, FakeTexture(0xB0), FGState::Undefined, FGState::Present);
+
+        fg.AddPass<Empty>("Early", [](FGBuilder& b, Empty&) { b.Read(b.Create("Never", kHdr)); }, none);
+        check(HasError(fg, FGErrorType::ReadBeforeWrite, "Early"), "reading a created, unwritten texture");
+
+        fg.AddPass<Empty>("Default", [](FGBuilder& b, Empty&) { b.Read(FGHandle<FGTexture>{}); }, none);
+        check(HasError(fg, FGErrorType::InvalidHandle, "Default"), "a default-constructed handle");
+
+        fg.AddPass<Empty>(
+            "DepthAsColor", [](FGBuilder& b, Empty&) { (void)b.Write(b.Create("D1", kDepth), FGWrite::RenderTarget); },
+            none);
+        check(HasError(fg, FGErrorType::UsageNotAllowed, "DepthAsColor"), "a depth format as a render target");
+
+        fg.AddPass<Empty>(
+            "ColorAsDepth", [](FGBuilder& b, Empty&) { (void)b.Write(b.Create("C1", kHdr), FGWrite::DepthTarget); },
+            none);
+        check(HasError(fg, FGErrorType::UsageNotAllowed, "ColorAsDepth"), "a colour format as a depth target");
+
+        fg.AddPass<Empty>(
+            "StorageInGraphics", [](FGBuilder& b, Empty&) { (void)b.Write(b.Create("S1", kHdr), FGWrite::Storage); },
+            none);
+        check(HasError(fg, FGErrorType::UsageNotAllowed, "StorageInGraphics"), "a storage write in a graphics pass");
+
+        fg.AddPass<Empty>(
+            "TargetInCompute", FGPassType::Compute,
+            [](FGBuilder& b, Empty&) { (void)b.Write(b.Create("S2", kHdr), FGWrite::RenderTarget); }, none);
+        check(HasError(fg, FGErrorType::UsageNotAllowed, "TargetInCompute"), "a render target in a compute pass");
+
+        fg.AddPass<Empty>("CopyInGraphics", [&](FGBuilder& b, Empty&) { b.Read(backbuffer, FGRead::CopySrc); }, none);
+        check(HasError(fg, FGErrorType::UsageNotAllowed, "CopyInGraphics"), "a copy read in a graphics pass");
+
+        fg.AddPass<Empty>(
+            "BufferInGraphics",
+            [](FGBuilder& b, Empty&) { (void)b.Write(b.Create("Buf", FGBuffer::Desc{256}), FGWrite::Storage); }, none);
+        check(HasError(fg, FGErrorType::UsageNotAllowed, "BufferInGraphics"), "a buffer write in a graphics pass");
+
+        fg.AddPass<Empty>(
+            "Twice",
+            [](FGBuilder& b, Empty&)
+            {
+                const auto t = b.Create("T2", kHdr);
+                (void)b.Write(t, FGWrite::RenderTarget);
+                (void)b.Write(t, FGWrite::RenderTarget);
+            },
+            none);
+        check(HasError(fg, FGErrorType::StaleVersion, "Twice") || HasError(fg, FGErrorType::DoubleWrite, "Twice"),
+              "writing a resource twice in one pass");
+
+        fg.AddPass<Empty>(
+            "Feedback",
+            [&](FGBuilder& b, Empty&)
+            {
+                b.Read(backbuffer);
+                (void)b.Write(backbuffer, FGWrite::RenderTarget);
+            },
+            none);
+        check(HasError(fg, FGErrorType::ReadAndWrite, "Feedback"), "reading and writing one resource in a pass");
+
+        fg.AddPass<Empty>(
+            "TwoDepths",
+            [](FGBuilder& b, Empty&)
+            {
+                (void)b.Write(b.Create("Da", kDepth), FGWrite::DepthTarget);
+                (void)b.Write(b.Create("Db", kDepth), FGWrite::DepthTarget);
+            },
+            none);
+        check(HasError(fg, FGErrorType::TooManyTargets, "TwoDepths"), "a second depth target");
+
+        fg.AddPass<Empty>(
+            "NineTargets",
+            [](FGBuilder& b, Empty&)
+            {
+                for (int i = 0; i < 9; ++i)
+                    (void)b.Write(b.Create("RT" + std::to_string(i), kHdr), FGWrite::RenderTarget);
+            },
+            none);
+        check(HasError(fg, FGErrorType::TooManyTargets, "NineTargets"), "a ninth render target");
+
+        fg.AddPass<Empty>(
+            "Zero", [](FGBuilder& b, Empty&) { (void)b.Create("ZeroSized", FGTexture::Desc{0, 720}); }, none);
+        check(HasError(fg, FGErrorType::EmptyDesc, "Zero"), "a zero-sized texture");
+
+        fg.AddPass<Empty>("Dup", [](FGBuilder& b, Empty&) { (void)b.Create("SceneHDR2", kHdr); }, none);
+        fg.AddPass<Empty>("Dup2", [](FGBuilder& b, Empty&) { (void)b.Create("SceneHDR2", kHdr); }, none);
+        check(HasError(fg, FGErrorType::DuplicateName, "Dup2"), "two resources with one name");
+
+        fg.Import("Null", kHdr, nullptr, FGState::Undefined, FGState::Undefined);
+        check(HasError(fg, FGErrorType::InvalidHandle), "importing a null texture");
+
+        bool named = true;
+        for (const FGError& error : fg.Errors())
+            named = named && !error.Message.empty() && ToString(error.Type)[0] != '?';
+        check(named, "every error carries a message and a type name");
+        check(!fg.Ok(), "and the frame is not Ok");
+    }
+
+    section("valid uses per pass type");
+    {
+        struct Empty
+        {
+        };
+        const auto none = [](const Empty&, FGContext&) {};
+        FrameGraph fg;
+        FGHandle<FGTexture> blurred;
+        FGHandle<FGBuffer> histogram;
+        fg.AddPass<Empty>(
+            "Blur", FGPassType::Compute,
+            [&](FGBuilder& b, Empty&)
+            {
+                blurred = b.Write(b.Create("Blurred", kHdr), FGWrite::Storage);
+                histogram = b.Write(b.Create("Histogram", FGBuffer::Desc{1024}), FGWrite::Storage);
+            },
+            none);
+        fg.AddPass<Empty>(
+            "Readback", FGPassType::Transfer,
+            [&](FGBuilder& b, Empty&)
+            {
+                b.Read(blurred, FGRead::CopySrc);
+                (void)b.Write(b.Create("Staging", FGBuffer::Desc{4096}), FGWrite::CopyDst);
+            },
+            none);
+        fg.AddPass<Empty>(
+            "Composite",
+            [&](FGBuilder& b, Empty&)
+            {
+                b.Read(blurred);
+                b.Read(histogram);
+                b.Read(histogram); // a repeated read is harmless
+                (void)b.Write(b.Create("Final", kBackbuffer), FGWrite::RenderTarget);
+            },
+            none);
+        check(fg.Ok(), "compute storage, transfer copies and graphics reads all validate");
+        const FGLoweredFrame frame = fg.Lower();
+        check(frame.Passes[2].Accesses.size() == 3, "a repeated read is recorded once");
+        check(frame.Passes[0].Type == FGPassType::Compute && frame.Passes[1].Type == FGPassType::Transfer,
+              "pass types are lowered");
+        check(!frame.Resources[1].IsTexture && frame.Resources[1].Buffer.Size == 1024, "buffers are lowered too");
+    }
+
+    std::cout << '\n' << (g_failures == 0 ? "all frame graph checks passed" : "frame graph checks FAILED") << '\n';
+    return g_failures == 0 ? 0 : 1;
+}
