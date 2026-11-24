@@ -33,6 +33,10 @@ here. Follow them; if a rule is wrong, change it here first.
   `ShaderCache::Load` reads that artifact instead of running Slang, which used to
   sit on the startup path of every launch. A runtime that compiles is either hot
   reload or a source missing from `UHE_SHADER_SOURCES` in `tools/CMakeLists.txt`.
+- **A `.spv` is a cache, trusted only when complete and valid.** `ShaderCache`
+  compiles the source instead when an artifact is older than its source, when
+  a vertex stage has no fragment (or the reverse), or when a file is not valid
+  SPIR-V. Loading what was there used to hand pipelines half a shader.
 - **A pipeline's vertex layout and push constant range come from the module.**
   `ShaderReflection` reads them out of the SPIR-V, so a shader edit that changes
   its interface fails `tests/shader` instead of drawing garbage. Never re-add a
@@ -58,6 +62,9 @@ here. Follow them; if a rule is wrong, change it here first.
   Shared globals and library tables are read-only proxies (`_G` is the script's
   own environment), and every call runs under an instruction budget, so an
   endless loop disables its instance instead of hanging the frame.
+  A proxy must never hand out the table behind it: its `__pairs` iterates
+  through a closure, because `next, t, nil` gave `local _, real = pairs(string)`
+  write access to the library every script shares.
 - **A script resolves its entity through the registry on every call.** `self` is a
   table holding an entity token, not a pointer: a script can outlive the entity it
   was attached to, and `IsValid()` must answer for that case instead of crashing.
@@ -119,5 +126,17 @@ here. Follow them; if a rule is wrong, change it here first.
 - Anything that touches the device is covered by the Sandbox smoke instead: it
   logs `[SMOKE-READY] first frame rendered` once frame 1 has been submitted and
   presented, and CI waits for that line rather than a wall clock.
+- **The golden-image step checks what is rendered, not only that it rendered.**
+  `test-renderer.yml` runs the Sandbox on lavapipe with `UHE_FIXED_TIMESTEP` and
+  `UHE_CAPTURE_FRAME` (`UHE/src/UHE/Core/CaptureSettings.h`), and `uhe_imgdiff`
+  compares frame 30 with `tests/golden/sandbox_box.png`. An intended visual
+  change replaces that file with the run's `actual.png` artifact, never with a
+  frame from a local GPU: see `tests/golden/README.md`.
+- **Lint gates the lines a PR changes.** `lint.yml` fails on misformatted
+  changed lines and on `bugprone-*` findings in them. Both tools are pinned
+  (`pip install clang-format==22.1.8 clang-tidy==22.1.8`), because formatting
+  differs between releases; use the same versions locally. Formatting can
+  reorder includes: a header that is not self-contained (`ImGuizmo.h` needs
+  `imgui.h` first) keeps its order inside `// clang-format off`.
 - Sanitizer presets already exist: `cmake --preset sanitizer -DUHE_SANITIZER=<address|thread|undefined>`.
   Binaries land in `bin/Debug-linux-x64-<sanitizer>/`.
