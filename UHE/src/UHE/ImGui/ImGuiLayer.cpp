@@ -37,6 +37,9 @@ namespace UHE
 
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+		// A captured frame must not depend on a layout saved on this machine.
+		if (Application::Get().GetCaptureSettings().CaptureEnabled())
+			io.IniFilename = nullptr;
 		// io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
 		// 

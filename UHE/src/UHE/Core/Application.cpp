@@ -14,6 +14,7 @@
 #include "UHE/Audio/AudioEngine.h"
 
 #include <GLFW/glfw3.h>
+#include <stb_image_write.h>
 
 namespace UHE{
 
@@ -28,6 +29,13 @@ namespace UHE{
 	{   
 		UHE_PROFILE_FUNCTION();
 		UHE_CORE_ASSERT(!s_instance, "Application already exists!");
+		// Before any layer exists: ImGui reads it to skip its .ini, so a
+		// captured frame never depends on a layout saved on this machine.
+		m_Capture = CaptureSettings::FromEnvironment();
+		if (m_Capture.CaptureFrame)
+			UHE_CORE_INFO("[CAPTURE] frame {0} -> {1}", *m_Capture.CaptureFrame, m_Capture.CapturePath);
+		if (m_Capture.FixedTimestep)
+			UHE_CORE_INFO("[CAPTURE] fixed timestep {0} s", *m_Capture.FixedTimestep);
 		
 		s_instance = this;
 		m_Window = std::unique_ptr<Window>(Window::Create(WindowProps(name)));
@@ -139,6 +147,9 @@ namespace UHE{
                 const double time = glfwGetTime();
                 Timestep timestep = static_cast<float>(time - m_LastFrameTime);
                 m_LastFrameTime = time;
+                // A fixed step makes frame N the same scene on every machine.
+                if (m_Capture.FixedTimestep)
+                    timestep = *m_Capture.FixedTimestep;
 
 				if (timestep > 0.25f)
 					timestep = 0.25f;
@@ -160,6 +171,8 @@ namespace UHE{
 					{
 						for (Layer* layer : m_LayerStack)
 							layer->OnUpdate(timestep);
+						++m_RenderedFrames;
+						RequestCaptureIfDue();
 					}
 
 					m_ImGuiLayer->Begin();
@@ -175,6 +188,37 @@ namespace UHE{
 		UHE::Profiler::EndFrame();
     }
     };
+	void Application::RequestCaptureIfDue()
+	{
+		if (m_Capture.CaptureFrame != m_RenderedFrames) // also true when no capture is set
+			return;
+		const bool queued = Renderer::GetDevice().RequestFrameCapture(
+			[this](const RHI::RHIDevice::CapturedFrame& frame) { OnFrameCaptured(frame); });
+		if (!queued)
+		{
+			UHE_CORE_ERROR("[CAPTURE] the device cannot capture frames");
+			m_ExitCode = 1;
+			Close();
+		}
+	}
+
+	void Application::OnFrameCaptured(const RHI::RHIDevice::CapturedFrame& frame)
+	{
+		const int stride = static_cast<int>(frame.Width) * 4;
+		const int ok = stbi_write_png(m_Capture.CapturePath.c_str(), static_cast<int>(frame.Width),
+									  static_cast<int>(frame.Height), 4, frame.Rgba.data(), stride);
+		if (ok)
+		{
+			UHE_CORE_INFO("[CAPTURE] wrote {0} ({1}x{2})", m_Capture.CapturePath, frame.Width, frame.Height);
+		}
+		else
+		{
+			UHE_CORE_ERROR("[CAPTURE] could not write {0}", m_Capture.CapturePath);
+			m_ExitCode = 1;
+		}
+		Close();
+	}
+
 	bool Application::OnWindowClose(WindowCloseEvent& e) 
 	{   
 		m_Running = false;

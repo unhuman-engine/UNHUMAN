@@ -6,6 +6,8 @@
 #include "UHE/Events/ApplicationEvent.h"
 #include "UHE/ImGui/ImGuiLayer.h"
 #include "UHE/Core/Timestep.h"
+#include "UHE/Core/CaptureSettings.h"
+#include "UHE/RHI/RHIDevice.h"
 
 namespace UHE {
 
@@ -26,6 +28,10 @@ namespace UHE {
 		ImGuiLayer* GetImguiLayer() { return m_ImGuiLayer; };
 
 		void Close();
+		/// @brief Process exit code: non-zero when a requested frame capture failed.
+		[[nodiscard]] int GetExitCode() const { return m_ExitCode; }
+		/// @brief The capture/fixed-timestep test hook read at startup.
+		[[nodiscard]] const CaptureSettings& GetCaptureSettings() const { return m_Capture; }
 		//bool OnWindowResize(WindowResizeEvent& e);
 
 		inline Window& GetWindow() { return *m_Window; }
@@ -42,6 +48,13 @@ namespace UHE {
 
 		LayerStack m_LayerStack;
         double m_LastFrameTime = 0.0; ///< @brief glfwGetTime() at the last frame.
+        /// @brief Asks the device for this frame's pixels when it is the one to capture.
+        void RequestCaptureIfDue();
+        /// @brief Writes a captured frame as PNG and ends the run.
+        void OnFrameCaptured(const RHI::RHIDevice::CapturedFrame& frame);
+        CaptureSettings m_Capture;
+        u32 m_RenderedFrames = 0; ///< @brief frames that recorded GPU work (skipped ones excluded)
+        int m_ExitCode = 0;
     private:
 		
 		

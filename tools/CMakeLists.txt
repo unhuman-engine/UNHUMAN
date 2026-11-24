@@ -83,3 +83,11 @@ add_custom_target(uhe_shaders ALL
     COMMENT "Compiling Slang shaders to .spv"
     VERBATIM
 )
+
+# Golden-image comparison for CI (.github/workflows/test-renderer.yml): reads two
+# PNGs with the vendored stb, writes a diff image, exits non-zero on a mismatch.
+add_executable(uhe_imgdiff imgdiff/main.cpp)
+target_include_directories(uhe_imgdiff PRIVATE "${CMAKE_SOURCE_DIR}/UHE/vendor/stb_image")
+if(MSVC)
+    target_compile_options(uhe_imgdiff PRIVATE /utf-8)
+endif()

@@ -1,5 +1,7 @@
 #pragma once
+#include <functional>
 #include <memory>
+#include <vector>
 #include "RHITypes.h"
 #include "UHE/Core/Core.h"
 
@@ -95,6 +97,32 @@ public:
     {
         ReadPixel(handle, x, y, outData);
         return true;
+    }
+
+    /// @brief A presented frame read back to the CPU: tightly packed RGBA8, top row first.
+    struct CapturedFrame
+    {
+        u32 Width = 0;
+        u32 Height = 0;
+        std::vector<u8> Rgba; ///< Width * Height * 4 bytes, sRGB-encoded as presented
+    };
+
+    /**
+     * @brief Copies the image the current frame presents into CPU memory.
+     *
+     * Call between Begin() and End(). End() records the copy after everything
+     * else in the frame (ImGui included), waits for that one submission, and
+     * calls \p onCaptured before it returns. A skipped frame keeps the request
+     * for the next one. This stalls the GPU: it is for tests such as the golden
+     * image check, not for per-frame use.
+     *
+     * @return false when the backend cannot read its swapchain back; \p onCaptured
+     *         is then never called.
+     */
+    virtual bool RequestFrameCapture(std::function<void(const CapturedFrame&)> onCaptured)
+    {
+        (void)onCaptured;
+        return false;
     }
 
     // ── Resource destruction ─────────────────────────────────────────────────
