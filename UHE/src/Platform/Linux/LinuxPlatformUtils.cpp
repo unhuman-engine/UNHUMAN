@@ -15,6 +15,7 @@ namespace UHE {
         std::string RunZenity(const std::string& arguments) {
             std::array<char, 128> buffer;
             std::string result;
+            // NOLINTNEXTLINE(bugprone-command-processor): running zenity is the point; arguments are built here.
             std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(("zenity " + arguments).c_str(), "r"), pclose);
             if (!pipe) return "";
             while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
