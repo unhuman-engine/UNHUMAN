@@ -534,7 +534,7 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
     if (pc.viewMode != kViewModeLit)
     {
         float3 normal = normalize(input.v_Normal);
-        if (!isFrontFace)
+        if (!isFrontFace && pc.foliage.x <= 0.0) // foliage keeps its normals on both sides (grass cards)
             normal = -normal;
         float3 color = baseColor.rgb;
         if (pc.viewMode == kViewModeWireframe)
@@ -580,7 +580,7 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
     if (pc.enableLighting == 1)
     {
         float3 normal = normalize(input.v_Normal);
-        if (!isFrontFace)
+        if (!isFrontFace && pc.foliage.x <= 0.0) // foliage keeps its normals on both sides (grass cards)
         {
             normal = -normal;
             input.v_Tangent = -input.v_Tangent;
@@ -810,7 +810,7 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
             {
                 // The geometric normal, not the mapped one: the offset is about the surface itself.
                 float3 geometricNormal = normalize(input.v_Normal);
-                if (!isFrontFace)
+                if (!isFrontFace && pc.foliage.x <= 0.0) // foliage keeps its normals on both sides (grass cards)
                     geometricNormal = -geometricNormal;
                 radiance *= ShadowFactor(frame, input.v_WorldPos, geometricNormal, L, input.location, cascade);
             }

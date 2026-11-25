@@ -194,10 +194,14 @@ float4 fragmentMain(VSOutput input) : SV_Target0
     float3 offset;
     float3 N;
     Waves(input.flatXZ, offset, N);
-    // Two small ripples for detail the vertex grid cannot carry.
-    const float2 r1 = input.flatXZ * 3.1 + float2(t * 0.6, t * 0.4);
-    const float2 r2 = input.flatXZ * 5.3 - float2(t * 0.5, -t * 0.7);
-    N = normalize(N + float3(cos(r1.x) * 0.04 + cos(r2.y) * 0.025, 0.0, cos(r1.y) * 0.04 + cos(r2.x) * 0.025));
+    // Small ripples for detail the vertex grid cannot carry, along directions
+    // off the world axes so they do not line up into a visible grid.
+    const float2 xz = input.flatXZ;
+    const float r1 = dot(xz, float2(0.80, 0.60)) * 3.1 + t * 0.7;
+    const float r2 = dot(xz, float2(-0.47, 0.88)) * 4.3 - t * 0.6;
+    const float r3 = dot(xz, float2(0.26, -0.97)) * 6.7 + t * 0.9;
+    N = normalize(N + float3(0.80, 0.0, 0.60) * cos(r1) * 0.035 + float3(-0.47, 0.0, 0.88) * cos(r2) * 0.03 +
+                  float3(0.26, 0.0, -0.97) * cos(r3) * 0.02);
 
     const float3 V = normalize(pc.cameraPos.xyz - input.worldPos);
     const float NoV = saturate(dot(N, V));
