@@ -52,6 +52,12 @@ here. Follow them; if a rule is wrong, change it here first.
   `FGContext::Cmd()` and has no Vulkan types; a texture it needs only inside
   the frame is `FGBuilder::Create`, from a pool, not a hand-made attachment
   that has to be resized and destroyed. Handles do not survive the frame.
+- **A target read after the frame is exported, not imported.** The editor's
+  viewport image and picking read its scene colour and entity IDs after the
+  graph ran: those are `FGBuilder::Create` plus `FrameGraph::Export`, fetched
+  each frame with `RHIDevice::GetExportedTexture(name)`. Do not keep the
+  returned texture: a resize replaces it. `Import` is for what the graph does
+  not own (the swapchain, a model's textures).
 - **A frame graph error is a defect.** A graph that fails to translate,
   compile or resolve drops its passes and the frame still presents, so the
   only symptom is a missing scene. Under `UHE_VALIDATION_FATAL` it stops the
