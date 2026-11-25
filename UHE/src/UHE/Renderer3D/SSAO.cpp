@@ -132,6 +132,9 @@ RHI::FGHandle<RHI::FGTexture> SSAO::AddPasses(RHI::FrameGraph& graph, RHI::FGHan
                                               u32 height, const glm::mat4& projection, const SSAOSettings& settings)
 {
     using namespace RHI;
+    // Half resolution: occlusion is soft, and the colour pass upsamples it.
+    const u32 halfWidth = std::max((width + 1) / 2, 1u);
+    const u32 halfHeight = std::max((height + 1) / 2, 1u);
     SSAOPushConstants base;
     base.Projection = projection;
     base.InverseProjection = glm::inverse(projection);
@@ -149,7 +152,7 @@ RHI::FGHandle<RHI::FGTexture> SSAO::AddPasses(RHI::FrameGraph& graph, RHI::FGHan
         [&](FGBuilder& builder, OcclusionData& d)
         {
             d.Depth = builder.Read(depth);
-            d.Raw = builder.Write(builder.Create("SSAO.Raw", {width, height, TextureFormat::R8_UNORM}),
+            d.Raw = builder.Write(builder.Create("SSAO.Raw", {halfWidth, halfHeight, TextureFormat::R8_UNORM}),
                                   FGWrite::RenderTarget);
         },
         [base](const OcclusionData& d, FGContext& context)
@@ -172,7 +175,7 @@ RHI::FGHandle<RHI::FGTexture> SSAO::AddPasses(RHI::FrameGraph& graph, RHI::FGHan
         {
             d.Depth = builder.Read(depth);
             d.Raw = builder.Read(occlusion.Raw);
-            d.Result = builder.Write(builder.Create("SSAO.Result", {width, height, TextureFormat::R8_UNORM}),
+            d.Result = builder.Write(builder.Create("SSAO.Result", {halfWidth, halfHeight, TextureFormat::R8_UNORM}),
                                      FGWrite::RenderTarget);
         },
         [base](const BlurData& d, FGContext& context)

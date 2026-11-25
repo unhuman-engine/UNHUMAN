@@ -10,6 +10,11 @@
 // Mode 1 (blur): a 5x5 blur weighted by depth, so occlusion does not bleed
 // across silhouettes.
 //
+// Both run at half resolution: occlusion is low-frequency, and a quarter of
+// the pixels is a quarter of the cost. Each half-resolution pixel reads the
+// full-resolution depth at its top-left full pixel; the colour pass
+// upsamples the result bilinearly.
+//
 // Depth is read with Load, never filtered: depth formats need not support
 // linear filtering.
 
@@ -129,9 +134,9 @@ float Occlusion(int2 pixel, int2 size)
     return pow(saturate(1.0 - occluded / 16.0), pc.intensity);
 }
 
-float Blur(int2 pixel, int2 size)
+float Blur(int2 pixel, int2 size, int2 depthSize)
 {
-    const float centreDepth = ViewZ(LoadDepth(pixel, size));
+    const float centreDepth = ViewZ(LoadDepth(pixel * 2, depthSize));
     Sampler2D source = u_Textures[NonUniformResourceIndex(pc.sourceTexture)];
     float sum = 0.0;
     float weights = 0.0;
@@ -140,7 +145,7 @@ float Blur(int2 pixel, int2 size)
         for (int x = -2; x <= 2; ++x)
         {
             const int2 p = clamp(pixel + int2(x, y), int2(0, 0), size - 1);
-            const float z = ViewZ(LoadDepth(p, size));
+            const float z = ViewZ(LoadDepth(p * 2, depthSize));
             // Neighbours on another surface (a depth jump) barely count.
             const float w = 1.0 / (1e-3 + abs(z - centreDepth) * 8.0);
             sum += source.Load(int3(p, 0)).r * w;
@@ -155,8 +160,9 @@ float4 fragmentMain(VSOutput input) : SV_Target0
 {
     uint width, height;
     u_Textures[NonUniformResourceIndex(pc.depthTexture)].GetDimensions(width, height);
-    const int2 size = int2(width, height);
+    const int2 depthSize = int2(width, height);
+    const int2 size = (depthSize + 1) / 2; // the half-resolution target
     const int2 pixel = int2(input.position.xy);
-    const float value = pc.mode == 0 ? Occlusion(pixel, size) : Blur(pixel, size);
+    const float value = pc.mode == 0 ? Occlusion(pixel * 2, depthSize) : Blur(pixel, size, depthSize);
     return float4(value, value, value, 1.0);
 }

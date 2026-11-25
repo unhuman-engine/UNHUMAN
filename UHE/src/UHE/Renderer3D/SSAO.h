@@ -9,8 +9,8 @@ namespace UHE
 /**
  * @brief Screen-space ambient occlusion, declared into a FrameGraph (SSAO.slang).
  *
- * Reads the scene's depth prepass and writes an R8 occlusion image at the
- * same size: 1 where ambient light reaches, toward 0 in creases and at
+ * Reads the scene's depth prepass and writes an R8 occlusion image at half
+ * its size: 1 where ambient light reaches, toward 0 in creases and at
  * contacts. Basic3D multiplies its ambient term by it; direct light is left
  * alone, which is what separates it from a darkening post effect.
  */
