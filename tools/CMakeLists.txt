@@ -17,6 +17,7 @@ set(UHE_SHADER_SOURCES
     "${UHE_SHADER_DIR}/Grid.slang"
     "${UHE_SHADER_DIR}/Texture.slang"
     "${UHE_SHADER_DIR}/Text.slang"
+    "${UHE_SHADER_DIR}/Tonemap.slang"
 )
 
 set(UHE_SHADER_DEPENDS ${UHE_SHADER_SOURCES} "${UHE_SHADER_DIR}/variants.txt")
