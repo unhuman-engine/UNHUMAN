@@ -4,6 +4,10 @@
 // buffer). The HDR texture arrives by its bindless slot. ACES filmic (Narkowicz
 // fit) maps scene-referred colour into [0, 1]; the output is linear, and an
 // sRGB render target encodes it.
+//
+// An optional bloom image (Bloom.slang's chain, at half resolution) is mixed
+// in before exposure: it is scene-referred light too, so it goes through the
+// same curve as the rest of the image instead of being added on top of it.
 
 struct VSOutput
 {
@@ -13,8 +17,10 @@ struct VSOutput
 
 struct PushConstants
 {
-    uint hdrTexture; // bindless slot of the HDR scene colour
-    float exposure;  // linear multiplier applied before the curve
+    uint hdrTexture;      // bindless slot of the HDR scene colour
+    float exposure;       // linear multiplier applied before the curve
+    int bloomTexture;     // bindless slot of the bloomed image; -1 = no bloom
+    float bloomIntensity; // share of the bloomed image in the result
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc;
@@ -44,6 +50,12 @@ float3 ACESFilm(float3 x)
 [shader("fragment")]
 float4 fragmentMain(VSOutput input) : SV_Target0
 {
-    const float3 hdr = u_Textures[NonUniformResourceIndex(pc.hdrTexture)].Sample(input.uv).rgb;
+    float3 hdr = u_Textures[NonUniformResourceIndex(pc.hdrTexture)].Sample(input.uv).rgb;
+    if (pc.bloomTexture >= 0)
+    {
+        // Same uv: the linear sampler upsamples the half-resolution bloom.
+        const float3 bloom = u_Textures[NonUniformResourceIndex(uint(pc.bloomTexture))].Sample(input.uv).rgb;
+        hdr = lerp(hdr, bloom, pc.bloomIntensity);
+    }
     return float4(ACESFilm(hdr * pc.exposure), 1.0);
 }
