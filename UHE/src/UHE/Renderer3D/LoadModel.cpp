@@ -877,6 +877,9 @@ void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const gl
             prim.VertexBuffer = srcPrim.VertexBuffer;
             prim.IndexBuffer = srcPrim.IndexBuffer;
             prim.IndexCount = srcPrim.IndexCount;
+            // COLOR_0 lives on the geometry's primitive; without this the
+            // draw never multiplied the vertex colours in.
+            prim.hasVertexColor = srcPrim.hasVertexColor;
             mesh.primitive.push_back(prim);
         }
 
