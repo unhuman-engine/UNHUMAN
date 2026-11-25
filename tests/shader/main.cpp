@@ -29,11 +29,10 @@
 #include <iterator>
 #include <string>
 #include <vector>
-
+#include "UHE/RHI/RHITypes.h"
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer/ShaderReflection.h"
 #include "UHE/Renderer/SlangCompiler.h"
-#include "UHE/RHI/RHITypes.h"
 
 namespace
 {
@@ -140,13 +139,12 @@ int main(int argc, char** argv)
             {
                 const UHE::ShaderVertexInput& input = reflection.VertexInputs[i];
                 const ExpectedAttribute& wanted = kBasic3DVertexLayout[i];
-                check(input.Location == i, std::string("attribute ") + std::to_string(i) + " is at location " +
-                                               std::to_string(i));
-                check(input.Type == wanted.Type, std::string("attribute ") + std::to_string(i) + " (" +
-                                                     wanted.Name + ") has the format the layout declares");
+                check(input.Location == i,
+                      std::string("attribute ") + std::to_string(i) + " is at location " + std::to_string(i));
+                check(input.Type == wanted.Type, std::string("attribute ") + std::to_string(i) + " (" + wanted.Name +
+                                                     ") has the format the layout declares");
             }
-            check(reflection.PushConstantSize == 192,
-                  "the push constant block is 192 bytes, matching the host struct");
+            check(reflection.PushConstantSize == 192, "the push constant block is 192 bytes, matching the host struct");
         }
 
         if (fragmentIt != compiled.end())
@@ -193,8 +191,8 @@ int main(int argc, char** argv)
         // The variant without the entity-id output must be a different module:
         // that difference is the whole reason the variant exists.
         const auto withId = UHE::SlangCompiler::CompileToSPIRV(shaderDir + "/Basic3D.slang");
-        const auto withoutId = UHE::SlangCompiler::CompileToSPIRV(shaderDir + "/Basic3D.slang",
-                                                                  {{"UHE_NO_ENTITY_ID", "1"}});
+        const auto withoutId =
+            UHE::SlangCompiler::CompileToSPIRV(shaderDir + "/Basic3D.slang", {{"UHE_NO_ENTITY_ID", "1"}});
         const auto withIt = withId.find(UHE::RHI::ShaderStage::Fragment);
         const auto withoutIt = withoutId.find(UHE::RHI::ShaderStage::Fragment);
         check(withIt != withId.end() && withoutIt != withoutId.end(), "both fragment variants compile");
@@ -246,8 +244,7 @@ int main(int argc, char** argv)
             check(freshIt != fresh.end(), std::string(artifactCase.source) + " compiles for comparison");
             if (freshIt != fresh.end())
             {
-                check(bytes == freshIt->second,
-                      artifact.filename().string() + " is byte-identical to a fresh compile");
+                check(bytes == freshIt->second, artifact.filename().string() + " is byte-identical to a fresh compile");
             }
         }
 
@@ -289,10 +286,10 @@ int main(int argc, char** argv)
         }
 
         std::vector<u8> written;
-        check(UHE::ReadShaderArtifact(UHE::ShaderArtifactPath(tempDir / "Basic3D.slang", "default",
-                                                              UHE::RHI::ShaderStage::Vertex),
-                                      written),
-              "compiling wrote the vertex artifact");
+        check(
+            UHE::ReadShaderArtifact(
+                UHE::ShaderArtifactPath(tempDir / "Basic3D.slang", "default", UHE::RHI::ShaderStage::Vertex), written),
+            "compiling wrote the vertex artifact");
         check(library.Load((tempDir / "Basic3D.slang").string()) == handle, "a second load is the same handle");
 
         // A second load with the artifact in place takes the fast path.
@@ -305,15 +302,13 @@ int main(int argc, char** argv)
 
         check(library.Poll().empty(), "polling an unchanged source reloads nothing");
 
-        const std::filesystem::path artifact = UHE::ShaderArtifactPath(tempDir / "Basic3D.slang", "default",
-                                                                      UHE::RHI::ShaderStage::Vertex);
+        const std::filesystem::path artifact =
+            UHE::ShaderArtifactPath(tempDir / "Basic3D.slang", "default", UHE::RHI::ShaderStage::Vertex);
         const auto artifactTimeBefore = std::filesystem::last_write_time(artifact, ec);
 
         // Touch the source: the edit is what hot reload exists for.
         std::filesystem::last_write_time(tempDir / "Basic3D.slang",
-                                         std::filesystem::file_time_type::clock::now() +
-                                             std::chrono::seconds(10),
-                                         ec);
+                                         std::filesystem::file_time_type::clock::now() + std::chrono::seconds(10), ec);
 
         const std::vector<UHE::ShaderCache::Handle> polled = library.Poll();
         check(polled.size() == 1, "polling a touched source reports one reload");
@@ -323,8 +318,7 @@ int main(int argc, char** argv)
         check(reloaded != nullptr && reloaded->Stages.size() == 2, "the reload kept both stages");
 
         // And it wrote the artifact back, so the next launch is on the fast path.
-        check(std::filesystem::last_write_time(artifact, ec) > artifactTimeBefore,
-              "the reload rewrote the artifact");
+        check(std::filesystem::last_write_time(artifact, ec) > artifactTimeBefore, "the reload rewrote the artifact");
 
         // A broken edit: reported once, with Slang's message, and the last good
         // stages stay in place.
@@ -356,6 +350,82 @@ int main(int argc, char** argv)
     }
 
     // ─── Malformed input ────────────────────────────────────────────────────
+    // ─── Artifact fallbacks ─────────────────────────────────────────────────
+    // The .spv next to a source is a cache. Whenever it cannot be trusted -
+    // older than the source, missing a stage, or not valid SPIR-V - the load
+    // must fall back to compiling the source, never hand a pipeline half a
+    // shader or garbage.
+    section("artifact fallbacks");
+    {
+        const std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "uhe-shader-fallback-test";
+        std::error_code ec;
+        std::filesystem::remove_all(tempDir, ec);
+        std::filesystem::create_directories(tempDir, ec);
+        const std::filesystem::path source = tempDir / "Basic3D.slang";
+        std::filesystem::copy_file(shaderPath / "Basic3D.slang", source, ec);
+        std::filesystem::copy_file(shaderPath / "variants.txt", tempDir / "variants.txt", ec);
+        const std::filesystem::path vertexSpv =
+            UHE::ShaderArtifactPath(source, "default", UHE::RHI::ShaderStage::Vertex);
+        const std::filesystem::path fragmentSpv =
+            UHE::ShaderArtifactPath(source, "default", UHE::RHI::ShaderStage::Fragment);
+
+        UHE::ShaderCache& library = UHE::ShaderCache::Get();
+        const auto freshLoad = [&]() -> const UHE::ShaderCache::Shader*
+        {
+            library.Clear();
+            return library.Get(library.Load(source.string()));
+        };
+        const auto bothStagesValid = [](const UHE::ShaderCache::Shader* shader)
+        {
+            if (shader == nullptr || shader->Stages.size() != 2)
+                return false;
+            for (const auto& stage : shader->Stages)
+                if (!stage.Reflection.Valid)
+                    return false;
+            return true;
+        };
+
+        // Prime: the first load compiles and writes both artifacts.
+        const UHE::ShaderCache::Shader* primed = freshLoad();
+        check(primed != nullptr && !primed->FromArtifact, "a source without artifacts is compiled");
+        check(std::filesystem::exists(vertexSpv) && std::filesystem::exists(fragmentSpv),
+              "and both stage artifacts are written");
+        const UHE::ShaderCache::Shader* cached = freshLoad();
+        check(cached != nullptr && cached->FromArtifact && bothStagesValid(cached),
+              "with fresh artifacts the load reads them");
+
+        // Stale: the source was edited after the artifacts were written. The
+        // artifacts are aged rather than the source moved into the future, so
+        // the rewrite below is newer than the source again, as in a real edit.
+        const auto sourceTime = std::filesystem::last_write_time(source, ec);
+        std::filesystem::last_write_time(vertexSpv, sourceTime - std::chrono::seconds(10), ec);
+        std::filesystem::last_write_time(fragmentSpv, sourceTime - std::chrono::seconds(10), ec);
+        const UHE::ShaderCache::Shader* stale = freshLoad();
+        check(stale != nullptr && !stale->FromArtifact, "a source newer than its artifact is recompiled");
+        check(bothStagesValid(stale), "and the recompile has both stages");
+        const UHE::ShaderCache::Shader* rewritten = freshLoad();
+        check(rewritten != nullptr && rewritten->FromArtifact, "the recompile refreshed the artifact");
+
+        // Partial: one stage's artifact is gone (a cleaned build, a bad copy).
+        std::filesystem::remove(fragmentSpv, ec);
+        const UHE::ShaderCache::Shader* partial = freshLoad();
+        check(partial != nullptr && !partial->FromArtifact, "a vertex artifact without its fragment is recompiled");
+        check(bothStagesValid(partial), "and the shader still has both stages");
+        check(std::filesystem::exists(fragmentSpv), "the missing artifact is written again");
+
+        // Corrupt: an artifact that is not SPIR-V.
+        {
+            std::ofstream junk(vertexSpv, std::ios::binary | std::ios::trunc);
+            junk << "this is not SPIR-V";
+        }
+        const UHE::ShaderCache::Shader* corrupt = freshLoad();
+        check(corrupt != nullptr && !corrupt->FromArtifact, "an artifact that is not SPIR-V is recompiled");
+        check(bothStagesValid(corrupt), "and the recompile replaces it with valid stages");
+
+        library.Clear();
+        std::filesystem::remove_all(tempDir, ec);
+    }
+
     section("malformed SPIR-V");
     {
         const std::vector<u8> empty;

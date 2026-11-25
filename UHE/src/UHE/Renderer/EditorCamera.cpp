@@ -47,8 +47,9 @@ std::pair<float, float> EditorCamera::PanSpeed() const {
   return {xFactor, yFactor};
 }
 
-float EditorCamera::RotationSpeed() const {
-  return 0.8f * m_SpeedMultiplier;
+float EditorCamera::RotationSpeed() const
+{
+    return 0.8f * m_SpeedMultiplier;
 }
 
 float EditorCamera::ZoomSpeed() const {
@@ -91,10 +92,8 @@ bool EditorCamera::OnMouseScroll(MouseScrolledEvent &e) {
 
 void EditorCamera::MousePan(const glm::vec2 &delta) {
   auto [xSpeed, ySpeed] = PanSpeed();
-  m_FocalPoint +=
-      -GetRightDirection() * delta.x * xSpeed * m_SpeedMultiplier * m_Distance;
-  m_FocalPoint +=
-      GetUpDirection() * delta.y * ySpeed * m_SpeedMultiplier * m_Distance;
+  m_FocalPoint += -GetRightDirection() * delta.x * xSpeed * m_SpeedMultiplier * m_Distance;
+  m_FocalPoint += GetUpDirection() * delta.y * ySpeed * m_SpeedMultiplier * m_Distance;
 }
 
 void EditorCamera::MouseRotate(const glm::vec2 &delta) {
@@ -104,17 +103,19 @@ void EditorCamera::MouseRotate(const glm::vec2 &delta) {
 }
 
 void EditorCamera::MouseZoom(float delta) {
-  m_Distance -= delta * ZoomSpeed() * m_SpeedMultiplier;
-  if (m_Distance < 1.0f) {
-    m_FocalPoint += GetForwardDirection();
-    m_Distance = 1.0f;
-  }
+    m_Distance -= delta * ZoomSpeed() * m_SpeedMultiplier;
+    if (m_Distance < 1.0f)
+    {
+        m_FocalPoint += GetForwardDirection();
+        m_Distance = 1.0f;
+    }
 }
 
-void EditorCamera::FocusOn(const glm::vec3 &point, float distance) {
-  m_FocalPoint = point;
-  m_Distance = distance > 0.25f ? distance : 0.25f;
-  UpdateView();
+void EditorCamera::FocusOn(const glm::vec3& point, float distance)
+{
+    m_FocalPoint = point;
+    m_Distance = distance > 0.25f ? distance : 0.25f;
+    UpdateView();
 }
 
 glm::vec3 EditorCamera::GetUpDirection() const {

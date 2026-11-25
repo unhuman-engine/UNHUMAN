@@ -12,19 +12,18 @@
 // reload restarting an instance, `Enabled = false` pausing one, and the script
 // surviving a scene save/load round trip.
 
-#include "UHE/Scene/Scene.h"
-#include "UHE/Scene/Entity.h"
-#include "UHE/Scene/Components.h"
-#include "UHE/Scene/SceneSerializer.h"
-#include "UHE/Physics/PhysicsSystem3D.h"
-#include "UHE/Scripting/ScriptEngine.h"
-
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include "UHE/Physics/PhysicsSystem3D.h"
+#include "UHE/Scene/Components.h"
+#include "UHE/Scene/Entity.h"
+#include "UHE/Scene/Scene.h"
+#include "UHE/Scene/SceneSerializer.h"
+#include "UHE/Scripting/ScriptEngine.h"
 
 using namespace UHE;
 
@@ -148,8 +147,7 @@ int main(int argc, char** argv)
         check(engine.Run("assert(os == nil)", "sandbox"), "os is not reachable");
         check(engine.Run("assert(package == nil)", "sandbox"), "package is not reachable");
         check(engine.Run("assert(debug == nil)", "sandbox"), "debug is not reachable");
-        check(engine.Run("assert(load == nil and loadfile == nil and dofile == nil and require == nil)",
-                         "sandbox"),
+        check(engine.Run("assert(load == nil and loadfile == nil and dofile == nil and require == nil)", "sandbox"),
               "code loading is not reachable");
 
         // The libraries it does have.
@@ -163,8 +161,7 @@ int main(int argc, char** argv)
     {
         check(engine.Run("local x = 1 + 1", "good_chunk"), "a good chunk runs");
         check(!engine.Run("error('boom')", "bad_chunk"), "a failing chunk reports failure");
-        check(engine.LastError().find("bad_chunk") != std::string::npos,
-              "the error names the chunk it came from");
+        check(engine.LastError().find("bad_chunk") != std::string::npos, "the error names the chunk it came from");
         check(engine.LastError().find("boom") != std::string::npos, "and carries the message");
         check(!engine.RunFile(g_ScriptDir.string() + "/does-not-exist.lua"), "a missing file reports failure");
         check(!engine.LastError().empty(), "and says why");
@@ -201,8 +198,7 @@ function OnUpdate(self, dt) end
 
         Step(scene, 0.5f, 2);
         const glm::vec3 afterTwo = PositionOf(scene, "Mover");
-        check(std::abs(afterTwo.x - 2.0f) < 1e-4f,
-              "OnUpdate ran twice with dt: 2.0 speed * 0.5s * 2 steps");
+        check(std::abs(afterTwo.x - 2.0f) < 1e-4f, "OnUpdate ran twice with dt: 2.0 speed * 0.5s * 2 steps");
         check(std::abs(afterTwo.y) < 1e-4f && std::abs(afterTwo.z) < 1e-4f, "and only moved on x");
 
         // `self` is the instance's own table, so a field written in OnCreate and
@@ -212,22 +208,22 @@ function OnUpdate(self, dt) end
         const glm::vec3 markerBefore = PositionOf(scene, "Marker");
         Entity mover = scene.CreateEntity("Lookup");
         (void)mover;
-        scene.DestroyEntity([&]
-                            {
-                                auto view = scene.GetRegistry().view<TagComponent>();
-                                for (const entt::entity handle : view)
-                                {
-                                    if (view.get<TagComponent>(handle).Tag == "Mover")
-                                    {
-                                        return Entity{handle, &scene};
-                                    }
-                                }
-                                return Entity{};
-                            }());
+        scene.DestroyEntity(
+            [&]
+            {
+                auto view = scene.GetRegistry().view<TagComponent>();
+                for (const entt::entity handle : view)
+                {
+                    if (view.get<TagComponent>(handle).Tag == "Mover")
+                    {
+                        return Entity{handle, &scene};
+                    }
+                }
+                return Entity{};
+            }());
 
         const glm::vec3 markerAfter = PositionOf(scene, "Marker");
-        check(std::abs(markerAfter.y - (markerBefore.y + 1.0f)) < 1e-4f,
-              "OnDestroy ran when the entity was destroyed");
+        check(std::abs(markerAfter.y - (markerBefore.y + 1.0f)) < 1e-4f, "OnDestroy ran when the entity was destroyed");
         check(engine.InstanceCount() == 1, "the destroyed entity's instance was released");
         check(HasEntity(scene, "Lookup"), "the scene still has its other entities");
     }
@@ -262,7 +258,8 @@ end
         Step(scene, 0.1f, 2);
 
         check(entity.GetComponent<TagComponent>().Tag == "Renamed", "SetName reached the tag");
-        check(std::abs(entity.GetComponent<TransformComponent>().Scale.x - 2.0f) < 1e-4f, "SetScale reached the transform");
+        check(std::abs(entity.GetComponent<TransformComponent>().Scale.x - 2.0f) < 1e-4f,
+              "SetScale reached the transform");
         check(HasEntity(scene, "Child"), "Spawn created an entity");
         check(std::abs(PositionOf(scene, "Child").x - 5.0f) < 1e-4f, "and the script positioned it");
         check(entity.GetComponent<IDComponent>().ID != 0 && engine.ErroredInstanceCount() == 0,
@@ -427,7 +424,8 @@ Entities:
         ProjectionType: 0
 )");
         const std::string notYaml = write("not_yaml.unhuman", "Scene: [unclosed\n  - {");
-        const std::string wrongType = write("wrong_type.unhuman", "Scene: Untitled\nEntities:\n  - Entity: not-a-number\n");
+        const std::string wrongType =
+            write("wrong_type.unhuman", "Scene: Untitled\nEntities:\n  - Entity: not-a-number\n");
 
         Ref<Scene> scene = CreateRef<Scene>();
         check(!SceneSerializer(scene).Deserialize(missingField), "a missing component field returns false");
@@ -601,8 +599,10 @@ function OnCreate(self) Find("Counter"):Translate(0, 1, 0) end
     section("each errored instance keeps its own error");
     {
         Scene scene;
-        SpawnScripted(scene, "FailsFirst", WriteScript("fails_first.lua", "function OnCreate(self) error('first') end\n"));
-        SpawnScripted(scene, "FailsSecond", WriteScript("fails_second.lua", "function OnCreate(self) error('second') end\n"));
+        SpawnScripted(scene, "FailsFirst",
+                      WriteScript("fails_first.lua", "function OnCreate(self) error('first') end\n"));
+        SpawnScripted(scene, "FailsSecond",
+                      WriteScript("fails_second.lua", "function OnCreate(self) error('second') end\n"));
         Start(scene);
         for (const ScriptEngine::InstanceInfo& info : engine.Instances(scene))
         {
@@ -648,19 +648,48 @@ function OnCreate(self) Find("Counter"):Translate(0, 1, 0) end
         check(engine.Run("local n = 0 for _ in pairs(math) do n = n + 1 end assert(n > 10)", "pairs_math"),
               "a read-only library still iterates");
 
+        // Every way back to a shared table must stay read-only. pairs() hands
+        // out its iteration state, and if that state is the real library the
+        // proxy is bypassed: one script could then rewrite string.upper for all.
+        engine.Run("local _, state = pairs(string) "
+                   "pcall(function() state.upper = function() return 'patched' end end)",
+                   "escape_pairs");
+        check(engine.Run("assert(string.upper('a') == 'A')", "string_intact"),
+              "pairs() does not expose a writable library table");
+        check(engine.Run("assert(('a'):upper() == 'A')", "method_intact"), "string methods are intact as well");
+        engine.Run("pcall(function() local mt = getmetatable(math) mt.__newindex = nil end)", "escape_mt");
+        check(!engine.Run("math.floor = nil", "patch_after_mt"), "a proxy's metatable cannot be reached to unlock it");
+
         Scene scene;
         SpawnScripted(scene, "Writer",
                       WriteScript("writer.lua", "_G.Shared = 42\n"
                                                 "Log = nil\n"
+                                                // Every route back to a shared table, each tried quietly:
+                                                // iteration state, the environment's metatable, and the
+                                                // proxy it falls back to.
+                                                "local function try(f) pcall(f) end\n"
+                                                "local _, s = pairs(string)\n"
+                                                "try(function() s.upper = function() return 'patched' end end)\n"
+                                                "local mt = getmetatable(_G)\n"
+                                                "if type(mt) == 'table' then\n"
+                                                "  local shared = mt.__index\n"
+                                                "  try(function() shared.math = nil end)\n"
+                                                "  try(function() local _, g = pairs(shared) g.math = nil end)\n"
+                                                "  try(function() setmetatable(shared, nil) end)\n"
+                                                "end\n"
                                                 "function OnCreate(self) end\n"));
         SpawnScripted(scene, "Reader",
-                      WriteScript("reader.lua", "function OnCreate(self)\n"
-                                                "  assert(Shared == nil, 'saw another script global')\n"
-                                                "  assert(Log ~= nil, 'lost the Log API')\n"
-                                                "  assert(getmetatable(self) == false, 'reached the methods table')\n"
-                                                "end\n"));
+                      WriteScript("reader.lua",
+                                  "function OnCreate(self)\n"
+                                  "  assert(Shared == nil, 'saw another script global')\n"
+                                  "  assert(Log ~= nil, 'lost the Log API')\n"
+                                  "  assert(getmetatable(self) == false, 'reached the methods table')\n"
+                                  "  assert(string.upper('a') == 'A', 'string library was patched')\n"
+                                  "  assert(math ~= nil and math.floor(2.5) == 2, 'shared math was removed')\n"
+                                  "end\n"));
         Start(scene);
         check(engine.ErroredInstanceCount() == 0, "one script's globals are invisible to another");
+        check(engine.ErroredInstanceCount() == 0, "and no route through pairs or metatables reaches shared tables");
         engine.OnSceneStop(scene);
     }
 

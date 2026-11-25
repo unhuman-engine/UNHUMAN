@@ -116,3 +116,70 @@ jobs:
             tail -n 50 editor.log || true
             exit 1
           fi
+
+      # Visual regression: render a fixed frame of the Sandbox on lavapipe and
+      # compare it with the reference in tests/golden/. The smoke runs above
+      # prove the engine renders *something* without a validation error; this
+      # proves it renders the *right* thing. UHE_FIXED_TIMESTEP makes frame N
+      # the same scene on every run, and UHE_CAPTURE_FRAME reads that frame back
+      # from the swapchain, writes it as PNG and exits (UHE/src/UHE/Core/CaptureSettings.h).
+      - name: Golden image (Sandbox, lavapipe)
+        shell: bash
+        run: |
+          OUT_DIR="$PWD/bin/Debug-linux-x64-address"
+          GOLDEN="$PWD/tests/golden/sandbox_box.png"
+          RESULTS="$PWD/golden-results"
+          mkdir -p "$RESULTS"
+
+          export VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          [ -n "$VK_ICD_FILENAMES" ] || { echo "Lavapipe ICD not found"; exit 1; }
+          export UHE_VALIDATION_FATAL=1
+          export UHE_FIXED_TIMESTEP=0.016666667
+          export UHE_CAPTURE_FRAME=30
+          export UHE_CAPTURE_PATH="$RESULTS/actual.png"
+          # The run ends with a normal exit, which is where LeakSanitizer would
+          # report the vendors' process-lifetime allocations; leaks are the
+          # sanitizer jobs' business, pixels are this step's.
+          export ASAN_OPTIONS="detect_leaks=0"
+
+          # The window is 1920x1080 and the screen must hold it, or the
+          # swapchain (and the golden image) would take the screen's size.
+          Xvfb :98 -screen 0 1920x1080x24 &
+          XVFB_PID=$!
+          trap 'kill $XVFB_PID 2>/dev/null || true' EXIT
+          export DISPLAY=:98
+          for i in $(seq 1 50); do [ -S /tmp/.X11-unix/X98 ] && break; sleep 0.2; done
+
+          set +e
+          (cd "$OUT_DIR" && timeout 300s ./Sandbox > "$RESULTS/sandbox.log" 2>&1)
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "Sandbox exited with $rc before writing its frame:"
+            tail -n 60 "$RESULTS/sandbox.log"
+            exit 1
+          fi
+          # A capture from a run without layers would be compared, but nothing
+          # would have checked the frame that produced it.
+          grep -qF "[VALIDATION] enabled" "$RESULTS/sandbox.log" || { echo "Validation layers were not enabled"; exit 1; }
+          grep -F "[CAPTURE]" "$RESULTS/sandbox.log"
+          test -s "$RESULTS/actual.png" || { echo "No frame was captured"; exit 1; }
+
+          if [ ! -f "$GOLDEN" ]; then
+            echo "No reference at tests/golden/sandbox_box.png."
+            echo "Download the 'golden-image' artifact, check actual.png by eye and commit it there."
+            exit 1
+          fi
+          "$OUT_DIR/uhe_imgdiff" "$GOLDEN" "$RESULTS/actual.png" --diff "$RESULTS/diff.png"
+
+      # On a mismatch: actual.png is what this commit renders, diff.png marks
+      # the differing pixels red. If the change is intended, actual.png is the
+      # new reference.
+      - name: Upload golden-image results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-image
+          path: golden-results/
+          retention-days: 14
+          if-no-files-found: ignore

@@ -11,6 +11,14 @@ void VulkanSwapChain::createSwapChain(vk::raii::Device& device, vk::raii::Physic
     swapChainSurfaceFormat = chooseSwapSurfaceFormat(physicalDevice.getSurfaceFormatsKHR(*surface));
     auto SurfaceFormats = physicalDevice.getSurfaceFormatsKHR(*surface);
 
+    // Transfer-source lets RequestFrameCapture copy a presented image back
+    // (golden-image tests). Only asked for where the surface offers it.
+    vk::ImageUsageFlags imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+    supportsTransferSrc =
+        static_cast<bool>(SurfaceCapabilities.supportedUsageFlags & vk::ImageUsageFlagBits::eTransferSrc);
+    if (supportsTransferSrc)
+        imageUsage |= vk::ImageUsageFlagBits::eTransferSrc;
+
     vk::SwapchainCreateInfoKHR swapChainCreateInfo{
         .flags = {},
         .surface = *surface,
@@ -19,7 +27,7 @@ void VulkanSwapChain::createSwapChain(vk::raii::Device& device, vk::raii::Physic
         .imageColorSpace = swapChainSurfaceFormat.colorSpace,
         .imageExtent = swapChainExtent,
         .imageArrayLayers = 1,
-        .imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
+        .imageUsage = imageUsage,
         .imageSharingMode = vk::SharingMode::eExclusive,
         .queueFamilyIndexCount = {},
         .pQueueFamilyIndices = {},
@@ -27,8 +35,7 @@ void VulkanSwapChain::createSwapChain(vk::raii::Device& device, vk::raii::Physic
         .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
         .presentMode = chooseSwapPresentMode(physicalDevice.getSurfacePresentModesKHR(*surface)),
         .clipped = VK_TRUE,
-        .oldSwapchain = {}
-    };
+        .oldSwapchain = {}};
 
     swapChain = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
     swapChainImages = swapChain.getImages();

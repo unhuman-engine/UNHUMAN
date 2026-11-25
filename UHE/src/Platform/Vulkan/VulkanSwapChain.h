@@ -33,6 +33,8 @@ public:
     [[nodiscard]] vk::raii::ImageView& GetImageView(u32 index) { return swapChainImageViews[index]; }
     [[nodiscard]] const vk::Extent2D& GetExtent() const { return swapChainExtent; }
     [[nodiscard]] vk::SurfaceFormatKHR& GetSurfaceFormat() { return swapChainSurfaceFormat; }
+    /// @brief true when the images were created with transfer-source usage (frame capture).
+    [[nodiscard]] bool SupportsTransferSrc() const { return supportsTransferSrc; }
 
 private:
     vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities, GLFWwindow* window);
@@ -46,6 +48,7 @@ private:
     vk::SurfaceFormatKHR swapChainSurfaceFormat;
     vk::Extent2D swapChainExtent;
     std::vector<vk::raii::ImageView> swapChainImageViews;
+    bool supportsTransferSrc = false;
     vk::raii::Sampler textureSampler = nullptr;
     vk::raii::ImageView textureImageView = nullptr;
 };

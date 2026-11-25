@@ -1,14 +1,11 @@
-#include <uhepch.h>
 #include "Log.h"
-
-#include "UHE/AssetsManager/VfsSystem.h"
-
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/sinks/basic_file_sink.h>
-
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <uhepch.h>
+#include "UHE/AssetsManager/VfsSystem.h"
 
 namespace UHE {
 	std::shared_ptr<spdlog::logger> Log::s_CoreLogger;

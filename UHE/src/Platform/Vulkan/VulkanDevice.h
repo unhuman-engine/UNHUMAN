@@ -55,6 +55,7 @@ public:
 
     void ReadPixel(TextureHandle handle, int x, int y, void* outData) override;
     bool ReadPixelAsync(TextureHandle handle, int x, int y, void* outData) override;
+    bool RequestFrameCapture(std::function<void(const CapturedFrame&)> onCaptured) override;
 
     void DestroyBuffer(BufferHandle handle) override;
     void DestroyTexture(TextureHandle handle) override;
@@ -139,6 +140,11 @@ private:
     void RecordPixelReadback(vk::raii::CommandBuffer& cmd);
     /// @brief Takes the result of this slot's previous copy; its fence has passed.
     void CollectPixelReadback();
+    /// @brief Records the copy of the presented image a capture asked for.
+    /// @return true when a copy was recorded and must be collected after submit.
+    bool RecordFrameCapture(vk::raii::CommandBuffer& cmd);
+    /// @brief Waits for this frame's submission and hands the pixels to the callback.
+    void CollectFrameCapture();
 
     // ─── Immediate Submission (Uploads) ───────────────────────────
 
@@ -210,6 +216,18 @@ private:
     };
     std::optional<PixelRequest> m_PixelRequest;
     std::optional<u32> m_LastPixel; ///< newest collected value
+
+    /// @brief A pending RequestFrameCapture and the staging buffer of its copy.
+    struct FrameCapture
+    {
+        std::function<void(const CapturedFrame&)> Callback;
+        vk::Buffer Buffer = nullptr;
+        VmaAllocation Allocation = VK_NULL_HANDLE;
+        u32 Width = 0;
+        u32 Height = 0;
+        bool SwapRedBlue = false; ///< the swapchain is BGRA
+    };
+    FrameCapture m_FrameCapture;
 
     // Immediate submit context
     vk::raii::Fence m_UploadFence = nullptr;

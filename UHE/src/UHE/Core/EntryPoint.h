@@ -8,11 +8,12 @@ int main(int argc, char** argv)
 {
     UHE::FileSystem::Get().Initialize(argv[0]);
     UHE::CommandLine::Init(argc, argv);
-	UHE::Log::Init();
+    UHE::Log::Init();
     auto app = UHE::CreateApplication();
     
     app->Run();
 
+    const int exitCode = app->GetExitCode();
     delete app;
-    return 0;
+    return exitCode;
 }

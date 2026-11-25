@@ -1,13 +1,11 @@
 #include "uhepch.h"
 #include "ShaderCache.h"
-
-#include "UHE/Renderer/SlangCompiler.h"
-
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <fstream>
 #include <system_error>
+#include "UHE/Renderer/SlangCompiler.h"
 
 namespace UHE
 {
@@ -87,9 +85,8 @@ std::vector<ShaderVariant> LoadShaderVariants(const std::filesystem::path& shade
                 while (start <= rest.size())
                 {
                     const std::size_t semicolon = rest.find(';', start);
-                    const std::string define =
-                        Trim(rest.substr(start, semicolon == std::string::npos ? std::string::npos
-                                                                              : semicolon - start));
+                    const std::string define = Trim(
+                        rest.substr(start, semicolon == std::string::npos ? std::string::npos : semicolon - start));
                     if (!define.empty())
                     {
                         const std::size_t equals = define.find('=');
@@ -99,7 +96,8 @@ std::vector<ShaderVariant> LoadShaderVariants(const std::filesystem::path& shade
                         }
                         else
                         {
-                            variant.Defines.emplace_back(Trim(define.substr(0, equals)), Trim(define.substr(equals + 1)));
+                            variant.Defines.emplace_back(Trim(define.substr(0, equals)),
+                                                         Trim(define.substr(equals + 1)));
                         }
                     }
                     if (semicolon == std::string::npos)
@@ -133,8 +131,7 @@ std::vector<ShaderVariant> LoadShaderVariants(const std::filesystem::path& shade
 std::filesystem::path ShaderArtifactPath(const std::filesystem::path& sourcePath, const std::string& variant,
                                          RHI::ShaderStage stage)
 {
-    const std::string name =
-        sourcePath.stem().string() + "." + StageName(stage) + "." + variant + ".spv";
+    const std::string name = sourcePath.stem().string() + "." + StageName(stage) + "." + variant + ".spv";
     return sourcePath.parent_path() / name;
 }
 
@@ -216,8 +213,8 @@ ShaderCache::Handle ShaderCache::Load(const std::string& sourcePath, const std::
     }
 
     const std::vector<ShaderVariant> variants = LoadShaderVariants(source.parent_path());
-    const auto variantIt = std::find_if(variants.begin(), variants.end(), [&](const ShaderVariant& candidate)
-                                        { return candidate.Name == variant; });
+    const auto variantIt = std::find_if(variants.begin(), variants.end(),
+                                        [&](const ShaderVariant& candidate) { return candidate.Name == variant; });
     if (variantIt == variants.end())
     {
         UHE_CORE_ERROR("Shader '{0}': variant '{1}' is not declared in variants.txt", Describe(source), variant);
@@ -265,6 +262,9 @@ bool ShaderCache::LoadInto(Entry& entry, const std::filesystem::path& source, co
     std::vector<ShaderStageBinary> fromArtifact;
     bool anyArtifact = false;
     bool staleArtifact = false;
+    bool invalidArtifact = false;
+    bool hasVertex = false;
+    bool hasFragment = false;
     for (const RHI::ShaderStage stage : kStages)
     {
         const std::filesystem::path path = ShaderArtifactPath(source, variant.Name, stage);
@@ -283,10 +283,28 @@ bool ShaderCache::LoadInto(Entry& entry, const std::filesystem::path& source, co
         binary.Stage = stage;
         binary.SPIRV = std::move(bytes);
         binary.Reflection = ReflectSPIRV(binary.SPIRV);
+        if (!binary.Reflection.Valid)
+        {
+            invalidArtifact = true;
+        }
+        hasVertex = hasVertex || stage == RHI::ShaderStage::Vertex;
+        hasFragment = hasFragment || stage == RHI::ShaderStage::Fragment;
         fromArtifact.push_back(std::move(binary));
     }
 
-    if (anyArtifact && !staleArtifact)
+    // The artifacts are a cache, trusted only when complete and well formed. A
+    // graphics shader needs vertex and fragment together: loading one without
+    // the other hands the pipeline half a shader. A file that is not valid
+    // SPIR-V (truncated copy, disk error) would reach pipeline creation as
+    // garbage. Either way, compiling the source rebuilds the artifacts.
+    const bool incompleteArtifact = hasVertex != hasFragment;
+    if (anyArtifact && (incompleteArtifact || invalidArtifact))
+    {
+        UHE_CORE_WARN("Shader '{0}' [{1}]: {2} artifact, compiling the source instead", Describe(source), variant.Name,
+                      invalidArtifact ? "invalid" : "incomplete");
+    }
+
+    if (anyArtifact && !staleArtifact && !incompleteArtifact && !invalidArtifact)
     {
         entry.Data.Stages = std::move(fromArtifact);
         entry.Data.FromArtifact = true;
@@ -354,8 +372,7 @@ void ShaderCache::RefreshTimestamps(Entry& entry)
     entry.ArtifactTime = std::filesystem::file_time_type{};
     for (const ShaderStageBinary& binary : entry.Data.Stages)
     {
-        const std::filesystem::path path =
-            ShaderArtifactPath(entry.Data.SourcePath, entry.Data.Variant, binary.Stage);
+        const std::filesystem::path path = ShaderArtifactPath(entry.Data.SourcePath, entry.Data.Variant, binary.Stage);
         entry.ArtifactTime = std::max(entry.ArtifactTime, ModificationTime(path));
     }
 }
@@ -418,13 +435,12 @@ std::vector<ShaderCache::Handle> ShaderCache::Poll()
         if (newest > entry.ArtifactTime)
         {
             Entry replacement;
-            if (LoadInto(replacement, source, ShaderVariant{.Name = entry.Data.Variant,
-                                                            .Defines = entry.Data.Defines}))
+            if (LoadInto(replacement, source, ShaderVariant{.Name = entry.Data.Variant, .Defines = entry.Data.Defines}))
             {
                 replacement.Data.ReloadCount = entry.Data.ReloadCount + 1;
                 entry = std::move(replacement);
-                UHE_CORE_INFO("Shader '{0}' [{1}] reloaded from the rebuilt artifact",
-                              Describe(source), entry.Data.Variant);
+                UHE_CORE_INFO("Shader '{0}' [{1}] reloaded from the rebuilt artifact", Describe(source),
+                              entry.Data.Variant);
                 for (const auto& listener : m_Listeners)
                 {
                     listener(handle);
@@ -449,8 +465,8 @@ u32 ShaderCache::ReloadAll()
         }
 
         Entry& entry = it->second;
-        if (CompileInto(entry, entry.Data.SourcePath, ShaderVariant{.Name = entry.Data.Variant,
-                                                                   .Defines = entry.Data.Defines}))
+        if (CompileInto(entry, entry.Data.SourcePath,
+                        ShaderVariant{.Name = entry.Data.Variant, .Defines = entry.Data.Defines}))
         {
             ++entry.Data.ReloadCount;
         }

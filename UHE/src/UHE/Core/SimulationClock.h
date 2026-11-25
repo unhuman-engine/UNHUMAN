@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-
 #include "UHE/Core/Core.h"
 
 namespace UHE
@@ -63,10 +62,7 @@ public:
     /// Ticks completed since the clock started (or was Reset).
     [[nodiscard]] std::uint64_t GetTickIndex() const { return m_TickIndex; }
     /// Simulated time: tick index times the fixed step.
-    [[nodiscard]] double GetSimulatedSeconds() const
-    {
-        return static_cast<double>(m_TickIndex) * GetFixedStep();
-    }
+    [[nodiscard]] double GetSimulatedSeconds() const { return static_cast<double>(m_TickIndex) * GetFixedStep(); }
 
 private:
     std::int64_t m_StepNs = 0;

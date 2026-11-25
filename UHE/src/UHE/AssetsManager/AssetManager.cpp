@@ -1,15 +1,16 @@
 #include "AssetManager.h"
-#include "UHE/Core/Log.h"
-#include "UHE/Jobsystem/Jobsystem.h"
 #include <chrono>
 #include <fstream>
+#include "UHE/Core/Log.h"
+#include "UHE/Jobsystem/Jobsystem.h"
 
 namespace UHE
 {
 
 // ---- built-in GPU-free loaders ---------------------------------------------
 
-namespace {
+namespace
+{
 
 class TextLoader : public IAssetLoader
 {
@@ -91,8 +92,7 @@ std::shared_ptr<AssetRecord> AssetManager::CreateRecord(const std::string& path,
     return record;
 }
 
-template <class T>
-AssetHandle<T> AssetManager::Load(std::string_view path)
+template <class T> AssetHandle<T> AssetManager::Load(std::string_view path)
 {
     constexpr AssetType type = AssetTraits<T>::Type;
     std::shared_ptr<AssetRecord> record;
@@ -143,8 +143,7 @@ AssetHandle<T> AssetManager::Load(std::string_view path)
     return AssetHandle<T>(record);
 }
 
-template <class T>
-AssetHandle<T> AssetManager::LoadAsync(std::string_view path, LoadCallback onDone)
+template <class T> AssetHandle<T> AssetManager::LoadAsync(std::string_view path, LoadCallback onDone)
 {
     constexpr AssetType type = AssetTraits<T>::Type;
     std::shared_ptr<AssetRecord> record;
@@ -208,21 +207,21 @@ AssetHandle<T> AssetManager::LoadAsync(std::string_view path, LoadCallback onDon
     // main thread's acquire load sees the decoded data.
     std::weak_ptr<AssetRecord> weak = record;
     std::string pathCopy = record->sourcePath;
-    m_Jobs->Execute([weak, pathCopy]()
-    {
-        auto locked = weak.lock();
-        if (!locked)
-            return;
-        Ref<void> data = locked->loader ? locked->loader->LoadFromFile(pathCopy) : nullptr;
-        locked->data = data;
-        locked->state.store(data ? LoadState::Ready : LoadState::Failed, std::memory_order_release);
-    });
+    m_Jobs->Execute(
+        [weak, pathCopy]()
+        {
+            auto locked = weak.lock();
+            if (!locked)
+                return;
+            Ref<void> data = locked->loader ? locked->loader->LoadFromFile(pathCopy) : nullptr;
+            locked->data = data;
+            locked->state.store(data ? LoadState::Ready : LoadState::Failed, std::memory_order_release);
+        });
 
     return AssetHandle<T>(record);
 }
 
-template <class T>
-AssetHandle<T> AssetManager::Get(AssetID id)
+template <class T> AssetHandle<T> AssetManager::Get(AssetID id)
 {
     std::scoped_lock lock(m_Mutex);
     auto it = m_Registry.find(id);
@@ -327,8 +326,7 @@ void AssetManager::Update()
         for (auto it = m_PendingCallbacks.begin(); it != m_PendingCallbacks.end();)
         {
             auto recordIt = m_Registry.find(it->first);
-            bool terminal = recordIt == m_Registry.end() ||
-                            recordIt->second->finalized.load(std::memory_order_acquire);
+            bool terminal = recordIt == m_Registry.end() || recordIt->second->finalized.load(std::memory_order_acquire);
             if (terminal)
             {
                 bool success = recordIt != m_Registry.end() &&

@@ -1,6 +1,5 @@
 #include "uhepch.h"
 #include "ShaderResources.h"
-
 #include <algorithm>
 
 namespace UHE
@@ -23,8 +22,8 @@ const char* StageLabel(RHI::ShaderStage stage)
 }
 } // namespace
 
-RHI::ShaderHandle CreateStageShader(RHI::RHIDevice& device, const ShaderCache::Shader& shader,
-                                    RHI::ShaderStage stage, const char* debugName)
+RHI::ShaderHandle CreateStageShader(RHI::RHIDevice& device, const ShaderCache::Shader& shader, RHI::ShaderStage stage,
+                                    const char* debugName)
 {
     const ShaderStageBinary* binary = shader.FindStage(stage);
     if (binary == nullptr || binary->SPIRV.empty())

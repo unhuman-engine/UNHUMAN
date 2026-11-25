@@ -5,15 +5,15 @@
 #include "Components.h"
 #include "Entity.h"
 #include "ScriptableEntity.h"
-#include "UHE/Scripting/ScriptEngine.h"
-#include "UHE/Core/UUID.h"
-#include "UHE/Renderer/Renderer2D.h"
-#include "UHE/Renderer3D/Renderer3D.h"
-#include "UHE/Renderer3D/AnimationStateMachine.h"
-#include "UHE/Renderer2D/SubTexture2D.h"
-#include "UHE/Renderer3D/LightSystem.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Audio/AudioEngine.h"
+#include "UHE/Core/UUID.h"
+#include "UHE/Renderer/Renderer2D.h"
+#include "UHE/Renderer2D/SubTexture2D.h"
+#include "UHE/Renderer3D/AnimationStateMachine.h"
+#include "UHE/Renderer3D/LightSystem.h"
+#include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Scripting/ScriptEngine.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
@@ -411,10 +411,13 @@ void Scene::AttachChildEntity(Entity child, Entity parent)
 void Scene::DestroyEntity(Entity entity)
 {
     std::unordered_set<u64> visited;
-    auto destroyRecursive = [&](Entity e, auto& self) -> void {
-        if (!e || !m_registry.valid(e)) return;
+    auto destroyRecursive = [&](Entity e, auto& self) -> void
+    {
+        if (!e || !m_registry.valid(e))
+            return;
         u64 uuid = e.GetUUID();
-        if (visited.find(uuid) != visited.end()) return;
+        if (visited.find(uuid) != visited.end())
+            return;
         visited.insert(uuid);
 
         // A Lua script's instance holds the entity handle: stop it while the
@@ -424,7 +427,8 @@ void Scene::DestroyEntity(Entity entity)
             ScriptEngine::Get().OnEntityDestroyed(*this, static_cast<u32>(static_cast<entt::id_type>(e)));
             // OnDestroy may have destroyed this entity itself (self:Destroy()),
             // through a nested DestroyEntity that already did the rest.
-            if (!m_registry.valid(e)) return;
+            if (!m_registry.valid(e))
+                return;
         }
 
         // Issue #17 lifetime fix: destroy the script instance (OnDestroy + delete)
@@ -945,8 +949,7 @@ void Scene::StepAnimators(Timestep ts)
                 anim.GraphRuntime = BuildStateMachine(anim.Graph);
                 anim.GraphRuntimeHash = graphHash;
 
-                const int entry =
-                    std::clamp(anim.Graph.EntryState, 0, static_cast<int>(anim.Graph.States.size()) - 1);
+                const int entry = std::clamp(anim.Graph.EntryState, 0, static_cast<int>(anim.Graph.States.size()) - 1);
                 const AnimationGraphState& entryState = anim.Graph.States[static_cast<std::size_t>(entry)];
                 anim.GraphRuntime->Enter(entryState.Name, *anim.Animator, 0.0f);
                 if (!entryState.Clip.empty())
@@ -1553,8 +1556,7 @@ void Scene::RenderRuntimeScene(Timestep ts)
             const glm::quat rotation = glm::slerp(glm::quat(previous.Rotation), glm::quat(current.Rotation), alpha);
             const glm::vec3 scale = glm::mix(previous.Scale, current.Scale, alpha);
             m_RenderLocalOverride.emplace(entity, glm::translate(glm::mat4(1.0f), translation) *
-                                                      glm::mat4_cast(rotation) *
-                                                      glm::scale(glm::mat4(1.0f), scale));
+                                                      glm::mat4_cast(rotation) * glm::scale(glm::mat4(1.0f), scale));
         }
     }
     UpdateWorldTransformCache();
@@ -1804,7 +1806,7 @@ template <> void Scene::OnComponentAdded<CameraComponent>(Entity entity, CameraC
     // A scene can be created/deserialized before its viewport size is known;
     // glm::perspective asserts on a zero aspect, so never hand it 0x0.
     component.Camera.SetViewportSize(m_ViewportWidth > 0 ? m_ViewportWidth : 1,
-                                      m_ViewportHeight > 0 ? m_ViewportHeight : 1);
+                                     m_ViewportHeight > 0 ? m_ViewportHeight : 1);
 }
 
 template <> void Scene::OnComponentAdded<TagComponent>(Entity entity, TagComponent& component) {}

@@ -1,17 +1,16 @@
 // Project system harness: creates, loads, saves and mounts a project, and checks
 // that asset paths resolve through the project ("game:") and engine ("engine:")
 // mounts. No GPU, no ImGui.
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include "UHE/AssetsManager/AssetImport.h"
 #include "UHE/AssetsManager/Project.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
-
-#include <array>
-#include <cstdio>
-#include <filesystem>
-#include <algorithm>
-#include <fstream>
-#include <string>
 
 namespace fs = std::filesystem;
 using namespace UHE;
@@ -43,8 +42,7 @@ int main()
     const fs::path gameRoot = sandbox / "GameSnake";
     ProjectInfo snake;
     std::string error;
-    Check(Project::Create(gameRoot, "GameSnake", snake, &error),
-          "create: a new project is written");
+    Check(Project::Create(gameRoot, "GameSnake", snake, &error), "create: a new project is written");
     Check(error.empty(), "create: no error reported");
     Check(fs::exists(gameRoot / Project::kManifestName), "create: manifest exists");
     Check(fs::is_directory(gameRoot / Project::kAssetFolderName), "create: Assets folder exists");
@@ -151,7 +149,8 @@ int main()
         // without a name); Broken has a corrupt manifest and is skipped.
         Check(Project::ScanFolder(sandbox, found) == 3, "scan: finds every project in a folder");
         Check(Project::ScanFolder(sandbox, found) == 0, "scan: a second scan of the same folder adds nothing");
-        Check(Project::ScanFolder(sandbox / "GameSnake", found) == 0, "scan: a project is not itself a folder of projects");
+        Check(Project::ScanFolder(sandbox / "GameSnake", found) == 0,
+              "scan: a project is not itself a folder of projects");
         Check(Project::ScanFolder(sandbox / "does_not_exist", found) == 0, "scan: a missing folder adds nothing");
         Check(found.size() == 3, "scan: the list stays deduplicated");
         Check(std::none_of(found.begin(), found.end(), [](const ProjectInfo& info) { return info.Name == "Broken"; }),

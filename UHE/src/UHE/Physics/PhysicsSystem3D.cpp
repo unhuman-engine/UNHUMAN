@@ -193,7 +193,7 @@ void PhysicsSystem3D::InitializeScene()
     // A second play session on the same scene must not leak the first world.
     ShutdownScene();
 
-    m_TempAllocator = new JPH::TempAllocatorImpl(10 * 1024 * 1024);
+    m_TempAllocator = new JPH::TempAllocatorImpl(size_t{10} * 1024 * 1024);
     m_JobSystem = SharedJobSystem(); // borrowed, never deleted here
 
     m_BPLayerInterface = new BPLayerInterfaceImpl();

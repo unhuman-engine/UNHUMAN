@@ -1,10 +1,9 @@
 #pragma once
-#include "UHE/Core/Core.h"
-#include "UHE/Core/Timestep.h"
-
 #include <memory>
 #include <string>
 #include <vector>
+#include "UHE/Core/Core.h"
+#include "UHE/Core/Timestep.h"
 
 struct lua_State;
 
@@ -99,13 +98,13 @@ public:
     /// What one attached script is doing, for the editor's Scripts panel.
     struct InstanceInfo
     {
-        u32 EntityId = 0;      ///< entt handle as an integer, for selection
+        u32 EntityId = 0; ///< entt handle as an integer, for selection
         std::string EntityName;
         std::string Path;
         bool Started = false;
         bool Errored = false;
         u32 ReloadCount = 0;
-        std::string Error;     ///< the last failure, empty while healthy
+        std::string Error; ///< the last failure, empty while healthy
     };
 
     /// \returns one entry per instance belonging to \p scene, in entity order.

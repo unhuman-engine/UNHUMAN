@@ -3,28 +3,35 @@
 // scene logic under test never needs a real backend. Each stub mirrors the
 // exact signature declared in the engine headers so the harness links the
 // real Scene/Physics translation units.
+#include <mutex>
+#include "UHE/Audio/AudioEngine.h"
+#include "UHE/Core/input.h"
+#include "UHE/Renderer/EditorCamera.h"
+#include "UHE/Renderer/Font.h"
 #include "UHE/Renderer/Renderer2D.h"
-#include "UHE/Renderer3D/Renderer3D.h"
-#include "UHE/Renderer3D/LoadModel.h"
+#include "UHE/Renderer/Texture.h"
+#include "UHE/Renderer2D/SubTexture2D.h"
 #include "UHE/Renderer3D/Animator.h"
 #include "UHE/Renderer3D/LightSystem.h"
-#include "UHE/Renderer/EditorCamera.h"
-#include "UHE/Renderer2D/SubTexture2D.h"
-#include "UHE/Renderer/Texture.h"
-#include "UHE/Renderer/Font.h"
-#include "UHE/Core/input.h"
-#include "UHE/Audio/AudioEngine.h"
-
-#include <mutex>
+#include "UHE/Renderer3D/LoadModel.h"
+#include "UHE/Renderer3D/Renderer3D.h"
 
 namespace UHE
 {
 // Input is read through GLFW, which needs a window this harness does not have.
 // The scripting bindings check for a context first, so these only have to link.
-bool Input::IsKeyPressed(int) { return false; }
-bool Input::IsMouseButtonPressed(int) { return false; }
-std::pair<float, float> Input::GetMousePosition() { return {0.0f, 0.0f}; }
-
+bool Input::IsKeyPressed(int)
+{
+    return false;
+}
+bool Input::IsMouseButtonPressed(int)
+{
+    return false;
+}
+std::pair<float, float> Input::GetMousePosition()
+{
+    return {0.0f, 0.0f};
+}
 
 // ---- Renderer2D (all submission paths; nothing is drawn headless) ----
 void Renderer2D::Init() {}
@@ -103,7 +110,10 @@ void Animator::UpdateAnimation(f32) {}
 void Animator::SetSkin(i32) {}
 void Animator::PlayAnimation(const std::string&) {}
 void Animator::CrossFade(const std::string&, float) {}
-float Animator::GetNormalizedTime() const { return 0.0f; }
+float Animator::GetNormalizedTime() const
+{
+    return 0.0f;
+}
 std::vector<LightData> LightSystem::ExtractLights(entt::registry&) { return {}; }
 Model::~Model()
 {
@@ -125,14 +135,26 @@ namespace UHE::Audio
 void AudioEngine::Init() {}
 void AudioEngine::Shutdown() {}
 void AudioEngine::Update() {}
-SoundHandle AudioEngine::Play(const std::string&, const SoundOptions&) { return 0; }
-SoundHandle AudioEngine::PlaySound2D(const std::string&, float, bool) { return 0; }
+SoundHandle AudioEngine::Play(const std::string&, const SoundOptions&)
+{
+    return 0;
+}
+SoundHandle AudioEngine::PlaySound2D(const std::string&, float, bool)
+{
+    return 0;
+}
 void AudioEngine::Stop(SoundHandle) {}
 void AudioEngine::Pause(SoundHandle) {}
 void AudioEngine::Resume(SoundHandle) {}
 void AudioEngine::StopAll() {}
-bool AudioEngine::IsPlaying(SoundHandle) { return false; }
-bool AudioEngine::IsValid(SoundHandle) { return false; }
+bool AudioEngine::IsPlaying(SoundHandle)
+{
+    return false;
+}
+bool AudioEngine::IsValid(SoundHandle)
+{
+    return false;
+}
 void AudioEngine::SetVolume(SoundHandle, float) {}
 void AudioEngine::SetPitch(SoundHandle, float) {}
 void AudioEngine::SetPan(SoundHandle, float) {}
@@ -141,7 +163,13 @@ void AudioEngine::SetLooping(SoundHandle, bool) {}
 void AudioEngine::SetMinMaxDistance(SoundHandle, float, float) {}
 void AudioEngine::SetRolloff(SoundHandle, float) {}
 void AudioEngine::SetMasterVolume(float) {}
-float AudioEngine::GetMasterVolume() { return 1.0f; }
+float AudioEngine::GetMasterVolume()
+{
+    return 1.0f;
+}
 void AudioEngine::SetListenerPosition(const glm::vec3&, const glm::vec3&, const glm::vec3&) {}
-std::vector<ActiveVoice> AudioEngine::GetActiveVoices() { return {}; }
+std::vector<ActiveVoice> AudioEngine::GetActiveVoices()
+{
+    return {};
+}
 } // namespace UHE::Audio

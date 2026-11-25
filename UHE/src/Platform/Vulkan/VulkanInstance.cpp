@@ -3,7 +3,6 @@
 #include "uhepch.h"
 #include "VulkanInstance.h"
 #include <volk.h>
-
 #include "Platform/Vulkan/ValidationGate.h"
 
 std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
@@ -149,8 +148,7 @@ VulkanInstance::debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
     // frame, and only the first occurrence is worth reading.
     static Validation::RepeatFilter filter;
 
-    const std::string key =
-        Validation::MessageKey(pCallbackData->pMessageIdName, pCallbackData->messageIdNumber);
+    const std::string key = Validation::MessageKey(pCallbackData->pMessageIdName, pCallbackData->messageIdNumber);
     const Validation::RepeatVerdict verdict = filter.Observe(key);
     if (verdict == Validation::RepeatVerdict::Suppressed)
     {

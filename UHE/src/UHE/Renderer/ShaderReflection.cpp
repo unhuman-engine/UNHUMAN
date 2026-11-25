@@ -1,6 +1,5 @@
 #include "uhepch.h"
 #include "ShaderReflection.h"
-
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -103,13 +102,13 @@ struct TypeInfo
     };
 
     Kind Which = Kind::Unknown;
-    u32 ComponentType = 0;  // vector/matrix element, pointer pointee
-    u32 Count = 0;          // vector components, matrix columns
-    u32 Width = 0;          // int/float bit width
-    bool Signed = false;    // int
-    u32 StorageClass = 0;   // pointer
-    u32 LengthId = 0;       // array
-    u32 Sampled = 0;        // image: 0 unknown, 1 sampled, 2 storage
+    u32 ComponentType = 0; // vector/matrix element, pointer pointee
+    u32 Count = 0;         // vector components, matrix columns
+    u32 Width = 0;         // int/float bit width
+    bool Signed = false;   // int
+    u32 StorageClass = 0;  // pointer
+    u32 LengthId = 0;      // array
+    u32 Sampled = 0;       // image: 0 unknown, 1 sampled, 2 storage
     std::vector<u32> Members;
 };
 
@@ -344,17 +343,17 @@ struct Reader
             switch (type->Count)
             {
                 case 2:
-                    return scalar == RHI::ShaderDataType::Float    ? RHI::ShaderDataType::Float2
-                           : scalar == RHI::ShaderDataType::Int    ? RHI::ShaderDataType::Int2
-                                                                   : RHI::ShaderDataType::None;
+                    return scalar == RHI::ShaderDataType::Float ? RHI::ShaderDataType::Float2
+                           : scalar == RHI::ShaderDataType::Int ? RHI::ShaderDataType::Int2
+                                                                : RHI::ShaderDataType::None;
                 case 3:
-                    return scalar == RHI::ShaderDataType::Float    ? RHI::ShaderDataType::Float3
-                           : scalar == RHI::ShaderDataType::Int    ? RHI::ShaderDataType::Int3
-                                                                   : RHI::ShaderDataType::None;
+                    return scalar == RHI::ShaderDataType::Float ? RHI::ShaderDataType::Float3
+                           : scalar == RHI::ShaderDataType::Int ? RHI::ShaderDataType::Int3
+                                                                : RHI::ShaderDataType::None;
                 case 4:
-                    return scalar == RHI::ShaderDataType::Float    ? RHI::ShaderDataType::Float4
-                           : scalar == RHI::ShaderDataType::Int    ? RHI::ShaderDataType::Int4
-                                                                   : RHI::ShaderDataType::None;
+                    return scalar == RHI::ShaderDataType::Float ? RHI::ShaderDataType::Float4
+                           : scalar == RHI::ShaderDataType::Int ? RHI::ShaderDataType::Int4
+                                                                : RHI::ShaderDataType::None;
                 default:
                     return RHI::ShaderDataType::None;
             }
@@ -475,8 +474,8 @@ bool ParseInstructions(const u32* words, std::size_t wordCount, Reader& reader, 
             case OpExecutionModeId:
                 if (operandCount >= 2)
                 {
-                    reader.ExecutionModes.emplace_back(
-                        operand[0], std::vector<u32>(operand + 1, operand + operandCount));
+                    reader.ExecutionModes.emplace_back(operand[0],
+                                                       std::vector<u32>(operand + 1, operand + operandCount));
                 }
                 break;
 
@@ -775,10 +774,10 @@ ShaderReflection ReflectSPIRV(const void* data, std::size_t size)
                 reflection.PushConstantSize = reader.SizeOf(variable.TypeId, 0, false, 0);
             }
             reflection.Bindings.push_back(ShaderBinding{.Set = 0,
-                                                         .Binding = 0,
-                                                         .Kind = ShaderResourceKind::PushConstant,
-                                                         .Name = reader.NameOf(id),
-                                                         .ArraySize = 0});
+                                                        .Binding = 0,
+                                                        .Kind = ShaderResourceKind::PushConstant,
+                                                        .Name = reader.NameOf(id),
+                                                        .ArraySize = 0});
             continue;
         }
 
@@ -797,8 +796,7 @@ ShaderReflection ReflectSPIRV(const void* data, std::size_t size)
                 continue;
             }
             reflection.VertexInputs.push_back(ShaderVertexInput{.Location = decoration.Location,
-                                                                .Type = reader.VertexFormat(
-                                                                    pointerType->ComponentType),
+                                                                .Type = reader.VertexFormat(pointerType->ComponentType),
                                                                 .Name = reader.NameOf(id)});
             continue;
         }
@@ -811,12 +809,12 @@ ShaderReflection ReflectSPIRV(const void* data, std::size_t size)
             continue;
         }
 
-        reflection.Bindings.push_back(ShaderBinding{
-            .Set = decoration.DescriptorSet,
-            .Binding = decoration.Binding,
-            .Kind = reader.BindingKindOf(variable.StorageClass, variable.TypeId),
-            .Name = reader.NameOf(id),
-            .ArraySize = reader.ArraySizeOf(variable.TypeId)});
+        reflection.Bindings.push_back(
+            ShaderBinding{.Set = decoration.DescriptorSet,
+                          .Binding = decoration.Binding,
+                          .Kind = reader.BindingKindOf(variable.StorageClass, variable.TypeId),
+                          .Name = reader.NameOf(id),
+                          .ArraySize = reader.ArraySizeOf(variable.TypeId)});
     }
 
     std::sort(reflection.VertexInputs.begin(), reflection.VertexInputs.end(),

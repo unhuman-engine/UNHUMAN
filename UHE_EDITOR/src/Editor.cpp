@@ -453,8 +453,8 @@ bool Editor::OnFileDrop(WindowFileDropEvent& e)
 
     const glm::vec2& viewportMin = m_ViewPortBounds[0];
     const glm::vec2& viewportMax = m_ViewPortBounds[1];
-    const bool overViewport = e.GetX() >= viewportMin.x && e.GetX() <= viewportMax.x &&
-                              e.GetY() >= viewportMin.y && e.GetY() <= viewportMax.y;
+    const bool overViewport = e.GetX() >= viewportMin.x && e.GetX() <= viewportMax.x && e.GetY() >= viewportMin.y &&
+                              e.GetY() <= viewportMax.y;
 
     for (const std::filesystem::path& file : imported)
     {
@@ -480,8 +480,8 @@ bool Editor::CreateEntityFromAsset(const std::filesystem::path& assetPath)
         return false;
 
     // Components store project-relative paths so the scene stays portable.
-    const std::string storedPath = m_Project ? MakeAssetRelativePath(assetPath, m_Project->AssetPath)
-                                             : assetPath.generic_string();
+    const std::string storedPath =
+        m_Project ? MakeAssetRelativePath(assetPath, m_Project->AssetPath) : assetPath.generic_string();
     const std::string extension = assetPath.extension().string();
     const std::string name = assetPath.stem().string();
 
@@ -614,8 +614,8 @@ void Editor::FocusSelectedEntity()
     const glm::mat4 world = m_ActiveScene->GetWorldSpaceTransformMatrix(selected);
     const glm::vec3 position(world[3]);
     const TransformComponent& transform = selected.GetComponent<TransformComponent>();
-    const float extent = std::max({std::abs(transform.Scale.x), std::abs(transform.Scale.y),
-                                   std::abs(transform.Scale.z)});
+    const float extent =
+        std::max({std::abs(transform.Scale.x), std::abs(transform.Scale.y), std::abs(transform.Scale.z)});
 
     m_EditorCamera.FocusOn(position, glm::clamp(4.0f * extent, 1.5f, 200.0f));
 }
@@ -717,8 +717,7 @@ void Editor::PollTransformUndo()
     }
 
     const bool changed = m_TransformBaseline.Translation != current.Translation ||
-                         m_TransformBaseline.Rotation != current.Rotation ||
-                         m_TransformBaseline.Scale != current.Scale;
+                         m_TransformBaseline.Rotation != current.Rotation || m_TransformBaseline.Scale != current.Scale;
     if (!changed)
         return;
 
@@ -808,7 +807,6 @@ void Editor::RedoTransform()
     m_UndoStack.clear();
     Notify(NotificationCenter::Kind::Info, "Nothing to redo");
 }
-
 
 bool Editor::onKeyPressed(KeyPressedEvent& e)
 {
@@ -1011,14 +1009,18 @@ void Editor::SetProject(ProjectInfo info)
     m_ContentBrowserPanel.SetBaseDirectory(m_Project->AssetPath);
 
     const std::filesystem::path startScene = Project::StartScenePath(*m_Project);
+    // Read before opening the scene: the messages below must not depend on
+    // the scene calls leaving m_Project alone.
+    const std::string projectName = m_Project->Name;
+    const std::string projectRoot = m_Project->RootPath.string();
     std::error_code ec;
     if (!startScene.empty() && std::filesystem::is_regular_file(startScene, ec))
         OpenScene(startScene, false);
     else
         NewScene(false);
 
-    UHE_CORE_INFO("Opened project '{0}' ({1})", m_Project->Name, m_Project->RootPath.string());
-    Notify(NotificationCenter::Kind::Success, "Project opened", m_Project->Name);
+    UHE_CORE_INFO("Opened project '{0}' ({1})", projectName, projectRoot);
+    Notify(NotificationCenter::Kind::Success, "Project opened", projectName);
 }
 
 void Editor::CloseProject()
@@ -1252,8 +1254,7 @@ void Editor::SaveSceneAs()
         SceneSerializer serializer(m_ActiveScene);
         serializer.Serialize(filepath);
         m_CurrentScenePath = filepath;
-        Notify(NotificationCenter::Kind::Success, "Scene saved",
-               std::filesystem::path(filepath).filename().string());
+        Notify(NotificationCenter::Kind::Success, "Scene saved", std::filesystem::path(filepath).filename().string());
     }
 }
 
@@ -1594,8 +1595,7 @@ void Editor::DrawViewportOverlay(const ImVec2& imageMin, const ImVec2& imageMax)
         const float rounding = (badgeMax.y - badgeMin.y) * 0.5f;
 
         draw->AddRectFilled(badgeMin, badgeMax, IM_COL32(12, 12, 16, 165), rounding);
-        draw->AddRect(badgeMin, badgeMax, ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.55f)),
-                      rounding);
+        draw->AddRect(badgeMin, badgeMax, ImGui::GetColorU32(ImVec4(accent.x, accent.y, accent.z, 0.55f)), rounding);
         draw->AddCircleFilled(ImVec2(badgeMin.x + 9.0f, (badgeMin.y + badgeMax.y) * 0.5f), 3.0f,
                               ImGui::GetColorU32(accent));
         draw->AddText(ImVec2(badgeMin.x + 15.0f, badgeMin.y + 3.5f), IM_COL32(238, 238, 242, 255), text);
@@ -1647,21 +1647,18 @@ void Editor::DrawViewportOverlay(const ImVec2& imageMin, const ImVec2& imageMax)
         const ImVec2 warnMax(warnMin.x + textSize.x + 24.0f, warnMin.y + textSize.y + 10.0f);
         draw->AddRectFilled(warnMin, warnMax, IM_COL32(60, 20, 18, 220), 6.0f);
         draw->AddRect(warnMin, warnMax, ImGui::GetColorU32(EditorTheme::Danger()), 6.0f);
-        draw->AddText(ImVec2(warnMin.x + 12.0f, warnMin.y + 5.0f),
-                      ImGui::GetColorU32(EditorTheme::Warning()), warning);
+        draw->AddText(ImVec2(warnMin.x + 12.0f, warnMin.y + 5.0f), ImGui::GetColorU32(EditorTheme::Warning()), warning);
     }
 
     DrawAxisGizmo(draw, ImVec2(imageMin.x + 48.0f, imageMax.y - 48.0f), 30.0f);
 
     // Interactive camera controls, anchored to the top-right corner. Submitted
     // last so it sits above the docked viewport window.
-    ImGui::SetNextWindowPos(ImVec2(imageMax.x - 10.0f, imageMin.y + 8.0f), ImGuiCond_Always,
-                            ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowPos(ImVec2(imageMax.x - 10.0f, imageMin.y + 8.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
     ImGui::SetNextWindowBgAlpha(0.82f);
     const ImGuiWindowFlags controlFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                                           ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove |
-                                          ImGuiWindowFlags_NoFocusOnAppearing |
-                                          ImGuiWindowFlags_AlwaysAutoResize;
+                                          ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
     ImGui::Begin("##ViewportControls", nullptr, controlFlags);
@@ -1724,8 +1721,8 @@ void Editor::DrawAxisGizmo(ImDrawList* draw, const ImVec2& center, float radius)
         draw->AddCircleFilled(endpoints[axisIndex], 4.0f, ImGui::GetColorU32(axis.Color), 12);
 
         const ImVec2 labelOffset(endpoints[axisIndex].x - center.x, endpoints[axisIndex].y - center.y);
-        const float labelLength = std::max(std::sqrt(labelOffset.x * labelOffset.x + labelOffset.y * labelOffset.y),
-                                           0.001f);
+        const float labelLength =
+            std::max(std::sqrt(labelOffset.x * labelOffset.x + labelOffset.y * labelOffset.y), 0.001f);
         const ImVec2 labelPosition(endpoints[axisIndex].x + labelOffset.x / labelLength * 8.0f - 3.0f,
                                    endpoints[axisIndex].y + labelOffset.y / labelLength * 8.0f - 7.0f);
         draw->AddText(labelPosition, ImGui::GetColorU32(axis.Color), axis.Label);
@@ -1739,10 +1736,7 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
 
     auto add = [&commands](std::string label, std::string category, std::string shortcut, bool enabled,
                            std::function<void()> action)
-    {
-        commands.push_back({std::move(label), std::move(category), std::move(shortcut), enabled,
-                            std::move(action)});
-    };
+    { commands.push_back({std::move(label), std::move(category), std::move(shortcut), enabled, std::move(action)}); };
 
     add("New Scene", "File", "Ctrl+N", true, [this] { NewScene(); });
     add("Open Scene...", "File", "Ctrl+O", true, [this] { OpenScene(); });
@@ -1750,8 +1744,8 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
     add("Open Project...", "File", "", true,
         [this]
         {
-            const std::string folder = FileDialogs::SelectFolder("Open Project",
-                                                                 std::filesystem::current_path().string());
+            const std::string folder =
+                FileDialogs::SelectFolder("Open Project", std::filesystem::current_path().string());
             if (!folder.empty() && !OpenProject(folder))
                 m_ProjectLauncher.SetMessage("Could not open '" + folder + "'");
         });
@@ -1759,8 +1753,7 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
 
     add("Undo Transform", "Edit", "Ctrl+Z", !m_UndoStack.empty(), [this] { UndoTransform(); });
     add("Redo Transform", "Edit", "Ctrl+Shift+Z", !m_RedoStack.empty(), [this] { RedoTransform(); });
-    add("Delete Selected Entity", "Edit", "Del", m_SceneState == SceneState::Edit,
-        [this] { DeleteSelectedEntity(); });
+    add("Delete Selected Entity", "Edit", "Del", m_SceneState == SceneState::Edit, [this] { DeleteSelectedEntity(); });
     add("Preferences...", "Edit", "Ctrl+,", true, [this] { m_ShowPreferences = true; });
     add("About UHE", "Help", "F1", true, [this] { m_ShowAbout = true; });
 
@@ -1798,8 +1791,8 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
     {
         const auto theme = static_cast<EditorTheme::EditorThemeId>(i);
         const bool selected = EditorTheme::GetSelected() == theme;
-        add(std::string("Theme: ") + EditorTheme::GetName(theme), "Appearance", selected ? "current" : "",
-            !selected, [theme] { EditorTheme::SetSelected(theme); });
+        add(std::string("Theme: ") + EditorTheme::GetName(theme), "Appearance", selected ? "current" : "", !selected,
+            [theme] { EditorTheme::SetSelected(theme); });
     }
 
     // Scene entities are listed as a convenience: picking one selects it and
@@ -1841,7 +1834,8 @@ void Editor::DrawMainMenuBar()
         ImGui::Separator();
         if (ImGui::MenuItem("Open Project..."))
         {
-            const std::string folder = FileDialogs::SelectFolder("Open Project", std::filesystem::current_path().string());
+            const std::string folder =
+                FileDialogs::SelectFolder("Open Project", std::filesystem::current_path().string());
             if (!folder.empty() && !OpenProject(folder))
                 m_ProjectLauncher.SetMessage("Could not open '" + folder + "'");
         }
@@ -2160,8 +2154,7 @@ void Editor::DrawStatusBar()
     ImGui::TextDisabled("Entities: %zu", m_ActiveScene ? m_ActiveScene->GetRegistry().view<entt::entity>().size() : 0);
 
     ImGui::SameLine(0.0f, 12.0f);
-    if (m_SceneHireacyPanel.GetSelectedEntity() &&
-        m_SceneHireacyPanel.GetSelectedEntity().HasComponent<TagComponent>())
+    if (m_SceneHireacyPanel.GetSelectedEntity() && m_SceneHireacyPanel.GetSelectedEntity().HasComponent<TagComponent>())
         ImGui::TextDisabled("Selected: %s",
                             m_SceneHireacyPanel.GetSelectedEntity().GetComponent<TagComponent>().Tag.c_str());
     else if (m_HoverdEntity && m_HoverdEntity.HasComponent<TagComponent>())
