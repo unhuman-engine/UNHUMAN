@@ -6,6 +6,7 @@ namespace UHE
 namespace
 {
 std::vector<std::string> s_Args;
+std::string s_Executable; ///< argv[0]
 
 // Normalizes "-x" / "--x" to "x" so both spellings match.
 std::string_view NormalizeFlag(std::string_view arg)
@@ -19,6 +20,7 @@ std::string_view NormalizeFlag(std::string_view arg)
 void CommandLine::Init(int argc, char** argv)
 {
     s_Args.clear();
+    s_Executable = argc > 0 && argv != nullptr && argv[0] != nullptr ? argv[0] : "";
     if (argc <= 1 || argv == nullptr)
         return;
 
@@ -28,6 +30,11 @@ void CommandLine::Init(int argc, char** argv)
         if (argv[i] != nullptr)
             s_Args.emplace_back(argv[i]);
     }
+}
+
+const std::string& CommandLine::GetExecutable()
+{
+    return s_Executable;
 }
 
 const std::vector<std::string>& CommandLine::GetArgs()

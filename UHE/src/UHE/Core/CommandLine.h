@@ -18,7 +18,10 @@ class UHE_API CommandLine
 public:
     static void Init(int argc, char** argv);
 
+    /// @brief The arguments after the executable's own path.
     [[nodiscard]] static const std::vector<std::string>& GetArgs();
+    /// @brief argv[0]: how the executable was started (relative or absolute); empty before Init.
+    [[nodiscard]] static const std::string& GetExecutable();
 
     [[nodiscard]] static bool HasFlag(const char* name);
 
