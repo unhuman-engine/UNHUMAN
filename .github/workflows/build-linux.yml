@@ -3,6 +3,8 @@ name: Build Linux
 on:
   push:
     branches: [ main, master ]
+    # A version tag (v0.2.0) also publishes the packages as a GitHub Release.
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   # Allow manual trigger from GitHub Actions tab
@@ -12,6 +14,8 @@ jobs:
   build-linux:
     # LunarG only publishes apt packages up to noble (24.04); ubuntu-latest moves past it.
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # attaching the packages to a release on a version tag
 
     steps:
       - name: Checkout repository
@@ -29,7 +33,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
-            libxi-dev libwayland-dev libxkbcommon-dev libfreetype6-dev
+            libxi-dev libwayland-dev libxkbcommon-dev libfreetype6-dev \
+            mesa-vulkan-drivers xvfb
 
       - name: Install Vulkan SDK
         run: |
@@ -84,26 +89,60 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build -L unit --output-on-failure
 
-      - name: Prepare artifact
+      # The editor bundle (editor, runtime, tools, assets, example projects)
+      # and PondDemo exported as a game, each as a folder and a .zip. The zips
+      # are what is uploaded: they keep the executables' permissions.
+      - name: Package
+        run: python script/package.py --bin bin/Release-linux-x64 --out dist --zip
+
+      # The exported game has to run on its own: copied out of the source
+      # tree, on lavapipe, it must reach its scene and draw frames without an
+      # error and without compiling a shader (it ships none to compile).
+      - name: Exported game runs outside the repo (lavapipe)
         run: |
-          OUT_DIR="bin/Release-linux-x64"
-          ARTIFACT_DIR="release-package"
-          mkdir -p $ARTIFACT_DIR
+          GAME="$RUNNER_TEMP/game"
+          unzip -q dist/PondDemo-linux-x64.zip -d "$GAME"
+          cd "$GAME/PondDemo-linux-x64"
+          echo "Libraries the game needs from the system:"
+          ldd ./PondDemo | grep -v "$PWD" || true
+          export VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          export UHE_FIXED_TIMESTEP=0.016666667
+          export UHE_CAPTURE_FRAME=5
+          export UHE_CAPTURE_PATH="$GITHUB_WORKSPACE/dist/PondDemo-frame.png"
+          set +e
+          timeout 300s xvfb-run --auto-servernum -s "-screen 0 1280x720x24" \
+            ./PondDemo -width 960 -height 540 > game.log 2>&1
+          rc=$?
+          set -e
+          cp game.log "$GITHUB_WORKSPACE/dist/PondDemo-run.log"
+          if [ "$rc" -ne 0 ]; then echo "The game exited with $rc:"; tail -n 60 game.log; exit 1; fi
+          grep -F "Runtime: playing" game.log || { echo "The game never reached its scene"; tail -n 60 game.log; exit 1; }
+          if grep -E "\[error\]|: compiling" game.log; then echo "The game logged errors or compiled shaders"; exit 1; fi
+          test -s "$UHE_CAPTURE_PATH" || { echo "No frame was captured"; exit 1; }
 
-          # Copy all executables and shared libraries from the output directory
-          if [ -d "$OUT_DIR" ]; then
-            cp -r $OUT_DIR/* $ARTIFACT_DIR/
-          fi
-
-          # Copy editor assets alongside the executable
-          if [ -d "UHE_EDITOR/assets" ]; then
-            mkdir -p $ARTIFACT_DIR/assets
-            cp -r UHE_EDITOR/assets/* $ARTIFACT_DIR/assets/
-          fi
-
-      - name: Upload Linux Build
+      - name: Upload editor
         uses: actions/upload-artifact@v4
         with:
           name: UHE-Editor-Linux-x64
-          path: release-package/
+          path: dist/UHE-Editor-linux-x64.zip
           retention-days: 30
+
+      - name: Upload exported PondDemo
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: PondDemo-Linux-x64
+          path: |
+            dist/PondDemo-linux-x64.zip
+            dist/PondDemo-frame.png
+            dist/PondDemo-run.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/UHE-Editor-linux-x64.zip
+            dist/PondDemo-linux-x64.zip

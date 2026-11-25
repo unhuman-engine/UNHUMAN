@@ -6,7 +6,8 @@
 // --all-assets copies every file, for a game that builds asset paths at run time.
 // The same GameExporter as the editor's File > Export Game. Defaults: the
 // runtime from this tool's own folder (the build's bin directory) and the
-// engine assets from UHE_EDITOR/assets of the source tree it was built from.
+// engine assets beside it (a packaged editor), else UHE_EDITOR/assets of the
+// source tree it was built from.
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -54,7 +55,15 @@ int main(int argc, char** argv)
     UHE::ExportOptions options;
     options.OutputDir = out;
     options.RuntimeDir = runtimeDir.empty() ? fs::absolute(argv[0]).parent_path() : fs::path(runtimeDir);
-    options.EngineAssets = engineAssets.empty() ? fs::path(UHE_ENGINE_ASSETS) : fs::path(engineAssets);
+    options.EngineAssets = engineAssets;
+    if (options.EngineAssets.empty())
+    {
+        // A packaged editor keeps the assets next to its tools; a build tree
+        // has them in the source tree it was built from.
+        std::error_code ec;
+        const fs::path beside = options.RuntimeDir / "assets";
+        options.EngineAssets = fs::is_directory(beside / "shaders", ec) ? beside : fs::path(UHE_ENGINE_ASSETS);
+    }
     options.AllAssets = allAssets;
     const UHE::ExportReport report = UHE::GameExporter::Export(info, options);
     for (const std::string& message : report.Warnings)
