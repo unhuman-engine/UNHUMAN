@@ -96,3 +96,4 @@ target_include_directories(uhe_imgdiff PRIVATE "${CMAKE_SOURCE_DIR}/UHE/vendor/s
 if(MSVC)
     target_compile_options(uhe_imgdiff PRIVATE /utf-8)
 endif()
+add_subdirectory(export)

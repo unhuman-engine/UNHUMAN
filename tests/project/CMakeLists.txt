@@ -10,6 +10,7 @@ add_executable(project_test
     # Real units under test
     ${PROJECT_SRC_DIR}/AssetsManager/AssetImport.cpp
     ${PROJECT_SRC_DIR}/AssetsManager/Project.cpp
+    ${PROJECT_SRC_DIR}/AssetsManager/GameExporter.cpp
     ${PROJECT_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${PROJECT_SRC_DIR}/Core/CommandLine.cpp
 )

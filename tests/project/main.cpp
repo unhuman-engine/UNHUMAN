@@ -8,6 +8,7 @@
 #include <fstream>
 #include <string>
 #include "UHE/AssetsManager/AssetImport.h"
+#include "UHE/AssetsManager/GameExporter.h"
 #include "UHE/AssetsManager/Project.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
@@ -206,6 +207,71 @@ int main()
             }
         }
         Check(exampleCount >= 2, "examples: the shipped starter projects are present");
+    }
+
+    // ── export a game ───────────────────────────────────────────────────────
+    {
+        // A stand-in build: the runtime, a shared library and an unrelated tool.
+        const fs::path bin = sandbox / "bin";
+        WriteFile(bin / "UHE_RUNTIME", "runtime");
+        WriteFile(bin / "UHE_RUNTIME.exe", "runtime");
+        WriteFile(bin / "libUHE.so", "lib");
+        WriteFile(bin / "libslang.so.1", "lib");
+        WriteFile(bin / "uhe_shaderc", "tool");
+        const fs::path engine = sandbox / "engine_assets";
+        WriteFile(engine / "shaders/Basic3D.slang", "source");
+        WriteFile(engine / "shaders/Basic3D.vertex.default.spv", "spirv");
+        WriteFile(engine / "shaders/variants.txt", "default:");
+        WriteFile(engine / "fonts/Inter.ttf", "font");
+
+        const fs::path gameRoot2 = sandbox / "Pond Demo";
+        ProjectInfo pond;
+        Check(Project::Create(gameRoot2, "Pond Demo", pond, &error), "export: a project to export");
+        WriteFile(pond.AssetPath / "Scenes/Pond.unhuman", "Scene: Pond");
+        WriteFile(pond.AssetPath / "Models/Ground.gltf", "{}");
+
+        ExportOptions options;
+        options.RuntimeDir = bin;
+        options.EngineAssets = engine;
+        options.OutputDir = sandbox / "out";
+
+        ExportReport report = GameExporter::Export(pond, options);
+        Check(!report.Ok, "export: refused without a start scene");
+
+        pond.StartScene = "Assets/Scenes/Pond.unhuman";
+        report = GameExporter::Export(pond, options);
+        Check(report.Ok, "export: succeeds with a start scene");
+        const fs::path out = options.OutputDir;
+#ifdef _WIN32
+        Check(fs::exists(out / "Pond_Demo.exe"), "export: the runtime is renamed after the project");
+#else
+        Check(fs::exists(out / "Pond_Demo"), "export: the runtime is renamed after the project");
+#endif
+        Check(fs::exists(out / "libUHE.so") && fs::exists(out / "libslang.so.1"), "export: shared libraries ship");
+        Check(!fs::exists(out / "uhe_shaderc"), "export: other tools in the build folder do not");
+        Check(fs::exists(out / "assets/shaders/Basic3D.vertex.default.spv") &&
+                  fs::exists(out / "assets/shaders/variants.txt") && fs::exists(out / "assets/fonts/Inter.ttf"),
+              "export: engine assets ship, compiled shaders included");
+        Check(!fs::exists(out / "assets/shaders/Basic3D.slang"), "export: shader sources do not ship");
+        Check(fs::exists(out / Project::kManifestName) && fs::exists(out / "Assets/Scenes/Pond.unhuman") &&
+                  fs::exists(out / "Assets/Models/Ground.gltf"),
+              "export: the project's manifest and assets ship");
+        Check(fs::exists(out / GameExporter::kMarkerName), "export: the folder is marked as an export");
+
+        report = GameExporter::Export(pond, options);
+        Check(report.Ok, "export: exporting again over a previous export works");
+
+        WriteFile(sandbox / "notes/todo.txt", "mine");
+        options.OutputDir = sandbox / "notes";
+        report = GameExporter::Export(pond, options);
+        Check(!report.Ok && fs::exists(sandbox / "notes/todo.txt"),
+              "export: a folder with someone's files in it is refused and left alone");
+
+        options.OutputDir = gameRoot2 / "Build";
+        report = GameExporter::Export(pond, options);
+        Check(!report.Ok, "export: an output folder inside the project is refused");
+
+        Check(GameExporter::ExecutableName("My Game: 2!") == "My_Game__2_", "export: names are made file-safe");
     }
 
     fs::remove_all(sandbox, ec);
