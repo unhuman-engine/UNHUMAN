@@ -41,8 +41,13 @@ public:
         bool Lit = true;      ///< false for the debug shading modes: no HDR, shadows, SSAO or bloom
         float Time = 0.0f;    ///< seconds; animates the wind
         std::array<float, 4> ClearColor{0.0f, 0.0f, 0.0f, 1.0f};
-        std::string ColorName;  ///< the output colour (RGBA8_SRGB), named so the caller can export it
-        std::string EntityName; ///< the entity IDs (R32_SINT)
+        std::string ColorName; ///< the output colour (RGBA8_SRGB), named so the caller can export it
+        /// When valid (a game's imported backbuffer), the lit view is tonemapped
+        /// straight into it, in TargetFormat, instead of into ColorName.
+        RHI::FGHandle<RHI::FGTexture> Target;
+        RHI::TextureFormat TargetFormat = RHI::TextureFormat::Undefined;
+        bool FlipTarget = false; ///< present upright in a backbuffer (TonemapSettings::FlipY)
+        std::string EntityName;  ///< the entity IDs (R32_SINT)
         /// The camera, asked once when the first pass executes.
         std::function<SceneRenderView()> ResolveView;
         /// Records the colour pass's draws (scene, sprites, icons); viewport and scissor are set.

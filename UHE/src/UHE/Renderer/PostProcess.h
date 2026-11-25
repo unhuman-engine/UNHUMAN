@@ -12,6 +12,10 @@ struct TonemapSettings
 {
     float Exposure = 1.0f;       ///< linear multiplier applied before the curve
     float BloomIntensity = 0.0f; ///< share of the bloom input in the result; used only when one is given
+    /// Reads the input upside down. The scene renders with Vulkan's y-down clip
+    /// space and no flip in the projection; the editor flips when it displays
+    /// the viewport image, a game drawing into the backbuffer flips here.
+    bool FlipY = false;
 };
 
 /**

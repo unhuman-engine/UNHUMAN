@@ -21,6 +21,7 @@ struct PushConstants
     float exposure;       // linear multiplier applied before the curve
     int bloomTexture;     // bindless slot of the bloomed image; -1 = no bloom
     float bloomIntensity; // share of the bloomed image in the result
+    int flipY;            // 1: read the input upside down (a game drawing into the backbuffer)
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc;
@@ -34,6 +35,8 @@ VSOutput vertexMain(uint vertexID : SV_VertexID)
     VSOutput output;
     output.uv = float2((vertexID << 1) & 2, vertexID & 2);
     output.position = float4(output.uv * 2.0 - 1.0, 0.0, 1.0);
+    if (pc.flipY != 0)
+        output.uv.y = 1.0 - output.uv.y;
     return output;
 }
 

@@ -25,6 +25,7 @@ struct TonemapPushConstants
     f32 Exposure = 1.0f;
     i32 BloomTexture = -1; ///< bindless slot, or -1 for no bloom
     f32 BloomIntensity = 0.0f;
+    i32 FlipY = 0; ///< 1: sample the input upside down
 };
 
 /// Must match `PushConstants` in Bloom.slang; checked against reflection.
@@ -318,6 +319,7 @@ RHI::FGHandle<RHI::FGTexture> TonemapInto(RHI::FrameGraph& graph, RHI::FGHandle<
                                   ? static_cast<i32>(reinterpret_cast<RHITexture*>(bloomTexture)->GetTextureIndex())
                                   : -1;
             pc.BloomIntensity = settings.BloomIntensity;
+            pc.FlipY = settings.FlipY ? 1 : 0;
             cmd.PushConstants(ShaderStage::AllGraphics, &pc, sizeof(pc), 0);
             cmd.Draw(3, 0);
         });

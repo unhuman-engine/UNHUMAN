@@ -651,8 +651,12 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
     tonemap.Exposure = std::max(settings.Environment.Exposure, 0.0f);
     tonemap.BloomIntensity = std::clamp(settings.Bloom.Intensity, 0.0f, 1.0f);
 
-    output.Color = PostProcess::AddTonemapPass(graph, hdr, desc.ColorName, {width, height, TextureFormat::RGBA8_SRGB},
-                                               tonemap, bloom);
+    tonemap.FlipY = desc.Target.IsValid() && desc.FlipTarget;
+    if (desc.Target.IsValid())
+        output.Color = PostProcess::AddTonemapPass(graph, hdr, desc.Target, desc.TargetFormat, tonemap, bloom);
+    else
+        output.Color = PostProcess::AddTonemapPass(graph, hdr, desc.ColorName,
+                                                   {width, height, TextureFormat::RGBA8_SRGB}, tonemap, bloom);
     return output;
 }
 
