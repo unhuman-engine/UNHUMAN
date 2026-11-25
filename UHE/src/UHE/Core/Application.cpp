@@ -5,6 +5,7 @@
 #include "UHE/Audio/AudioEngine.h"
 #include "UHE/Core/Log.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
+#include "UHE/Renderer/PostProcess.h"
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer/ShaderCache.h"
@@ -58,6 +59,7 @@ Application::~Application()
     ScriptEngine::Get().Shutdown();
     Audio::AudioEngine::Shutdown();
     Physics::PhysicsSystem3D::Shutdown();
+    PostProcess::Shutdown();
     Renderer3D::Shutdown();
     Renderer2D::Shutdown();
     Renderer::Shutdown();

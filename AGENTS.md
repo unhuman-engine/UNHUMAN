@@ -46,6 +46,32 @@ here. Follow them; if a rule is wrong, change it here first.
   waits at frame end, or `WaitIdle()` for a one-off — including the pipeline
   rebuild a shader hot reload triggers.
 
+- **New rendering declares FrameGraph passes.** `RHIDevice::GetFrameGraph()`,
+  `AddPass<Data>(setup, execute)`: the pass names what it reads and writes and
+  for what use, and the render graph places every barrier. A pass records with
+  `FGContext::Cmd()` and has no Vulkan types; a texture it needs only inside
+  the frame is `FGBuilder::Create`, from a pool, not a hand-made attachment
+  that has to be resized and destroyed. Handles do not survive the frame.
+- **A target read after the frame is exported, not imported.** The editor's
+  viewport image and picking read its scene colour and entity IDs after the
+  graph ran: those are `FGBuilder::Create` plus `FrameGraph::Export`, fetched
+  each frame with `RHIDevice::GetExportedTexture(name)`. Do not keep the
+  returned texture: a resize replaces it. `Import` is for what the graph does
+  not own (the swapchain, a model's textures).
+- **A frame graph error is a defect.** A graph that fails to translate,
+  compile or resolve drops its passes and the frame still presents, so the
+  only symptom is a missing scene. Under `UHE_VALIDATION_FATAL` it stops the
+  run like a validation error does.
+- **The compiled render graph is cached by exact structure, not by hash.**
+  `VulkanRenderGraphCompileCache` replays the last compile only when every
+  access, state and name matches, and rebinds handle generations. The topology
+  hash counts a pass's reads instead of naming them; never key a cache on it.
+  `UHE_RENDERGRAPH_NO_CACHE=1` compiles every frame, for an A/B.
+- **Every write is followed by a barrier.** Two passes rendering into one
+  attachment in a row are separate rendering scopes; the compiler orders them
+  even when the layout does not change, and attachment access includes the
+  read that a load, blend or depth test does.
+
 ## Scripting is a consumer of the engine
 
 - **The VM is main-thread only and never touched from a job.** A Lua state is not

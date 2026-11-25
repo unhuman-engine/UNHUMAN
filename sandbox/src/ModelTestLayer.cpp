@@ -2,8 +2,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>
-#include "Platform/Vulkan/VulkanDevice.h"
+#include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHICommandBuffer.h"
+#include "UHE/Renderer/PostProcess.h"
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 
@@ -24,32 +25,11 @@ void ModelTestLayer::OnAttach()
 
     m_Camera = UHE::EditorCamera(30.0f, 16.0f / 9.0f, 0.1f, 1000.0f);
     m_Camera.SetDistance(5.0f);
-
-    // Create a depth texture for the swapchain render pass
-    auto& device = UHE::Renderer::GetDevice();
-    auto& swapChain = static_cast<UHE::RHI::VULKAN::VulkanDevice&>(device).getSwapChainClass();
-    uint32_t width = swapChain.GetExtent().width;
-    uint32_t height = swapChain.GetExtent().height;
-
-    UHE::RHI::TextureDesc depthDesc{};
-    depthDesc.width = width;
-    depthDesc.height = height;
-    depthDesc.format = UHE::RHI::TextureFormat::D24_UNORM_S8;
-    depthDesc.usage = UHE::RHI::TextureUsage::DepthAttach | UHE::RHI::TextureUsage::Sampled;
-    m_DepthTexture = device.CreateTexture(depthDesc);
-    m_DepthWidth = width;
-    m_DepthHeight = height;
 }
 
 void ModelTestLayer::OnDetach()
 {
-    auto& device = UHE::Renderer::GetDevice();
     m_Model.Destroy();
-    if (m_DepthTexture)
-    {
-        device.DestroyTexture(m_DepthTexture);
-        m_DepthTexture = nullptr;
-    }
 }
 
 void ModelTestLayer::OnUpdate(UHE::Timestep ts)
@@ -76,69 +56,55 @@ void ModelTestLayer::OnUpdate(UHE::Timestep ts)
     // Update rotation
     m_Rotation += ts * 50.0f;
 
+    // Two frame graph passes: the scene renders into an HDR target, then the
+    // tonemap pass maps it into the backbuffer. Both intermediate textures are
+    // the graph's (sized to the backbuffer every frame, pooled across frames),
+    // and the graph orders the passes and puts each texture in the state its
+    // use needs: the HDR target is an attachment, then a sampled texture.
     auto& device = UHE::Renderer::GetDevice();
-    auto& cmd = device.GetCurrentCommandBuffer();
+    UHE::RHI::FrameGraph* graph = device.GetFrameGraph();
+    if (graph == nullptr)
+        return;
 
-    // The swapchain is the authority on the frame's extent: the window's own
-    // size can still be the pre-resize one, and a render area taller than the
-    // attachment is invalid.
-    auto& swapChain = static_cast<UHE::RHI::VULKAN::VulkanDevice&>(device).getSwapChainClass();
-    uint32_t width = swapChain.GetExtent().width;
-    uint32_t height = swapChain.GetExtent().height;
-
-    // The depth attachment has to cover the render area, and for a swapchain
-    // pass that is the swapchain's extent. One created at attach time goes
-    // stale on the first resize, and an attachment smaller than the render area
-    // is invalid. The wait is deliberate: an earlier frame can still be reading
-    // the old attachment, and this only runs on a resize.
-    if (width != m_DepthWidth || height != m_DepthHeight)
+    using namespace UHE::RHI;
+    const FGTexture::Desc backbuffer = device.GetBackbufferDesc();
+    struct SceneData
     {
-        device.WaitIdle();
-        if (m_DepthTexture)
+        FGHandle<FGTexture> Hdr;
+        FGHandle<FGTexture> Depth;
+    };
+    const glm::mat4 transform = glm::scale(
+        glm::rotate(glm::mat4(1.0f), glm::radians(m_Rotation), glm::vec3(0.0f, 1.0f, 0.0f)), glm::vec3(2.0f));
+
+    const SceneData& scene = graph->AddPass<SceneData>(
+        "Sandbox.Scene",
+        [&](FGBuilder& builder, SceneData& data)
         {
-            device.DestroyTexture(m_DepthTexture);
-            m_DepthTexture = nullptr;
-        }
-        UHE::RHI::TextureDesc depthDesc{};
-        depthDesc.width = width;
-        depthDesc.height = height;
-        depthDesc.format = UHE::RHI::TextureFormat::D24_UNORM_S8;
-        depthDesc.usage = UHE::RHI::TextureUsage::DepthAttach | UHE::RHI::TextureUsage::Sampled;
-        m_DepthTexture = device.CreateTexture(depthDesc);
-        m_DepthWidth = width;
-        m_DepthHeight = height;
-    }
-    UHE::RHI::RenderPassDesc passDesc{};
-    passDesc.renderWidth = width;
-    passDesc.renderHeight = height;
-    passDesc.colorAttachmentCount = 0; // Triggers Swapchain fallback
-    passDesc.hasDepth = true;
-    passDesc.depthAttachment.texture = m_DepthTexture;
-    passDesc.depthAttachment.clearDepth = 1.0f;
-    
-    cmd.BeginRenderPass(passDesc);
-    cmd.SetViewport(0.0f, 0.0f, (float)width, (float)height);
-    cmd.SetScissor(0, 0, width, height);
+            const FGTexture::Desc hdrDesc{backbuffer.Width, backbuffer.Height, TextureFormat::RGBA16F};
+            const FGTexture::Desc depthDesc{backbuffer.Width, backbuffer.Height, TextureFormat::D24_UNORM_S8};
+            data.Hdr = builder.Write(builder.Create("Sandbox.HDR", hdrDesc), FGWrite::RenderTarget);
+            data.Depth = builder.Write(builder.Create("Sandbox.Depth", depthDesc), FGWrite::DepthTarget);
+        },
+        [this, transform](const SceneData&, FGContext& context)
+        {
+            RHICommandBuffer& cmd = context.Cmd();
+            cmd.SetViewport(0.0f, 0.0f, static_cast<float>(context.Width()), static_cast<float>(context.Height()));
+            cmd.SetScissor(0, 0, context.Width(), context.Height());
 
-    std::vector<UHE::RD3d::LightData> lights;
-    UHE::RD3d::LightData defaultLight;
-    defaultLight.Type_Radius_Pad = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // Type = 0 (Directional)
-    defaultLight.PositionOrDirection = glm::vec4(0.5f, -1.0f, 0.3f, 0.0f);
-    defaultLight.ColorIntensity = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
-    lights.push_back(defaultLight);
+            std::vector<UHE::RD3d::LightData> lights;
+            UHE::RD3d::LightData defaultLight;
+            defaultLight.Type_Radius_Pad = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // Type = 0 (Directional)
+            defaultLight.PositionOrDirection = glm::vec4(0.5f, -1.0f, 0.3f, 0.0f);
+            defaultLight.ColorIntensity = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+            lights.push_back(defaultLight);
 
-    UHE::Renderer3D::SetSwapchainTarget(true);
-    UHE::Renderer3D::BeginScene(m_Camera, lights);
+            UHE::Renderer3D::SetColorTarget(TextureFormat::RGBA16F);
+            UHE::Renderer3D::BeginScene(m_Camera, lights);
+            UHE::Renderer3D::SubmitModel(m_Model, transform);
+            UHE::Renderer3D::EndScene();
+        });
 
-    // Render the model with some rotation
-    glm::mat4 transform = glm::rotate(glm::mat4(1.0f), glm::radians(m_Rotation), glm::vec3(0.0f, 1.0f, 0.0f));
-    transform = glm::scale(transform, glm::vec3(2.0f));
-
-    UHE::Renderer3D::SubmitModel(m_Model, transform);
-
-    UHE::Renderer3D::EndScene();
-
-    cmd.EndRenderPass();
+    UHE::PostProcess::AddTonemapPass(*graph, scene.Hdr, graph->ImportBackbuffer(backbuffer), backbuffer.Format);
 }
 
 void ModelTestLayer::OnImGuiRender()

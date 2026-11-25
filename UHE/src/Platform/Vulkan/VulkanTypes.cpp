@@ -24,6 +24,16 @@ vk::Format MapTextureFormat(TextureFormat format)
             return vk::Format::eD32Sfloat;
         case TextureFormat::R32_SINT:
             return vk::Format::eR32Sint;
+        // Declared in the RHI long before anything created one: a graph-owned
+        // HDR target was the first, and reached vkCreateImage as UNDEFINED.
+        case TextureFormat::R8_UNORM:
+            return vk::Format::eR8Unorm;
+        case TextureFormat::RG8_UNORM:
+            return vk::Format::eR8G8Unorm;
+        case TextureFormat::RGBA16F:
+            return vk::Format::eR16G16B16A16Sfloat;
+        case TextureFormat::RGBA32F:
+            return vk::Format::eR32G32B32A32Sfloat;
         default:
             return vk::Format::eUndefined;
     }
@@ -300,10 +310,13 @@ vk::AccessFlags2 ToVkAccess2(Access access)
             return vk::AccessFlagBits2::eShaderRead;
         case Access::ShaderWrite:
             return vk::AccessFlagBits2::eShaderWrite;
+        // An attachment is read as well as written: LoadOp::Load and blending
+        // read colour, the depth test reads depth. Without the read bit a
+        // barrier makes earlier writes available but not visible to those reads.
         case Access::ColorWrite:
-            return vk::AccessFlagBits2::eColorAttachmentWrite;
+            return vk::AccessFlagBits2::eColorAttachmentWrite | vk::AccessFlagBits2::eColorAttachmentRead;
         case Access::DepthWrite:
-            return vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+            return vk::AccessFlagBits2::eDepthStencilAttachmentWrite | vk::AccessFlagBits2::eDepthStencilAttachmentRead;
         case Access::MemoryRead:
             return vk::AccessFlagBits2::eMemoryRead;
         case Access::MemoryWrite:
@@ -357,9 +370,9 @@ vk::AccessFlags ToVkAccess1(Access access)
         case Access::ShaderWrite:
             return vk::AccessFlagBits::eShaderWrite;
         case Access::ColorWrite:
-            return vk::AccessFlagBits::eColorAttachmentWrite;
+            return vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead;
         case Access::DepthWrite:
-            return vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+            return vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentRead;
         case Access::MemoryRead:
             return vk::AccessFlagBits::eMemoryRead;
         case Access::MemoryWrite:

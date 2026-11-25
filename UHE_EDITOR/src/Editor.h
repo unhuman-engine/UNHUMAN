@@ -14,12 +14,11 @@
 #include "Panel/ScriptsPanel.h"
 #include "UHE.h"
 #include "UHE/Renderer/EditorCamera.h"
-#include "UHE/Renderer/Framebuffer.h"
 #include "imgui.h"
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
-class RGPassContext;
+class FGContext;
 }
 
 namespace UHE
@@ -94,10 +93,10 @@ private:
     void UndoTransform();
     void RedoTransform();
 
-    // Render graph path: the simulation runs in OnUpdate and the scene draw
-    // stream is recorded by a deferred graph pass before the ImGui pass.
+    // The simulation runs in OnUpdate; the scene is drawn by a frame graph
+    // pass, recorded before the ImGui pass that shows it.
     void DeclareSceneGraphPass(Timestep ts, bool runtime);
-    void RecordSceneGraphPass(UHE::RHI::VULKAN::RGPassContext& context, Timestep ts, bool runtime);
+    void RecordSceneGraphPass(UHE::RHI::FGContext& context, Timestep ts, bool runtime);
 
 private:
     Entity m_Square;
@@ -139,7 +138,13 @@ private:
     NotificationCenter m_Notifications;
     std::optional<ProjectInfo> m_Project;
     bool m_ShowLauncher = true;
-    Ref<Framebuffer> m_Framebuffer;
+    // Scene targets: created by the frame graph at the viewport's size, and
+    // exported under these names for the viewport image and picking.
+    static constexpr const char* kSceneColor = "Editor.Scene.Color";
+    static constexpr const char* kSceneEntity = "Editor.Scene.Entity";
+    static constexpr u32 kMaxSceneSize = 8192;
+    u32 m_SceneWidth = 0;
+    u32 m_SceneHeight = 0;
     Ref<Texture2D> m_IconPlay;
     Ref<Texture2D> m_IconPause;
     Ref<Texture2D> m_IconStop;
@@ -187,13 +192,6 @@ private:
         Paused = 2,
     };
 
-    enum class RenderPath
-    {
-        Immediate = 0,
-        RenderGraph = 1,
-    };
-
     SceneState m_SceneState = SceneState::Edit;
-    RenderPath m_RenderPath = RenderPath::RenderGraph;
 };
 } // namespace UHE

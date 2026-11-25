@@ -385,8 +385,10 @@ pass, and extending the enums that already exist in `RHITypes.h` and
   and cache otherwise, with the hash inputs defined explicitly.
 - Async compute ambition. If wanted, passes should declare queue hints from the
   start even if the compiler ignores them in phase 3.
-- Import versus create. Anything owned outside, such as the swapchain, external
-  render targets and model textures, is imported; everything else is transient.
+- Import versus create. Anything owned outside, such as the swapchain and model
+  textures, is imported; everything else is created. A created texture that code
+  after the frame reads (the editor viewport, picking) is exported: the graph
+  keeps one object under its name instead of handing it back to the pool.
 
 ## Starting point
 

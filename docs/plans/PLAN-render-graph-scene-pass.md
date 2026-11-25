@@ -1,6 +1,10 @@
 # Moving 3D Scene Rendering onto the Render Graph
 
-> **Status:** DRAFT — for raj's review. Nothing here has been implemented.
+> **Status:** SUPERSEDED by [PLAN-frame-graph.md](PLAN-frame-graph.md) (2026-11-25). The
+> editor and AimLab already render their scene as render graph passes, and the Sandbox
+> renders through the FrameGraph; kept for its analysis of the constraints.
+>
+> **Original status:** DRAFT — for raj's review. Nothing here has been implemented.
 > **Author context:** written during the glTF asset work (branch `asset-improvement`),
 > immediately after fixing the "model never submitted" bug. The engine is stable right
 > now, which is the right time to take this on, but the ordering matters: the scene

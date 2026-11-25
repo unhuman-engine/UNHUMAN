@@ -2,6 +2,7 @@
 #include "VulkanDevice.h"
 #include <GLFW/glfw3.h>
 #include <algorithm>
+#include <iostream>
 
 // ─── Frame-loop timeouts (§9.1.5: bounded waits, never UINT64_MAX) ──────────
 // One second of GPU silence on a live submission means the device is gone or a
@@ -40,6 +41,7 @@ static UHE::RHI::TextureFormat ToEngineFormat(vk::Format format)
 #include <volk.h>
 #include <vulkan/vulkan_raii.hpp>
 #include "Platform/Vulkan/UI/VulkanImGuiPass.h"
+#include "Platform/Vulkan/ValidationGate.h"
 #include "Platform/Vulkan/VulkanBuffer.h"
 #include "Platform/Vulkan/VulkanComputePipeline.h"
 #include "Platform/Vulkan/VulkanExtensionCheck.h"
@@ -170,6 +172,11 @@ void VulkanDevice::CleanupVulkan()
 
     WaitIdle();
 
+    // Pooled frame graph textures go the way of any texture: through the
+    // deletion queues the frame cleanup below flushes.
+    m_Frontend.Reset();
+    m_FrameGraphBridge.Shutdown();
+
     m_DescriptorManager.cleanup();
 
     for (PixelReadback& readback : m_PixelReadbacks)
@@ -251,7 +258,10 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc)
     }
     else if (desc.usage == BufferUsage::Storage)
     {
-        usage = vk::BufferUsageFlagBits::eStorageBuffer;
+        // Transfer both ways too: a storage buffer is also what a frame graph
+        // pass copies into or out of.
+        usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+                vk::BufferUsageFlagBits::eTransferDst;
     }
     else if (desc.usage == BufferUsage::Staging)
     {
@@ -493,6 +503,9 @@ void VulkanDevice::End()
     // resolve against stale objects or index the swapchain out of bounds.
     if (!m_FrameSkipped)
         EndFrameGraph();
+    // Every frame, skipped or failed included: the frontend's pass data must
+    // not leak into the next frame, and its handles must go stale.
+    EndFrontendFrame();
 
     vk::raii::CommandBuffer& cmd = m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle();
 
@@ -592,6 +605,8 @@ RHICommandBuffer& VulkanDevice::GetCurrentCommandBuffer()
 
 void VulkanDevice::BeginImGuiPass(const std::string& name)
 {
+    // Frontend passes first: they render what the UI draws on top of.
+    FlushFrontend();
     // §14 step 5: declare the ImGui pass into the per-frame graph. The executor
     // opens the swapchain scope from this declaration (Load preserves the scene
     // that drew ahead of us; Clear would erase it), and the compiler owns the
@@ -600,17 +615,7 @@ void VulkanDevice::BeginImGuiPass(const std::string& name)
     // legacy scene rendering still draws ahead of this pass; it flips to
     // Present-based acquire when scene passes go graph-resident (ROADMAP M5
     // step 4).
-    const vk::Extent2D extent = m_SwapChain.GetExtent();
-    // The acquired image starts Undefined UNLESS a legacy scene pass already
-    // rendered into it this frame — BeginRenderPass's swapchain fallback leaves
-    // it in Present (EndRenderPass emits ColorAttachment→Present), so the
-    // import must start there or the compiler's entry barrier would assert the
-    // wrong oldLayout. The compiler then emits the entry transition and the
-    // ColorAttachment→Present exit as this pass's pre/post barriers.
-    const ImageState swapInitialState = m_LegacySwapchainRendered ? ImageState::Present : ImageState::Undefined;
-    RGTextureHandle swap = m_FrameGraph.ImportTexture("Swapchain", m_SwapchainGeneration, extent.width, extent.height,
-                                                      1, swapInitialState, ImageState::Present);
-    m_SwapchainRGHandle = swap; // executor registration keys on this exact slot
+    RGTextureHandle swap = ImportSwapchain();
 
     auto& pass = m_FrameGraph.AddPass(name, RGPassType::Graphics);
     // The attachment target must also be declared written (§7): Write() first,
@@ -628,6 +633,85 @@ void VulkanDevice::RegisterFrameTexture(RGTextureHandle rgTexture, TextureHandle
     RegisterFrameTextureImpl(rgTexture, texture);
 }
 
+namespace
+{
+/**
+ * @brief Stops the run after a frame graph error when the validation gate is on.
+ *
+ * A graph that fails to compile or resolve drops its passes: the frame still
+ * presents, so without this a broken scene pass looks like an empty viewport
+ * and a smoke run stays green. Under UHE_VALIDATION_FATAL it is a defect, the
+ * same as a validation error.
+ */
+void StopOnFrameGraphError()
+{
+    if (!Validation::FatalValidationEnabled())
+        return;
+    std::cerr << "UHE_VALIDATION_FATAL: frame graph error, stopping.\n";
+    std::_Exit(1);
+}
+} // namespace
+
+RGTextureHandle VulkanDevice::ImportSwapchain()
+{
+    const vk::Extent2D extent = m_SwapChain.GetExtent();
+    // The acquired image starts Undefined UNLESS a legacy scene pass already
+    // rendered into it this frame — BeginRenderPass's swapchain fallback leaves
+    // it in Present (EndRenderPass emits ColorAttachment→Present), so the
+    // import must start there or the compiler's entry barrier would assert the
+    // wrong oldLayout. The compiler then emits the entry transition and the
+    // ColorAttachment→Present exit as this pass's pre/post barriers.
+    const ImageState swapInitialState = m_LegacySwapchainRendered ? ImageState::Present : ImageState::Undefined;
+    RGTextureHandle swap = m_FrameGraph.ImportTexture("Swapchain", m_SwapchainGeneration, extent.width, extent.height,
+                                                      1, swapInitialState, ImageState::Present);
+    m_SwapchainRGHandle = swap; // executor registration keys on this exact slot
+    return swap;
+}
+
+FGTexture::Desc VulkanDevice::GetBackbufferDesc()
+{
+    const vk::Extent2D extent = m_SwapChain.GetExtent();
+    FGTexture::Desc desc;
+    desc.Width = extent.width;
+    desc.Height = extent.height;
+    desc.Format = GetSwapchainFormat();
+    return desc;
+}
+
+TextureHandle VulkanDevice::GetExportedTexture(const std::string& name)
+{
+    return m_FrameGraphBridge.ExportedTexture(m_Frontend, name);
+}
+
+void VulkanDevice::RegisterFrameBuffer(RGBufferHandle rgBuffer, BufferHandle buffer)
+{
+    if (!rgBuffer.IsValid() || buffer == nullptr)
+        return;
+    m_RenderGraphExecutor.RegisterBuffer(rgBuffer, reinterpret_cast<VulkanBuffer*>(buffer)->GetHandle());
+}
+
+void VulkanDevice::FlushFrontend()
+{
+    if (m_FrontendFlushed)
+        return;
+    m_FrontendFlushed = true;
+    std::vector<std::string> errors;
+    if (!m_FrameGraphBridge.Translate(m_Frontend, m_FrameGraph, errors))
+    {
+        // The frontend's passes are dropped; the rest of the frame still runs.
+        for (const std::string& error : errors)
+            UHE_CORE_ERROR("FrameGraph: {}", error);
+        StopOnFrameGraphError();
+    }
+}
+
+void VulkanDevice::EndFrontendFrame()
+{
+    m_Frontend.Reset();
+    m_FrameGraphBridge.EndFrame();
+    m_FrontendFlushed = false;
+}
+
 void VulkanDevice::RegisterFrameTextureImpl(RGTextureHandle rgTexture, TextureHandle texture)
 {
     if (!rgTexture.IsValid() || texture == nullptr)
@@ -643,6 +727,7 @@ void VulkanDevice::EndFrameGraph()
     if (!m_ExtensionCheck.SupportsDynamicRendering())
     {
         UHE_CORE_ERROR("EndFrameGraph: dynamic rendering is not supported on this device; skipping frame graph");
+        StopOnFrameGraphError();
         m_FrameGraphFailed = true;
         m_FrameGraph.Reset();
         return;
@@ -654,11 +739,16 @@ void VulkanDevice::EndFrameGraph()
     // would compile to an ImGui-only frame and the scene would vanish), so
     // the frame is compiled exactly as declared. Reset happens at the end of
     // this function (or on an error path).
-    RGCompileResult compiled = m_FrameGraph.Compile();
+    FlushFrontend(); // a frame without a UI pass still realizes the frontend
+    // UHE_RENDERGRAPH_NO_CACHE=1 compiles every frame: the A/B for a suspected
+    // cache bug, read once (the answer cannot change mid-run).
+    static const bool s_NoCache = Validation::ParseEnabledFlag(std::getenv("UHE_RENDERGRAPH_NO_CACHE"));
+    RGCompileResult compiled = s_NoCache ? m_FrameGraph.Compile() : m_FrameGraph.CompileCached();
     if (!compiled.Ok())
     {
         for (const RGValidationError& error : compiled.errors)
             UHE_CORE_ERROR("FrameGraph: {} ({})", error.message, error.passName);
+        StopOnFrameGraphError();
         m_FrameGraphFailed = true;
         m_FrameGraph.Reset();
         return;
@@ -676,6 +766,7 @@ void VulkanDevice::EndFrameGraph()
     {
         for (const std::string& error : resolveErrors)
             UHE_CORE_ERROR("FrameGraph resolve: {}", error);
+        StopOnFrameGraphError();
         m_FrameGraphFailed = true;
         m_FrameGraph.Reset();
         return;
@@ -702,6 +793,8 @@ void VulkanDevice::EndFrameGraph()
         m_RenderGraphExecutor.MapToTaskgraph(m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(),
                                              m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), m_BarrierEncoder);
     m_RenderGraphExecutor.ExecuteGraph(m_TaskGraph, m_Jobsystem, m_PassNodes);
+    // Recorded: the exported textures end this frame in their final states.
+    m_FrameGraphBridge.CommitExports();
     m_TaskGraph.Reset();
     m_FrameGraph.Reset();
 }

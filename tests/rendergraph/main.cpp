@@ -503,6 +503,164 @@ int main()
         CHECK(edgeOk, "GBuffer node lists Lighting as a dependent");
     }
 
+    // ── Write after write: two rendering scopes on one attachment ─────────────
+    // The scene renders into the swapchain, then the UI pass loads it and draws
+    // on top. Same layout, same guard - but they are separate rendering scopes,
+    // and the second must wait for the first's writes. A barrier only on layout
+    // or guard changes left this pair unordered.
+    {
+        VulkanRenderGraph rg;
+        RGTextureHandle swap = rg.ImportTexture("Swapchain", 1, 64, 64, 1, ImageState::Undefined, ImageState::Present);
+        rg.AddPass("Scene")
+            .Write(swap)
+            .Color({swap, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        RGTextureHandle again = rg.ImportTexture("Swapchain", 1, 64, 64, 1, ImageState::Undefined, ImageState::Present);
+        rg.AddPass("UI")
+            .Write(again)
+            .Color({again, LoadOp::Load, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        const RGCompileResult result = rg.Compile();
+        CHECK(result.Ok() && result.frame.passes.size() == 2, "two writers of one import compile");
+        if (result.frame.passes.size() == 2)
+        {
+            const RGCompiledPass& ui = result.frame.passes[1];
+            bool ordered = false;
+            for (const RGCompiledImageBarrier& b : ui.preImageBarriers)
+                ordered = ordered ||
+                          (b.oldState == ImageState::ColorAttachment && b.newState == ImageState::ColorAttachment &&
+                           b.srcAccess == Access::ColorWrite && b.dstAccess == Access::ColorWrite);
+            CHECK(ordered, "the second writer waits on the first with a colour write barrier");
+        }
+
+        // Reads still transition once: a texture sampled by two passes needs
+        // no barrier between them.
+        VulkanRenderGraph reads;
+        RGTextureHandle tex = reads.ImportTexture("Lut", 2, 16, 16, 1, ImageState::ShaderRead, ImageState::ShaderRead);
+        RGTextureHandle outA = reads.ImportTexture("OutA", 3, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        RGTextureHandle outB = reads.ImportTexture("OutB", 4, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        reads.AddPass("A")
+            .Read(tex)
+            .Write(outA)
+            .Color({outA, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        reads.AddPass("B")
+            .Read(tex)
+            .Write(outB)
+            .Color({outB, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        const RGCompileResult readResult = reads.Compile();
+        bool lutBarrierInB = false;
+        if (readResult.frame.passes.size() == 2)
+            for (const RGCompiledImageBarrier& b : readResult.frame.passes[1].preImageBarriers)
+                lutBarrierInB = lutBarrierInB || b.texture == tex;
+        CHECK(readResult.Ok() && !lutBarrierInB, "a second read of a sampled texture adds no barrier");
+    }
+
+    // ── Compile cache ───────────────────────────────────────────────────────
+    // A frame redeclared identically reuses the last compile, with every
+    // handle rebound to this frame's generation; anything that changes the
+    // barriers (which resource a pass reads, an import's starting state)
+    // compiles again, even when the coarse topology hash would not notice.
+    {
+        VulkanRenderGraph rg;
+        BuildFrame(rg, 1280, 720, 1);
+        const RGCompileResult first = rg.CompileCached();
+        CHECK(first.Ok() && rg.CompileCache().Misses() == 1, "the first frame compiles");
+
+        rg.Reset();
+        BuildFrame(rg, 1280, 720, 1);
+        const RGCompileResult cached = rg.CompileCached();
+        const RGCompileResult fresh = rg.Compile();
+        CHECK(rg.CompileCache().Hits() == 1, "an identical frame is a cache hit");
+        bool same = cached.frame.passes.size() == fresh.frame.passes.size() &&
+                    cached.frame.lifetimes.size() == fresh.frame.lifetimes.size();
+        for (size_t p = 0; same && p < fresh.frame.passes.size(); ++p)
+        {
+            const auto& a = cached.frame.passes[p];
+            const auto& b = fresh.frame.passes[p];
+            same = a.name == b.name && a.dependencies == b.dependencies &&
+                   a.preImageBarriers.size() == b.preImageBarriers.size() &&
+                   a.postImageBarriers.size() == b.postImageBarriers.size();
+            for (size_t i = 0; same && i < b.preImageBarriers.size(); ++i)
+                same = a.preImageBarriers[i].texture == b.preImageBarriers[i].texture &&
+                       a.preImageBarriers[i].oldState == b.preImageBarriers[i].oldState &&
+                       a.preImageBarriers[i].newState == b.preImageBarriers[i].newState;
+            for (size_t i = 0; same && i < b.postImageBarriers.size(); ++i)
+                same = a.postImageBarriers[i].texture == b.postImageBarriers[i].texture;
+        }
+        for (size_t l = 0; same && l < fresh.frame.lifetimes.size(); ++l)
+            same = cached.frame.lifetimes[l].texture == fresh.frame.lifetimes[l].texture;
+        CHECK(same, "the cached frame equals a fresh compile, handles in this frame's generation");
+        bool staleFree = true;
+        for (const auto& pass : first.frame.passes)
+            for (const auto& b : pass.preImageBarriers)
+                for (const auto& c : cached.frame.passes)
+                    for (const auto& cb : c.preImageBarriers)
+                        if (cb.texture.index == b.texture.index)
+                            staleFree = staleFree && cb.texture.generation != b.texture.generation;
+        CHECK(staleFree, "no cached handle keeps the previous frame's generation");
+
+        // Same counts, different resource: the topology hash cannot tell.
+        const auto readsOne = [](VulkanRenderGraph& g, const char* source)
+        {
+            RGTextureHandle a = g.ImportTexture("A", 10, 8, 8, 1, ImageState::ShaderRead, ImageState::ShaderRead);
+            RGTextureHandle b = g.ImportTexture("B", 11, 8, 8, 1, ImageState::Undefined, ImageState::ShaderRead);
+            RGTextureHandle out = g.ImportTexture("Out", 12, 8, 8, 1, ImageState::Undefined, ImageState::Present);
+            g.AddPass("Post")
+                .Read(std::string(source) == "A" ? a : b)
+                .Write(out)
+                .Color({out, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+                .Execute([](RGPassContext&) {});
+        };
+        VulkanRenderGraph post;
+        readsOne(post, "A");
+        (void)post.CompileCached();
+        const u64 hashA = post.ComputeTopologyHash();
+        post.Reset();
+        readsOne(post, "B");
+        const u64 hashB = post.ComputeTopologyHash();
+        const RGCompileResult readsB = post.CompileCached();
+        CHECK(post.CompileCache().Hits() == 0 && post.CompileCache().Misses() == 2,
+              "reading a different resource is a miss");
+        CHECK(hashA == hashB, "(the coarse topology hash alone would have called it a hit)");
+        bool transitionsB = false;
+        if (readsB.frame.passes.size() == 1)
+            for (const auto& b : readsB.frame.passes[0].preImageBarriers)
+                transitionsB =
+                    transitionsB || (b.oldState == ImageState::Undefined && b.newState == ImageState::ShaderRead);
+        CHECK(transitionsB, "and the recompile has B's transition");
+
+        VulkanRenderGraph states;
+        RGTextureHandle swap1 =
+            states.ImportTexture("Swapchain", 1, 8, 8, 1, ImageState::Undefined, ImageState::Present);
+        states.AddPass("UI")
+            .Write(swap1)
+            .Color({swap1, LoadOp::Load, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        (void)states.CompileCached();
+        states.Reset();
+        RGTextureHandle swap2 = states.ImportTexture("Swapchain", 1, 8, 8, 1, ImageState::Present, ImageState::Present);
+        states.AddPass("UI")
+            .Write(swap2)
+            .Color({swap2, LoadOp::Load, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        (void)states.CompileCached();
+        CHECK(states.CompileCache().Misses() == 2, "an import's starting state is part of the key");
+
+        VulkanRenderGraph broken;
+        RGTextureHandle orphan =
+            broken.CreateTexture({"Orphan", TextureFormat::RGBA8_UNORM, 8, 8, 1, 1, 1, 1, TextureUsage::Sampled});
+        RGTextureHandle target = broken.ImportTexture("T", 5, 8, 8, 1, ImageState::Undefined, ImageState::Present);
+        broken.AddPass("Bad")
+            .Read(orphan)
+            .Write(target)
+            .Color({target, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        CHECK(!broken.CompileCached().Ok(), "a broken frame fails");
+        CHECK(!broken.CompileCached().Ok() && broken.CompileCache().Hits() == 0, "and is never served from the cache");
+    }
+
     std::cout << (g_failures == 0 ? "\nALL CHECKS PASSED\n" : "\nFAILURES PRESENT\n");
     return g_failures == 0 ? 0 : 1;
 }

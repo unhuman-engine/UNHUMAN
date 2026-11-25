@@ -18,9 +18,4 @@ private:
     UHE::RD3d::Model m_Model;
     UHE::EditorCamera m_Camera;
     float m_Rotation = 0.0f;
-    UHE::RHI::TextureHandle m_DepthTexture = nullptr;
-    /// The extent `m_DepthTexture` was created at: the attachment has to cover
-    /// the frame's render area, which is the swapchain's extent.
-    uint32_t m_DepthWidth = 0;
-    uint32_t m_DepthHeight = 0;
 };

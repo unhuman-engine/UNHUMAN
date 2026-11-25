@@ -2,6 +2,7 @@
 #include "Renderer3D.h"
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
+#include <map>
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
@@ -51,10 +52,20 @@ struct Renderer3DData
     // the swapchain, which is one attachment in the swapchain's own format. A
     // pipeline has to match the pass it is bound in, so those passes get their
     // own variants rather than the two-attachment RGBA8 one above.
-    RHI::PipelineHandle ModelPipelineSwapchain;
-    RHI::PipelineHandle ModelPipelineSwapchainDoubleSided;
-    RHI::PipelineHandle GridPipelineSwapchain;
-    bool SwapchainTarget = false;
+    // One set per colour format, built on first use from the descs below: the
+    // swapchain's format for the game path, RGBA16F for an HDR scene target.
+    struct SingleTargetPipelines
+    {
+        RHI::PipelineHandle Model = nullptr;
+        RHI::PipelineHandle ModelDoubleSided = nullptr;
+        RHI::PipelineHandle Grid = nullptr;
+    };
+    std::map<RHI::TextureFormat, SingleTargetPipelines> SingleTargets;
+    RHI::GraphicsPipelineDesc SingleTargetModelDesc{};
+    RHI::GraphicsPipelineDesc SingleTargetGridDesc{};
+    bool ShaderResourcesReady = false;
+    /// Undefined: the editor's two-attachment set; otherwise a single-target format.
+    RHI::TextureFormat TargetFormat = RHI::TextureFormat::Undefined;
 
     /// Push constant bytes the pipelines were built with, read from the shader's
     /// reflection. Compared against the host struct before every upload, so a
@@ -102,6 +113,33 @@ struct Renderer3DData
 };
 
 static Renderer3DData s_Data3D;
+
+/// @brief The single-attachment pipelines for \p format, built the first time it is asked for.
+/// @return nullptr for TextureFormat::Undefined (the editor's set) or before the shaders load.
+static const Renderer3DData::SingleTargetPipelines* SingleTargetFor(RHI::TextureFormat format)
+{
+    if (format == RHI::TextureFormat::Undefined || !s_Data3D.ShaderResourcesReady)
+        return nullptr;
+    const auto it = s_Data3D.SingleTargets.find(format);
+    if (it != s_Data3D.SingleTargets.end())
+        return &it->second;
+
+    auto& device = Renderer::GetDevice();
+    Renderer3DData::SingleTargetPipelines set;
+    RHI::GraphicsPipelineDesc model = s_Data3D.SingleTargetModelDesc;
+    model.colorFormats[0] = format;
+    model.debugName = "ModelPipeline.SingleTarget";
+    set.Model = device.CreateGraphicsPipeline(model);
+    RHI::GraphicsPipelineDesc doubleSided = model;
+    doubleSided.cullMode = RHI::CullMode::None;
+    doubleSided.debugName = "ModelPipeline.SingleTarget.DoubleSided";
+    set.ModelDoubleSided = device.CreateGraphicsPipeline(doubleSided);
+    RHI::GraphicsPipelineDesc grid = s_Data3D.SingleTargetGridDesc;
+    grid.colorFormats[0] = format;
+    grid.debugName = "GridPipeline.SingleTarget";
+    set.Grid = device.CreateGraphicsPipeline(grid);
+    return &s_Data3D.SingleTargets.emplace(format, set).first->second;
+}
 
 void Renderer3D::Init()
 {
@@ -248,27 +286,16 @@ void Renderer3D::CreateShaderResources()
 
     s_Data3D.GridPipeline = device.CreateGraphicsPipeline(gridPipeDesc);
 
-    // Swapchain variants: one colour attachment, in the swapchain's format. The
-    // fragment shader still writes Location 1 (the entity id), which is simply
-    // unused in a pass that has no second attachment -- legal, unlike binding a
-    // two-attachment pipeline into a one-attachment pass.
-    RHI::GraphicsPipelineDesc swapchainDesc = pipeDesc;
-    swapchainDesc.colorAttachmentCount = 1;
-    swapchainDesc.colorFormats[0] = device.GetSwapchainFormat();
-    swapchainDesc.fragmentShader = s_Data3D.FragmentShaderNoId;
-    swapchainDesc.debugName = "ModelPipeline.Swapchain";
-    s_Data3D.ModelPipelineSwapchain = device.CreateGraphicsPipeline(swapchainDesc);
-
-    RHI::GraphicsPipelineDesc swapchainDoubleSidedDesc = swapchainDesc;
-    swapchainDoubleSidedDesc.cullMode = RHI::CullMode::None;
-    swapchainDoubleSidedDesc.debugName = "ModelPipeline.Swapchain.DoubleSided";
-    s_Data3D.ModelPipelineSwapchainDoubleSided = device.CreateGraphicsPipeline(swapchainDoubleSidedDesc);
-
-    RHI::GraphicsPipelineDesc gridSwapchainDesc = gridPipeDesc;
-    gridSwapchainDesc.colorAttachmentCount = 1;
-    gridSwapchainDesc.colorFormats[0] = device.GetSwapchainFormat();
-    gridSwapchainDesc.debugName = "GridPipeline.Swapchain";
-    s_Data3D.GridPipelineSwapchain = device.CreateGraphicsPipeline(gridSwapchainDesc);
+    // Single-target variants: one colour attachment. The fragment shader is
+    // the no_entity_id variant: an output with no matching attachment is invalid.
+    s_Data3D.SingleTargetModelDesc = pipeDesc;
+    s_Data3D.SingleTargetModelDesc.colorAttachmentCount = 1;
+    s_Data3D.SingleTargetModelDesc.fragmentShader = s_Data3D.FragmentShaderNoId;
+    s_Data3D.SingleTargetGridDesc = gridPipeDesc;
+    s_Data3D.SingleTargetGridDesc.colorAttachmentCount = 1;
+    s_Data3D.ShaderResourcesReady = true;
+    // The swapchain set is built now rather than on first use, as before.
+    (void)SingleTargetFor(device.GetSwapchainFormat());
 }
 
 void Renderer3D::DestroyShaderResources()
@@ -277,10 +304,15 @@ void Renderer3D::DestroyShaderResources()
 
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipeline);
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineDoubleSided);
-    device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineSwapchain);
-    device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineSwapchainDoubleSided);
+    for (auto& [format, set] : s_Data3D.SingleTargets)
+    {
+        device.DestroyGraphicsPipeline(set.Model);
+        device.DestroyGraphicsPipeline(set.ModelDoubleSided);
+        device.DestroyGraphicsPipeline(set.Grid);
+    }
+    s_Data3D.SingleTargets.clear();
+    s_Data3D.ShaderResourcesReady = false;
     device.DestroyGraphicsPipeline(s_Data3D.GridPipeline);
-    device.DestroyGraphicsPipeline(s_Data3D.GridPipelineSwapchain);
     device.DestroyShader(s_Data3D.VertexShader);
     device.DestroyShader(s_Data3D.FragmentShader);
     device.DestroyShader(s_Data3D.FragmentShaderNoId);
@@ -291,10 +323,7 @@ void Renderer3D::DestroyShaderResources()
     // someone else's object.
     s_Data3D.ModelPipeline = nullptr;
     s_Data3D.ModelPipelineDoubleSided = nullptr;
-    s_Data3D.ModelPipelineSwapchain = nullptr;
-    s_Data3D.ModelPipelineSwapchainDoubleSided = nullptr;
     s_Data3D.GridPipeline = nullptr;
-    s_Data3D.GridPipelineSwapchain = nullptr;
     s_Data3D.VertexShader = nullptr;
     s_Data3D.FragmentShader = nullptr;
     s_Data3D.FragmentShaderNoId = nullptr;
@@ -385,7 +414,12 @@ void Renderer3D::EndScene() {}
 
 void Renderer3D::SetSwapchainTarget(bool enabled)
 {
-    s_Data3D.SwapchainTarget = enabled;
+    SetColorTarget(enabled ? Renderer::GetDevice().GetSwapchainFormat() : RHI::TextureFormat::Undefined);
+}
+
+void Renderer3D::SetColorTarget(RHI::TextureFormat format)
+{
+    s_Data3D.TargetFormat = format;
 }
 
 void Renderer3D::DrawGrid()
@@ -393,7 +427,8 @@ void Renderer3D::DrawGrid()
     UHE_PROFILE_FUNCTION();
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
-    cmd.BindPipeline(s_Data3D.SwapchainTarget ? s_Data3D.GridPipelineSwapchain : s_Data3D.GridPipeline);
+    const auto* single = SingleTargetFor(s_Data3D.TargetFormat);
+    cmd.BindPipeline(single != nullptr ? single->Grid : s_Data3D.GridPipeline);
 
     struct GridPushConstants
     {
@@ -576,10 +611,10 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
         // Cull mode lives in the pipeline, so a doubleSided material needs the
         // variant bound rather than a state change.
         const bool doubleSided = material && material->DoubleSided;
-        cmd.BindPipeline(
-            s_Data3D.SwapchainTarget
-                ? (doubleSided ? s_Data3D.ModelPipelineSwapchainDoubleSided : s_Data3D.ModelPipelineSwapchain)
-                : (doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline));
+        const auto* single = SingleTargetFor(s_Data3D.TargetFormat);
+        cmd.BindPipeline(single != nullptr
+                             ? (doubleSided ? single->ModelDoubleSided : single->Model)
+                             : (doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline));
 
         cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
 
