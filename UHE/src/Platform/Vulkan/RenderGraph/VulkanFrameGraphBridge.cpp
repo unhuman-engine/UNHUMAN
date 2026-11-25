@@ -72,6 +72,47 @@ TextureUsage UsageOf(const FGLoweredFrame& frame, u32 resource)
     return usage;
 }
 
+/// @brief What code after the frame needs an exported texture to support.
+TextureUsage ExportUsage(const FGLoweredResource& resource)
+{
+    TextureUsage usage = TextureUsage::None;
+    switch (resource.FinalState)
+    {
+        case FGState::ShaderRead:
+            usage = TextureUsage::Sampled;
+            break;
+        case FGState::Storage:
+            usage = TextureUsage::Storage;
+            break;
+        case FGState::CopySrc:
+            usage = TextureUsage::TransferSrc;
+            break;
+        case FGState::CopyDst:
+            usage = TextureUsage::TransferDst;
+            break;
+        default: // RenderTarget / DepthTarget: the writing pass already asks for the attachment usage
+            break;
+    }
+    if (resource.ExportCopySource)
+        usage = usage | TextureUsage::TransferSrc;
+    return usage;
+}
+
+/// @brief The physical description of created texture \p resource of \p frame.
+TextureDesc PhysicalDesc(const FGLoweredFrame& frame, u32 resource)
+{
+    const FGLoweredResource& logical = frame.Resources[resource];
+    TextureDesc desc;
+    desc.width = logical.Texture.Width;
+    desc.height = logical.Texture.Height;
+    desc.mipLevels = logical.Texture.MipLevels;
+    desc.format = logical.Texture.Format;
+    desc.usage = UsageOf(frame, resource);
+    if (logical.Exported)
+        desc.usage = desc.usage | ExportUsage(logical);
+    return desc;
+}
+
 /// @brief The frontend's view of one render graph pass while it records.
 class VulkanFGContext final : public FGContext
 {
@@ -115,8 +156,37 @@ VulkanFrameGraphBridge::VulkanFrameGraphBridge(VulkanDevice& device)
     : m_Device(device), m_Pool([&device](const TextureDesc& desc) { return device.CreateTexture(desc); },
                                [&device](TextureHandle texture) { device.DestroyTexture(texture); }),
       m_BufferPool([&device](const BufferDesc& desc) { return device.CreateBuffer(desc); },
-                   [&device](BufferHandle buffer) { device.DestroyBuffer(buffer); })
+                   [&device](BufferHandle buffer) { device.DestroyBuffer(buffer); }),
+      m_Exports([&device](const TextureDesc& desc) { return device.CreateTexture(desc); },
+                [&device](TextureHandle texture) { device.DestroyTexture(texture); })
 {
+}
+
+TextureHandle VulkanFrameGraphBridge::ExportedTexture(const FrameGraph& frontend, const std::string& name)
+{
+    if (frontend.Ok())
+    {
+        const FGLoweredFrame frame = frontend.Lower();
+        for (u32 i = 0; i < frame.Resources.size(); ++i)
+        {
+            const FGLoweredResource& resource = frame.Resources[i];
+            if (!resource.IsTexture || !resource.Exported || resource.Name != name)
+                continue;
+            const ExportPool::Slot* slot = m_Exports.Acquire(name, PhysicalDesc(frame, i));
+            return slot != nullptr ? slot->Object : nullptr;
+        }
+    }
+    // Not declared this frame, or the frame will be dropped: whatever an
+    // earlier frame left, as long as one ran with it.
+    const ExportPool::Slot* slot = m_Exports.Find(name);
+    return slot != nullptr && slot->State != FGState::Undefined ? slot->Object : nullptr;
+}
+
+void VulkanFrameGraphBridge::CommitExports()
+{
+    for (const auto& [name, state] : m_PendingExports)
+        m_Exports.SetState(name, state);
+    m_PendingExports.clear();
 }
 
 bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderGraph& graph,
@@ -203,12 +273,27 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
             continue;
         }
 
-        TextureDesc desc;
-        desc.width = resource.Texture.Width;
-        desc.height = resource.Texture.Height;
-        desc.mipLevels = resource.Texture.MipLevels;
-        desc.format = resource.Texture.Format;
-        desc.usage = UsageOf(frame, i);
+        const TextureDesc desc = PhysicalDesc(frame, i);
+        if (resource.Exported)
+        {
+            // One object per name across frames: to the render graph it is an
+            // import, which also makes the pass that writes it a culling root.
+            // Its barrier starts from the state the last frame that ran left it in.
+            const ExportPool::Slot* slot = m_Exports.Acquire(resource.Name, desc);
+            if (slot == nullptr)
+            {
+                errors.push_back("'" + resource.Name + "': could not allocate a " + std::to_string(desc.width) + "x" +
+                                 std::to_string(desc.height) + " exported texture");
+                return false;
+            }
+            m_Textures[i] = slot->Object;
+            const u64 identity = static_cast<u64>(reinterpret_cast<uintptr_t>(slot->Object));
+            rgTextures[i] =
+                graph.ImportTexture(resource.Name, identity, desc.width, desc.height, resource.Texture.SampleCount,
+                                    ToImageState(slot->State), ToImageState(resource.FinalState));
+            m_PendingExports.emplace_back(resource.Name, resource.FinalState);
+            continue;
+        }
         m_Textures[i] = m_Pool.Acquire(desc);
         if (m_Textures[i] == nullptr)
         {

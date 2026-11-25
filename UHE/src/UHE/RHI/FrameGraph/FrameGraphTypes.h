@@ -121,6 +121,19 @@ struct FGAttachment
     u32 ClearStencil = 0;
 };
 
+/**
+ * @brief How code after the frame uses a texture the frame created (FrameGraph::Export).
+ *
+ * The editor's viewport samples its scene colour in the UI, and picking
+ * copies one entity ID out of the entity target: both happen outside the
+ * graph, after its passes ran. An export says which state they need it in.
+ */
+struct FGExport
+{
+    FGState FinalState = FGState::ShaderRead; ///< the state the frame leaves it in
+    bool CopySource = false; ///< also copied from outside the graph (RHIDevice::ReadPixel, ReadPixelAsync)
+};
+
 /// @brief A named per-frame value that selects pass variants and is part of the graph hash.
 using FGParameter = std::variant<bool, i64, double, std::string>;
 
@@ -135,6 +148,7 @@ enum class FGErrorType : u8
     TooManyTargets,  ///< more than one depth target or kMaxRenderTargets colour targets
     EmptyDesc,       ///< zero-sized texture or buffer
     DuplicateName,   ///< two resources share a name
+    NotExportable,   ///< exports an import, exports twice, or asks for an unusable final state
 };
 
 struct FGError
@@ -158,10 +172,12 @@ struct FGLoweredResource
     FGBuffer::Desc Buffer;
     bool Imported = false;
     bool Backbuffer = false; ///< the image this frame presents; the backend supplies it
+    bool Exported = false;   ///< created here and kept past the frame (FrameGraph::Export)
+    bool ExportCopySource = false; ///< exported and copied from outside the graph
     TextureHandle ImportedTexture = nullptr;
     BufferHandle ImportedBuffer = nullptr;
     FGState InitialState = FGState::Undefined; ///< imported textures only
-    FGState FinalState = FGState::Undefined;   ///< imported textures only
+    FGState FinalState = FGState::Undefined;   ///< imported and exported textures only
 };
 
 /// @brief One declared use, in declaration order within its pass.

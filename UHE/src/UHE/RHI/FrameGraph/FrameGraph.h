@@ -125,6 +125,21 @@ public:
     FGHandle<FGTexture> ImportBackbuffer(const FGTexture::Desc& desc);
 
     /**
+     * @brief Keeps a texture this frame created alive after the frame, for code outside the graph.
+     *
+     * A created texture is otherwise the frame's alone: the next frame may get
+     * another object, in any state. An exported one keeps a single object
+     * under its name across frames (recreated when its size or format
+     * changes), ends the frame in `use.FinalState`, and makes the pass that
+     * wrote it a root the backend never culls. RHIDevice::GetExportedTexture
+     * returns it, already during the frame that declares it, so the UI can
+     * sample what the scene pass is about to render.
+     *
+     * @param handle the version to keep: the one the last write returned
+     */
+    void Export(FGHandle<FGTexture> handle, const FGExport& use = {});
+
+    /**
      * @brief Declares a pass. @p setup(FGBuilder&, Data&) runs now;
      *        @p execute(const Data&, FGContext&) runs when the backend records it.
      * @return the pass data, filled in by setup, valid until Reset().
@@ -202,6 +217,8 @@ private:
         BufferHandle ImportedBuffer = nullptr;
         FGState InitialState = FGState::Undefined;
         FGState FinalState = FGState::Undefined;
+        bool Exported = false;
+        bool ExportCopySource = false;
         u32 Version = 0; ///< latest version; imported resources start readable at 0
     };
 

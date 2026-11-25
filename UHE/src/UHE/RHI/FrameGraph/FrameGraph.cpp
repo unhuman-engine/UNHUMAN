@@ -120,6 +120,8 @@ const char* ToString(FGErrorType type)
             return "EmptyDesc";
         case FGErrorType::DuplicateName:
             return "DuplicateName";
+        case FGErrorType::NotExportable:
+            return "NotExportable";
     }
     return "?";
 }
@@ -365,6 +367,40 @@ FGHandle<FGBuffer> FrameGraph::Import(const std::string& name, const FGBuffer::D
     return {index, 0, m_Frame};
 }
 
+void FrameGraph::Export(FGHandle<FGTexture> handle, const FGExport& use)
+{
+    const u32 index = CheckHandle(handle.Index, handle.Version, handle.Frame, true, "", "exports");
+    if (index == FG::kInvalidIndex)
+        return;
+    Resource& resource = m_Resources[index];
+    if (resource.Imported)
+    {
+        PushError(FGErrorType::NotExportable, "", resource.Name,
+                  "is imported: it already outlives the frame, in the final state its import names");
+        return;
+    }
+    if (resource.Exported)
+    {
+        PushError(FGErrorType::NotExportable, "", resource.Name, "is exported twice");
+        return;
+    }
+    if (resource.Version == 0)
+    {
+        PushError(FGErrorType::ReadBeforeWrite, "", resource.Name,
+                  "exports a texture no pass writes; export the handle a write returned");
+        return;
+    }
+    if (use.FinalState == FGState::Undefined || use.FinalState == FGState::Present)
+    {
+        PushError(FGErrorType::NotExportable, "", resource.Name,
+                  "an export must end in a state code after the frame can use, not Undefined or Present");
+        return;
+    }
+    resource.Exported = true;
+    resource.FinalState = use.FinalState;
+    resource.ExportCopySource = use.CopySource;
+}
+
 void FrameGraph::SetParameter(const std::string& name, FGParameter value)
 {
     m_Parameters[name] = std::move(value);
@@ -444,6 +480,8 @@ FGLoweredFrame FrameGraph::Lower() const
         lowered.Buffer = resource.Buffer;
         lowered.Imported = resource.Imported;
         lowered.Backbuffer = resource.Backbuffer;
+        lowered.Exported = resource.Exported;
+        lowered.ExportCopySource = resource.ExportCopySource;
         lowered.ImportedTexture = resource.ImportedTexture;
         lowered.ImportedBuffer = resource.ImportedBuffer;
         lowered.InitialState = resource.InitialState;
@@ -474,6 +512,8 @@ u64 FrameGraph::Hash() const
         hash.Value(resource.IsTexture);
         hash.Value(resource.Imported);
         hash.Value(resource.Backbuffer);
+        hash.Value(resource.Exported);
+        hash.Value(resource.ExportCopySource);
         if (resource.IsTexture)
         {
             const FGTexture::Desc& d = resource.Texture;

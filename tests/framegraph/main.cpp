@@ -525,6 +525,166 @@ int main()
         check(buffers.Acquire(bigger) != first && buffersCreated == 2, "and a different size is a different buffer");
     }
 
+    section("exports: a created texture kept past the frame");
+    {
+        const FGTexture::Desc color{1280, 720, TextureFormat::RGBA8_SRGB};
+        const FGTexture::Desc ids{1280, 720, TextureFormat::R32_SINT};
+        struct Targets
+        {
+            FGHandle<FGTexture> Color, Ids;
+        };
+        FrameGraph fg;
+        const Targets& t = fg.AddPass<Targets>(
+            "Editor.Scene",
+            [&](FGBuilder& b, Targets& d)
+            {
+                d.Color = b.Write(b.Create("Scene.Color", color), FGWrite::RenderTarget);
+                d.Ids = b.Write(b.Create("Scene.Ids", ids), FGWrite::RenderTarget);
+            },
+            [](const Targets&, FGContext&) {});
+        const u64 unexported = fg.Hash();
+        fg.Export(t.Color);
+        fg.Export(t.Ids, {.FinalState = FGState::ShaderRead, .CopySource = true});
+        check(fg.Ok(), "exporting the versions the writes returned is accepted");
+
+        const FGLoweredFrame frame = fg.Lower();
+        check(frame.Resources[0].Exported && !frame.Resources[0].Imported &&
+                  frame.Resources[0].FinalState == FGState::ShaderRead && !frame.Resources[0].ExportCopySource,
+              "a default export is lowered as created, kept, and left ShaderRead");
+        check(frame.Resources[1].Exported && frame.Resources[1].ExportCopySource,
+              "an export copied from outside the graph says so");
+        check(fg.Hash() != unexported, "exporting changes the hash");
+
+        fg.Export(t.Color);
+        check(HasError(fg, FGErrorType::NotExportable), "exporting one texture twice is refused");
+    }
+    {
+        FrameGraph fg;
+        FGHandle<FGTexture> created;
+        FGHandle<FGTexture> written;
+        FGHandle<FGTexture> imported =
+            fg.Import("Imported", kHdr, FakeTexture(0xA0), FGState::Undefined, FGState::ShaderRead);
+        struct Data
+        {
+            FGHandle<FGTexture> Out;
+        };
+        fg.AddPass<Data>(
+            "Writer",
+            [&](FGBuilder& b, Data& d)
+            {
+                created = b.Create("Unwritten", kHdr);
+                const FGHandle<FGTexture> fresh = b.Create("Written", kHdr);
+                (void)b.Write(fresh, FGWrite::RenderTarget);
+                written = fresh; // the version before the write: stale once it ran
+                d.Out = imported;
+            },
+            [](const Data&, FGContext&) {});
+        fg.Export(created);
+        check(HasError(fg, FGErrorType::ReadBeforeWrite), "exporting a texture nothing wrote is refused");
+        fg.Export(written);
+        check(HasError(fg, FGErrorType::StaleVersion), "exporting a version a write replaced is refused");
+        fg.Export(imported);
+        check(HasError(fg, FGErrorType::NotExportable),
+              "exporting an import is refused: it already outlives the frame");
+        fg.Export(FGHandle<FGTexture>{});
+        check(HasError(fg, FGErrorType::InvalidHandle), "exporting a default handle is refused");
+    }
+    {
+        FrameGraph fg;
+        struct Data
+        {
+            FGHandle<FGTexture> Out;
+        };
+        const Data& d = fg.AddPass<Data>(
+            "Writer", [&](FGBuilder& b, Data& out) { out.Out = b.Write(b.Create("T", kHdr), FGWrite::RenderTarget); },
+            [](const Data&, FGContext&) {});
+        fg.Export(d.Out, {.FinalState = FGState::Present});
+        check(HasError(fg, FGErrorType::NotExportable), "an export cannot end in Present");
+        fg.Export(d.Out, {.FinalState = FGState::Undefined});
+        check(fg.Errors().size() == 2, "nor in Undefined");
+        const FGHandle<FGTexture> kept = d.Out;
+        fg.Reset();
+        fg.Export(kept);
+        check(HasError(fg, FGErrorType::InvalidHandle), "a handle from the last frame cannot be exported");
+    }
+
+    section("export pool: one texture per name across frames");
+    {
+        int created = 0;
+        std::vector<TextureHandle> destroyed;
+        ExportPool pool(
+            [&](const TextureDesc&)
+            {
+                ++created;
+                return FakeTexture(0x9000 + static_cast<uintptr_t>(created));
+            },
+            [&](TextureHandle texture) { destroyed.push_back(texture); }, 3);
+
+        TextureDesc color;
+        color.width = 1280;
+        color.height = 720;
+        color.format = TextureFormat::RGBA8_SRGB;
+        color.usage = TextureUsage::ColorAttach | TextureUsage::Sampled;
+
+        const ExportPool::Slot* slot = pool.Acquire("Scene.Color", color);
+        check(slot != nullptr && slot->State == FGState::Undefined, "a new export starts Undefined");
+        const TextureHandle first = slot->Object;
+        check(pool.Acquire("Scene.Color", color)->Object == first && created == 1,
+              "the UI and the frame asking in one frame get one object");
+        pool.SetState("Scene.Color", FGState::ShaderRead);
+        pool.EndFrame();
+
+        slot = pool.Acquire("Scene.Color", color);
+        check(slot->Object == first && slot->State == FGState::ShaderRead,
+              "the next frame gets the same object, in the state the last one left");
+        check(pool.Find("Scene.Color") == slot && pool.Find("Other") == nullptr, "Find looks up by name");
+
+        TextureDesc fewer = color;
+        fewer.usage = TextureUsage::ColorAttach;
+        check(pool.Acquire("Scene.Color", fewer)->Object == first, "an object with more usage than asked serves");
+        TextureDesc more = color;
+        more.usage = color.usage | TextureUsage::TransferSrc;
+        slot = pool.Acquire("Scene.Color", more);
+        const TextureHandle widened = slot->Object;
+        check(widened != first && slot->State == FGState::Undefined && created == 2,
+              "a missing usage replaces the object, which starts Undefined again");
+        check(pool.Acquire("Scene.Color", color)->Object == widened && created == 2,
+              "the replacement keeps both usages, so the first request does not replace it back");
+        pool.EndFrame();
+
+        TextureDesc resized = more;
+        resized.width = 1920;
+        resized.height = 1080;
+        const TextureHandle big = pool.Acquire("Scene.Color", resized)->Object;
+        check(big != widened && created == 3, "a resize replaces the object");
+        check(destroyed.empty() && pool.RetiredSize() == 2, "replaced objects wait: frames in flight read them");
+        pool.EndFrame();
+        pool.Acquire("Scene.Color", resized);
+        pool.EndFrame();
+        check(destroyed.empty(), "still alive two frames after it was replaced");
+        pool.Acquire("Scene.Color", resized);
+        pool.EndFrame();
+        check(destroyed.size() == 1 && destroyed[0] == first, "the first is destroyed at the end of the third");
+        pool.Acquire("Scene.Color", resized);
+        pool.EndFrame();
+        check(destroyed.size() == 2 && destroyed[1] == widened && pool.RetiredSize() == 0, "and so is the second");
+
+        pool.Acquire("Gone", color);
+        for (int frame = 0; frame < 4; ++frame)
+        {
+            pool.Acquire("Scene.Color", resized);
+            pool.EndFrame();
+        }
+        check(pool.Find("Gone") == nullptr && pool.Size() == 1, "a name nothing asks for is released");
+        check(pool.Find("Scene.Color")->Object == big, "while the one in use stays");
+
+        pool.Clear();
+        check(pool.Size() == 0 && pool.DestroyedCount() == pool.CreatedCount(), "Clear destroys everything");
+
+        ExportPool failing([](const TextureDesc&) { return TextureHandle{nullptr}; }, [](TextureHandle) {});
+        check(failing.Acquire("X", color) == nullptr && failing.Size() == 0, "a failed allocation is reported");
+    }
+
     std::cout << '\n' << (g_failures == 0 ? "all frame graph checks passed" : "frame graph checks FAILED") << '\n';
     return g_failures == 0 ? 0 : 1;
 }

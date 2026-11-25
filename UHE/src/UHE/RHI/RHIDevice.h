@@ -1,6 +1,7 @@
 #pragma once
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 #include "RHITypes.h"
 #include "UHE/Core/Core.h"
@@ -152,6 +153,19 @@ public:
     [[nodiscard]] virtual FrameGraph* GetFrameGraph() { return nullptr; }
     /// @brief Size and format of the image this frame presents, for FrameGraph::ImportBackbuffer.
     [[nodiscard]] virtual FGTexture::Desc GetBackbufferDesc() { return {}; }
+    /**
+     * @brief The texture the frame graph keeps as \p name (FrameGraph::Export), or nullptr.
+     *
+     * Call after the export is declared: during that frame it is already the
+     * object the graph will render into, so the UI of the same frame samples
+     * this frame's image. The object changes when the export's size or format
+     * does; ask every frame instead of keeping it.
+     */
+    [[nodiscard]] virtual TextureHandle GetExportedTexture(const std::string& name)
+    {
+        (void)name;
+        return nullptr;
+    }
 };
 
 } // namespace UHE::RHI

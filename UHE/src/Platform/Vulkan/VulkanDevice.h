@@ -87,6 +87,8 @@ public:
     void RegisterFrameBuffer(RGBufferHandle rgBuffer, BufferHandle buffer);
     /// \copydoc RHIDevice::GetBackbufferDesc
     [[nodiscard]] FGTexture::Desc GetBackbufferDesc() override;
+    /// \copydoc RHIDevice::GetExportedTexture
+    [[nodiscard]] TextureHandle GetExportedTexture(const std::string& name) override;
     /// @brief Imports this frame's swapchain image into the render graph. Every
     /// importer (the UI pass, a frame graph backbuffer) gets the same slot.
     RGTextureHandle ImportSwapchain();

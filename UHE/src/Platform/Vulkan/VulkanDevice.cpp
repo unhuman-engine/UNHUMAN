@@ -678,6 +678,11 @@ FGTexture::Desc VulkanDevice::GetBackbufferDesc()
     return desc;
 }
 
+TextureHandle VulkanDevice::GetExportedTexture(const std::string& name)
+{
+    return m_FrameGraphBridge.ExportedTexture(m_Frontend, name);
+}
+
 void VulkanDevice::RegisterFrameBuffer(RGBufferHandle rgBuffer, BufferHandle buffer)
 {
     if (!rgBuffer.IsValid() || buffer == nullptr)
@@ -788,6 +793,8 @@ void VulkanDevice::EndFrameGraph()
         m_RenderGraphExecutor.MapToTaskgraph(m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(),
                                              m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), m_BarrierEncoder);
     m_RenderGraphExecutor.ExecuteGraph(m_TaskGraph, m_Jobsystem, m_PassNodes);
+    // Recorded: the exported textures end this frame in their final states.
+    m_FrameGraphBridge.CommitExports();
     m_TaskGraph.Reset();
     m_FrameGraph.Reset();
 }
