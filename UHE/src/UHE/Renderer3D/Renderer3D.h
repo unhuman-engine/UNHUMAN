@@ -66,6 +66,14 @@ public:
     /// sets rather than one.
     static void SetSwapchainTarget(bool enabled);
 
+    /// @brief Selects the pipeline set for a pass with one colour attachment in \p format.
+    ///
+    /// The single-attachment set is built per format on first use: the swapchain's
+    /// format for the game path, RGBA16F for a scene that renders into an HDR
+    /// target before tonemapping. TextureFormat::Undefined selects the editor's
+    /// two-attachment set (colour plus entity id).
+    static void SetColorTarget(RHI::TextureFormat format);
+
     /// Rebuilds every shader module and pipeline from the library's current bytes.
     ///
     /// The shader library calls this when a source changes on disk, and the
