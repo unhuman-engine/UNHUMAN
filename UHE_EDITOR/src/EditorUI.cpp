@@ -85,7 +85,100 @@ namespace EditorUI
                 }
             }
         }
+        /// A sphere for each shading mode, in \p color (the button's foreground).
+        void DrawShadingIcon(ImDrawList* draw, const ImVec2& c, float r, ShadingIcon icon, ImU32 color)
+        {
+            const ImVec4 base = ImGui::ColorConvertU32ToFloat4(color);
+            auto tone = [&](float k, float a = 1.0f)
+            { return ImGui::GetColorU32(ImVec4(base.x * k, base.y * k, base.z * k, base.w * a)); };
+            switch (icon)
+            {
+                case ShadingIcon::Wireframe:
+                    draw->AddCircle(c, r, color, 24, 1.3f);
+                    draw->AddEllipse(c, ImVec2(r, r * 0.38f), color, 0.0f, 24, 1.0f);
+                    draw->AddEllipse(c, ImVec2(r * 0.38f, r), color, 0.0f, 24, 1.0f);
+                    break;
+                case ShadingIcon::Solid:
+                    // Clay: a lit disc with its shadow side darker.
+                    draw->AddCircleFilled(c, r, tone(0.55f), 24);
+                    draw->AddCircleFilled(ImVec2(c.x - r * 0.18f, c.y - r * 0.18f), r * 0.78f, tone(0.85f), 24);
+                    break;
+                case ShadingIcon::Unlit:
+                    draw->AddCircleFilled(c, r, color, 24); // flat: no shading at all
+                    break;
+                case ShadingIcon::Lit:
+                    // Material: dark base, a soft lit side and a specular dot.
+                    draw->AddCircleFilled(c, r, tone(0.40f), 24);
+                    draw->AddCircleFilled(ImVec2(c.x - r * 0.15f, c.y - r * 0.15f), r * 0.80f, tone(0.70f), 24);
+                    draw->AddCircleFilled(ImVec2(c.x - r * 0.28f, c.y - r * 0.28f), r * 0.50f, tone(0.95f), 24);
+                    draw->AddCircleFilled(ImVec2(c.x - r * 0.38f, c.y - r * 0.40f), r * 0.16f,
+                                          IM_COL32(255, 255, 255, 230), 12);
+                    break;
+                case ShadingIcon::Normals:
+                {
+                    // Three wedges in the colours a normal view paints x, y and z.
+                    const ImU32 wedges[3] = {IM_COL32(222, 96, 104, 255), IM_COL32(120, 210, 110, 255),
+                                             IM_COL32(100, 150, 240, 255)};
+                    for (int i = 0; i < 3; ++i)
+                    {
+                        const float a0 = -1.5708f + i * 2.0944f;
+                        draw->PathLineTo(c);
+                        draw->PathArcTo(c, r, a0, a0 + 2.0944f, 10);
+                        draw->PathFillConvex(wedges[i]);
+                    }
+                    draw->AddCircle(c, r, tone(1.0f, 0.6f), 24, 1.0f);
+                    break;
+                }
+            }
+        }
     } // namespace
+
+    bool ShadingButton(const char* id, ShadingIcon icon, bool active, const char* tooltip, float size)
+    {
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton(id, ImVec2(size, size));
+        const bool hovered = ImGui::IsItemHovered();
+        const bool held = ImGui::IsItemActive();
+
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 max(pos.x + size, pos.y + size);
+        if (active)
+            draw->AddRectFilled(pos, max, ImGui::GetColorU32(EditorTheme::Accent()), 4.0f);
+        else if (held || hovered)
+            draw->AddRectFilled(pos, max, ImGui::GetColorU32(held ? ImGuiCol_ButtonActive : ImGuiCol_ButtonHovered),
+                                4.0f);
+
+        const ImU32 foreground = active ? ImGui::GetColorU32(EditorTheme::AccentForeground())
+                                        : ImGui::GetColorU32(hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+        DrawShadingIcon(draw, ImVec2(pos.x + size * 0.5f, pos.y + size * 0.5f), size * 0.32f, icon, foreground);
+
+        if (tooltip && hovered)
+            ImGui::SetTooltip("%s", tooltip);
+        return ImGui::IsItemClicked();
+    }
+
+    bool HeaderMenuButton(const char* label, const char* popupId, const char* tooltip)
+    {
+        const bool open = ImGui::IsPopupOpen(popupId);
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              open ? ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive) : ImVec4(0, 0, 0, 0));
+        // Trailing spaces reserve room for a drawn chevron: the font has no arrow glyph.
+        char text[96];
+        std::snprintf(text, sizeof(text), "%s     ", label);
+        const bool clicked = ImGui::Button(text);
+        ImGui::PopStyleColor();
+        const ImVec2 max = ImGui::GetItemRectMax();
+        const float arrowX = max.x - ImGui::GetStyle().FramePadding.x - 5.0f;
+        const float arrowY = (ImGui::GetItemRectMin().y + max.y) * 0.5f;
+        ImGui::GetWindowDrawList()->AddTriangleFilled(
+            ImVec2(arrowX - 4.0f, arrowY - 2.0f), ImVec2(arrowX + 4.0f, arrowY - 2.0f), ImVec2(arrowX, arrowY + 3.0f),
+            ImGui::GetColorU32(ImGuiCol_TextDisabled));
+        if (tooltip && ImGui::IsItemHovered() && !open)
+            ImGui::SetTooltip("%s", tooltip);
+        if (clicked)
+            ImGui::OpenPopup(popupId);
+        return ImGui::IsPopupOpen(popupId);
+    }
 
     bool ToolIconButton(const char* id, ToolIcon icon, bool active, const char* tooltip, float size)
     {

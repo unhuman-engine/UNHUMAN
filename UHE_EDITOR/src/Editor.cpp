@@ -61,6 +61,11 @@ void Editor::OnAttach()
 
     m_ActiveScene = CreateRef<Scene>();
     m_EditorCamera = EditorCamera(45.0f, 1.766f, 0.1f, 1000.0f);
+    // Start above the ground and at an angle, as Blender and Godot do: level
+    // with the grid, the plane is edge-on and the view shows nothing.
+    m_EditorCamera.SetDistance(15.0f);
+    m_EditorCamera.SetPitch(0.45f);
+    m_EditorCamera.SetYaw(-0.6f);
     m_SceneHireacyPanel.SetContext(m_ActiveScene);
 
     // A scene loaded before the first ImGui frame resizes the viewport would
@@ -332,8 +337,14 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
         "Editor.Scene",
         [&](FGBuilder& builder, SceneTargets& targets)
         {
+            // Editing clears to a neutral grey, like Blender's and Godot's
+            // viewports, so the grid and dark objects read; the running game
+            // keeps its own black.
+            FGAttachment background;
+            background.ClearColor = runtime ? std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}
+                                            : std::array<float, 4>{0.038f, 0.040f, 0.046f, 1.0f};
             targets.Color = builder.Write(builder.Create(kSceneColor, {width, height, TextureFormat::RGBA8_SRGB}),
-                                          FGWrite::RenderTarget);
+                                          FGWrite::RenderTarget, background);
             // Entity IDs clear to -1: "no entity" under the cursor.
             FGAttachment noEntity;
             noEntity.ClearColor = {-1.0f, -1.0f, -1.0f, -1.0f};
@@ -360,10 +371,23 @@ void Editor::RecordSceneGraphPass(RHI::FGContext& context, Timestep ts, bool run
     cmd.SetViewport(0.0f, 0.0f, static_cast<f32>(context.Width()), static_cast<f32>(context.Height()));
     cmd.SetScissor(0, 0, context.Width(), context.Height());
 
+    // The shading mode is the viewport's, not the scene's: set for this pass
+    // only, so nothing else that renders models inherits it.
+    Renderer3D::SetViewMode(m_ViewMode);
     if (runtime)
         m_ActiveScene->RenderRuntimeScene(ts);
     else
         m_ActiveScene->RenderEditorScene(ts, m_EditorCamera);
+    Renderer3D::SetViewMode(Renderer3D::ViewMode::Lit);
+}
+
+void Editor::SetViewMode(Renderer3D::ViewMode mode)
+{
+    if (mode == m_ViewMode)
+        return;
+    if (mode == Renderer3D::ViewMode::Wireframe)
+        m_ViewModeBeforeWireframe = m_ViewMode;
+    m_ViewMode = mode;
 }
 
 void Editor::OnEvent(UHE::Event& e)
@@ -791,6 +815,12 @@ bool Editor::onKeyPressed(KeyPressedEvent& e)
                     RedoTransform();
                 else
                     UndoTransform();
+            }
+            else if (shift)
+            {
+                // Blender's Shift+Z: wireframe on, and back to the previous mode.
+                SetViewMode(m_ViewMode == Renderer3D::ViewMode::Wireframe ? m_ViewModeBeforeWireframe
+                                                                          : Renderer3D::ViewMode::Wireframe);
             }
             break;
         }
@@ -1553,35 +1583,38 @@ void Editor::DrawViewportOverlay(const ImVec2& imageMin, const ImVec2& imageMax)
         badgeX = badgeMax.x + 6.0f;
     };
 
-    const char* toolName = "Select";
-    ImVec4 toolAccent = EditorTheme::Accent();
-    switch (m_GizmoType)
+    if (m_ShowToolBadges)
     {
-        case ImGuizmo::TRANSLATE:
-            toolName = "Move";
-            break;
-        case ImGuizmo::ROTATE:
-            toolName = "Rotate";
-            break;
-        case ImGuizmo::SCALE:
-            toolName = "Scale";
-            break;
-        default:
-            break;
-    }
-    drawBadge(toolName, toolAccent);
-
-    if (m_GizmoType != -1)
-    {
-        char space[32];
-        std::snprintf(space, sizeof(space), "%s Space", m_GizmoSpaceWorld ? "World" : "Local");
-        drawBadge(space, EditorTheme::ConsoleInfo());
-
-        if (m_SnapEnabled)
+        const char* toolName = "Select";
+        ImVec4 toolAccent = EditorTheme::Accent();
+        switch (m_GizmoType)
         {
-            char snap[32];
-            std::snprintf(snap, sizeof(snap), "Snap %.2f", m_SnapValue);
-            drawBadge(snap, EditorTheme::Warning());
+            case ImGuizmo::TRANSLATE:
+                toolName = "Move";
+                break;
+            case ImGuizmo::ROTATE:
+                toolName = "Rotate";
+                break;
+            case ImGuizmo::SCALE:
+                toolName = "Scale";
+                break;
+            default:
+                break;
+        }
+        drawBadge(toolName, toolAccent);
+
+        if (m_GizmoType != -1)
+        {
+            char space[32];
+            std::snprintf(space, sizeof(space), "%s Space", m_GizmoSpaceWorld ? "World" : "Local");
+            drawBadge(space, EditorTheme::ConsoleInfo());
+
+            if (m_SnapEnabled)
+            {
+                char snap[32];
+                std::snprintf(snap, sizeof(snap), "Snap %.2f", m_SnapValue);
+                drawBadge(snap, EditorTheme::Warning());
+            }
         }
     }
 
@@ -1598,35 +1631,9 @@ void Editor::DrawViewportOverlay(const ImVec2& imageMin, const ImVec2& imageMax)
         draw->AddText(ImVec2(warnMin.x + 12.0f, warnMin.y + 5.0f), ImGui::GetColorU32(EditorTheme::Warning()), warning);
     }
 
-    DrawAxisGizmo(draw, ImVec2(imageMin.x + 48.0f, imageMax.y - 48.0f), 30.0f);
-
-    // Interactive camera controls, anchored to the top-right corner. Submitted
-    // last so it sits above the docked viewport window.
-    ImGui::SetNextWindowPos(ImVec2(imageMax.x - 10.0f, imageMin.y + 8.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-    ImGui::SetNextWindowBgAlpha(0.82f);
-    const ImGuiWindowFlags controlFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
-                                          ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove |
-                                          ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
-    ImGui::Begin("##ViewportControls", nullptr, controlFlags);
-    ImGui::PopStyleVar(2);
-
-    ImGui::TextDisabled("Camera");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(110.0f);
-    float speed = m_EditorCamera.GetSpeedMultiplier();
-    if (ImGui::SliderFloat("##CameraSpeed", &speed, 0.1f, 5.0f, "%.2fx"))
-        m_EditorCamera.SetSpeedMultiplier(speed);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Pan / orbit / zoom sensitivity");
-    ImGui::SameLine();
-    if (ImGui::Button("Focus"))
-        FocusSelectedEntity();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Frame the selected entity (F)");
-
-    ImGui::End();
+    // The orientation gizmo sits top-right, where Blender and Godot keep theirs.
+    if (m_ShowNavigationGizmo)
+        DrawAxisGizmo(draw, ImVec2(imageMax.x - 46.0f, imageMin.y + 46.0f), 28.0f);
 }
 
 void Editor::DrawAxisGizmo(ImDrawList* draw, const ImVec2& center, float radius)
@@ -1726,8 +1733,20 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
     add("Step One Tick", "Play", "F7", m_SceneState == SceneState::Paused, [this] { OnScreenStep(); });
     add("Stop", "Play", "F5", m_SceneState != SceneState::Edit, [this] { OnSceneStop(); });
 
-    add("Toggle Lighting", "Render", "", true,
-        [this] { Renderer3D::SetLightingEnabled(!Renderer3D::IsLightingEnabled()); });
+    add("Shading: Wireframe", "Viewport", "Shift+Z", m_ViewMode != Renderer3D::ViewMode::Wireframe,
+        [this] { SetViewMode(Renderer3D::ViewMode::Wireframe); });
+    add("Shading: Solid", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::Solid,
+        [this] { SetViewMode(Renderer3D::ViewMode::Solid); });
+    add("Shading: Unlit", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::Unlit,
+        [this] { SetViewMode(Renderer3D::ViewMode::Unlit); });
+    add("Shading: Lit", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::Lit,
+        [this] { SetViewMode(Renderer3D::ViewMode::Lit); });
+    add("Shading: Normals", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::Normals,
+        [this] { SetViewMode(Renderer3D::ViewMode::Normals); });
+    add("Toggle Grid", "Viewport", "", true,
+        [] { Scene::GetEditorOverlays().Grid = !Scene::GetEditorOverlays().Grid; });
+    add("Toggle Light Icons", "Viewport", "", true,
+        [] { Scene::GetEditorOverlays().LightIcons = !Scene::GetEditorOverlays().LightIcons; });
     add("Reload Shaders", "Render", "Ctrl+Shift+R", true, [this] { ReloadShaders(); });
     add("Reload Scripts", "Render", "Ctrl+Alt+R", true, [this] { ReloadScripts(); });
 
@@ -1993,7 +2012,7 @@ void Editor::DrawEditorToolbar()
         stateColor = EditorTheme::Warning();
     }
 
-    const f32 displayWidth = 78.0f + 4.0f + 88.0f + 12.0f + 1.0f + 12.0f + 62.0f;
+    const f32 displayWidth = 88.0f + 12.0f + 1.0f + 12.0f + 62.0f;
     f32 clusterX = ImGui::GetWindowWidth() - 8.0f - displayWidth;
     const f32 minClusterX = ImGui::GetCursorPosX() + 16.0f;
     if (clusterX < minClusterX)
@@ -2001,10 +2020,6 @@ void Editor::DrawEditorToolbar()
     ImGui::SameLine(clusterX);
     ImGui::SetCursorPosY(5.0f);
 
-    bool lighting = Renderer3D::IsLightingEnabled();
-    if (EditorUI::ToolbarToggle("Lighting", lighting, "Toggle 3D lighting", ImVec2(78.0f, 28.0f)))
-        Renderer3D::SetLightingEnabled(!lighting);
-    ImGui::SameLine(0.0f, 4.0f);
     if (EditorUI::ToolbarToggle("Fullscreen", m_IsViewportFullScreen,
                                 "Toggle fullscreen viewport (Ctrl+Shift+F)", ImVec2(88.0f, 28.0f)))
         m_IsViewportFullScreen = !m_IsViewportFullScreen;
@@ -2047,7 +2062,108 @@ void Editor::DrawViewportHeader()
     if (ImGui::IsItemHovered() && !m_CurrentScenePath.empty())
         ImGui::SetTooltip("%s", m_CurrentScenePath.string().c_str());
 
+    // Right side: View and Overlays menus, then the shading buttons. Laid out
+    // from the right edge; a narrow viewport drops the menus before the buttons.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float buttonSize = ImGui::GetFrameHeight();
+    const float shadingWidth = buttonSize * 5.0f + 2.0f * 4.0f;
+    const float menusWidth = ImGui::CalcTextSize("View     ").x + ImGui::CalcTextSize("Overlays     ").x +
+                             style.FramePadding.x * 4.0f + style.ItemSpacing.x + 14.0f;
+    const float right = ImGui::GetWindowWidth() - 8.0f;
+    const float available = right - ImGui::GetItemRectMax().x + ImGui::GetWindowPos().x - 16.0f;
+    if (available > shadingWidth + menusWidth)
+    {
+        ImGui::SameLine(right - shadingWidth - menusWidth);
+        ImGui::SetCursorPosY(3.0f);
+        DrawViewportCameraMenu();
+        ImGui::SameLine();
+        DrawViewportOverlaysMenu();
+        ImGui::SameLine(0.0f, 8.0f);
+        EditorUI::Separator();
+    }
+    if (available > shadingWidth)
+    {
+        ImGui::SameLine(right - shadingWidth);
+        ImGui::SetCursorPosY(3.0f);
+        DrawViewportShading();
+    }
+
     ImGui::EndChild();
+}
+
+void Editor::DrawViewportCameraMenu()
+{
+    if (!EditorUI::HeaderMenuButton("View", "##ViewportViewMenu", "Camera speed and framing"))
+        return;
+    if (!ImGui::BeginPopup("##ViewportViewMenu"))
+        return;
+    ImGui::SeparatorText("Camera");
+    ImGui::SetNextItemWidth(160.0f);
+    float speed = m_EditorCamera.GetSpeedMultiplier();
+    if (ImGui::SliderFloat("Speed", &speed, 0.1f, 5.0f, "%.2fx"))
+        m_EditorCamera.SetSpeedMultiplier(speed);
+    if (ImGui::MenuItem("Frame Selected", "F"))
+        FocusSelectedEntity();
+    ImGui::SeparatorText("Window");
+    if (ImGui::MenuItem("Fullscreen Viewport", "Ctrl+Shift+F", m_IsViewportFullScreen))
+        m_IsViewportFullScreen = !m_IsViewportFullScreen;
+    ImGui::EndPopup();
+}
+
+void Editor::DrawViewportOverlaysMenu()
+{
+    if (!EditorUI::HeaderMenuButton("Overlays", "##ViewportOverlaysMenu", "What is drawn over the scene"))
+        return;
+    if (!ImGui::BeginPopup("##ViewportOverlaysMenu"))
+        return;
+    Scene::EditorOverlays& overlays = Scene::GetEditorOverlays();
+    ImGui::SeparatorText("Guides");
+    ImGui::Checkbox("Grid", &overlays.Grid);
+    ImGui::BeginDisabled(!overlays.Grid);
+    ImGui::Indent();
+    ImGui::Checkbox("Axis Lines", &overlays.GridAxes);
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::SliderFloat("Opacity", &overlays.GridOpacity, 0.05f, 1.0f, "%.2f");
+    ImGui::Unindent();
+    ImGui::EndDisabled();
+    ImGui::Checkbox("Light Icons", &overlays.LightIcons);
+
+    ImGui::SeparatorText("Viewport");
+    ImGui::Checkbox("Navigation Gizmo", &m_ShowNavigationGizmo);
+    ImGui::Checkbox("Tool Info", &m_ShowToolBadges);
+    ImGui::EndPopup();
+}
+
+void Editor::DrawViewportShading()
+{
+    using Mode = Renderer3D::ViewMode;
+    struct Button
+    {
+        Mode Value;
+        EditorUI::ShadingIcon Icon;
+        const char* Id;
+        const char* Tooltip;
+    };
+    const bool wireframe = Renderer3D::SupportsWireframe();
+    const Button buttons[] = {
+        {Mode::Wireframe, EditorUI::ShadingIcon::Wireframe, "##ShadeWire",
+         wireframe ? "Wireframe: triangle edges only (Shift+Z)"
+                   : "Wireframe: this GPU cannot draw lines, so it shows filled"},
+        {Mode::Solid, EditorUI::ShadingIcon::Solid, "##ShadeSolid", "Solid: clay under a studio light, no materials"},
+        {Mode::Unlit, EditorUI::ShadingIcon::Unlit, "##ShadeUnlit", "Unlit: base colour and textures, no lighting"},
+        {Mode::Lit, EditorUI::ShadingIcon::Lit, "##ShadeLit", "Lit: materials and scene lights"},
+        {Mode::Normals, EditorUI::ShadingIcon::Normals, "##ShadeNormals", "Normals: world-space normal as colour"},
+    };
+    bool first = true;
+    for (const Button& button : buttons)
+    {
+        if (!first)
+            ImGui::SameLine(0.0f, 2.0f);
+        first = false;
+        if (EditorUI::ShadingButton(button.Id, button.Icon, m_ViewMode == button.Value, button.Tooltip,
+                                    ImGui::GetFrameHeight()))
+            SetViewMode(button.Value);
+    }
 }
 
 void Editor::DrawStatusBar()
@@ -2117,14 +2233,13 @@ void Editor::DrawPreferencesContent()
 {
     UHE_PROFILE_FUNCTION();
     EditorUI::SectionHeader("Rendering");
-    bool enableLighting = Renderer3D::IsLightingEnabled();
-    if (ImGui::Checkbox("Enable Basic3D Lighting", &enableLighting))
-        Renderer3D::SetLightingEnabled(enableLighting);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Lighting is shared by Basic3D materials");
-    bool showLightIcons = Scene::GetShowLightIcons();
-    if (ImGui::Checkbox("Show Light Icons", &showLightIcons))
-        Scene::GetShowLightIcons() = showLightIcons;
+    const char* shadingModes[] = {"Lit", "Unlit", "Solid", "Normals", "Wireframe"};
+    int shading = static_cast<int>(m_ViewMode);
+    if (ImGui::Combo("Viewport Shading", &shading, shadingModes, IM_ARRAYSIZE(shadingModes)))
+        SetViewMode(static_cast<Renderer3D::ViewMode>(shading));
+    Scene::EditorOverlays& overlays = Scene::GetEditorOverlays();
+    ImGui::Checkbox("Show Grid", &overlays.Grid);
+    ImGui::Checkbox("Show Light Icons", &overlays.LightIcons);
     ImGui::Checkbox("Snap Transforms", &m_SnapEnabled);
     ImGui::Checkbox("World-space Gizmos", &m_GizmoSpaceWorld);
 
