@@ -325,6 +325,7 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::Key << "Color" << YAML::Value << plc.Color;
         out << YAML::Key << "Intensity" << YAML::Value << plc.Intensity;
         out << YAML::Key << "Radius" << YAML::Value << plc.Radius;
+        out << YAML::Key << "CastShadows" << YAML::Value << plc.CastShadows;
         out << YAML::EndMap;
     }
 
@@ -338,6 +339,7 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::Key << "Radius" << YAML::Value << slc.Radius;
         out << YAML::Key << "InnerConeAngle" << YAML::Value << slc.InnerConeAngle;
         out << YAML::Key << "OuterConeAngle" << YAML::Value << slc.OuterConeAngle;
+        out << YAML::Key << "CastShadows" << YAML::Value << slc.CastShadows;
         out << YAML::EndMap;
     }
 
@@ -352,6 +354,7 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::Key << "Height" << YAML::Value << alc.Height;
         out << YAML::Key << "Range" << YAML::Value << alc.Range;
         out << YAML::Key << "TwoSided" << YAML::Value << alc.TwoSided;
+        out << YAML::Key << "CastShadows" << YAML::Value << alc.CastShadows;
         out << YAML::EndMap;
     }
 
@@ -440,6 +443,15 @@ static void SerializeRenderSettings(YAML::Emitter& out, const RenderSettings& se
     out << YAML::Key << "ShowCascades" << YAML::Value << shadows.ShowCascades;
     out << YAML::EndMap;
 
+    const LocalShadowSettings& localShadows = settings.LocalShadows;
+    out << YAML::Key << "LocalShadows" << YAML::BeginMap;
+    out << YAML::Key << "Enabled" << YAML::Value << localShadows.Enabled;
+    out << YAML::Key << "TileResolution" << YAML::Value << localShadows.TileResolution;
+    out << YAML::Key << "MaxTiles" << YAML::Value << localShadows.MaxTiles;
+    out << YAML::Key << "DepthBias" << YAML::Value << localShadows.DepthBias;
+    out << YAML::Key << "NormalBias" << YAML::Value << localShadows.NormalBias;
+    out << YAML::EndMap;
+
     const SSAOSettings& ssao = settings.SSAO;
     out << YAML::Key << "SSAO" << YAML::BeginMap;
     out << YAML::Key << "Enabled" << YAML::Value << ssao.Enabled;
@@ -507,6 +519,17 @@ static void DeserializeRenderSettings(const YAML::Node& node, RenderSettings& se
     // These two size GPU resources, so a hand-edited file must not take them out of range.
     shadows.CascadeCount = std::clamp(shadows.CascadeCount, 1, 4);
     shadows.Resolution = std::clamp(shadows.Resolution, 512, 4096);
+
+    const YAML::Node localShadowNode = node["LocalShadows"];
+    LocalShadowSettings& localShadows = settings.LocalShadows;
+    ReadOptional(localShadowNode, "Enabled", localShadows.Enabled);
+    ReadOptional(localShadowNode, "TileResolution", localShadows.TileResolution);
+    ReadOptional(localShadowNode, "MaxTiles", localShadows.MaxTiles);
+    ReadOptional(localShadowNode, "DepthBias", localShadows.DepthBias);
+    ReadOptional(localShadowNode, "NormalBias", localShadows.NormalBias);
+    // Both size the shadow atlas, so they are held in range like the cascade settings above.
+    localShadows.TileResolution = std::clamp(localShadows.TileResolution, 256, 2048);
+    localShadows.MaxTiles = std::clamp(localShadows.MaxTiles, 1, 64);
 
     const YAML::Node ssaoNode = node["SSAO"];
     SSAOSettings& ssao = settings.SSAO;
@@ -1013,6 +1036,7 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             plc.Color = plcNode["Color"].as<glm::vec3>();
             plc.Intensity = plcNode["Intensity"].as<float>();
             plc.Radius = plcNode["Radius"].as<float>();
+            ReadOptional(plcNode, "CastShadows", plc.CastShadows);
         }
 
         // SpotLight
@@ -1025,6 +1049,7 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             slc.Radius = slcNode["Radius"].as<float>();
             slc.InnerConeAngle = slcNode["InnerConeAngle"].as<float>();
             slc.OuterConeAngle = slcNode["OuterConeAngle"].as<float>();
+            ReadOptional(slcNode, "CastShadows", slc.CastShadows);
         }
 
         // AreaLight: every field optional, so a scene saved before a field existed keeps its default
@@ -1037,6 +1062,7 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             ReadOptional(alcNode, "Height", alc.Height);
             ReadOptional(alcNode, "Range", alc.Range);
             ReadOptional(alcNode, "TwoSided", alc.TwoSided);
+            ReadOptional(alcNode, "CastShadows", alc.CastShadows);
         }
 
         // Water: every field optional, as for the area light

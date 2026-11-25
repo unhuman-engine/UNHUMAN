@@ -1024,17 +1024,20 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                 PropertyNote("Requires a 3D Model on the entity.");
         });
 
-    ::UHE::DrawComponents<PointLightComponent>("Point Light", entity,
-                                               [](PointLightComponent& light)
-                                               {
-                                                   PropertyLabel("Color");
-                                                   ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
-                                                   PropertyLabel("Intensity");
-                                                   ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f,
-                                                                    100.0f);
-                                                   PropertyLabel("Radius");
-                                                   ImGui::DragFloat("##Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
-                                               });
+    ::UHE::DrawComponents<PointLightComponent>(
+        "Point Light", entity,
+        [](PointLightComponent& light)
+        {
+            PropertyLabel("Color");
+            ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
+            PropertyLabel("Intensity");
+            ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
+            PropertyLabel("Radius");
+            ImGui::DragFloat("##Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
+            PropertyLabel("Cast Shadows", "Six shadow tiles (one per cube face): the costliest "
+                                          "light to shadow.");
+            ImGui::Checkbox("##Cast Shadows", &light.CastShadows);
+        });
 
     ::UHE::DrawComponents<SpotLightComponent>(
         "Spot Light", entity,
@@ -1056,6 +1059,8 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             PropertyLabel("Outer Cone (deg)");
             if (ImGui::DragFloat("##Outer Cone (deg)", &outerDeg, 0.5f, 0.0f, 89.0f))
                 light.OuterConeAngle = glm::radians(glm::max(outerDeg, glm::degrees(light.InnerConeAngle)));
+            PropertyLabel("Cast Shadows", "One shadow tile.");
+            ImGui::Checkbox("##Cast Shadows", &light.CastShadows);
             PropertyNote("Rotate the entity's Transform to aim the cone.");
         });
 
@@ -1076,6 +1081,8 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             ImGui::DragFloat("##Range", &light.Range, 0.1f, 0.1f, 200.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
             PropertyLabel("Two Sided", "Also light the side behind the panel.");
             ImGui::Checkbox("##Two Sided", &light.TwoSided);
+            PropertyLabel("Cast Shadows", "One shadow tile, cast from the panel's centre.");
+            ImGui::Checkbox("##Cast Shadows", &light.CastShadows);
             PropertyNote("Shines along the entity's local -Z; rotate the Transform to aim the panel.");
         });
 

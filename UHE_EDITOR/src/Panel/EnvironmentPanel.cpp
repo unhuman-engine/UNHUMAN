@@ -205,6 +205,16 @@ bool ColorRow(const char* label, glm::vec3& value, const char* tooltip = nullptr
     return changed;
 }
 
+/// @brief A dim, wrapped note under a section's fields, in the value column like the inspector's PropertyNote.
+void NoteRow(const char* text)
+{
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
 /// @brief Opens a section's property table, greyed out when its feature is off.
 /// @return Whether the table opened; pair with EndSection() only then.
 bool BeginSection(const char* id, bool enabled)
@@ -273,6 +283,41 @@ void DrawShadowSection(ShadowSettings& shadows)
               "Offsets the receiver along its normal, in shadow-map texels.");
     SliderRow("Softness", shadows.Softness, 0.0f, 4.0f, "%.2f", "Filter radius, in shadow-map texels.");
     CheckboxRow("Show Cascades", shadows.ShowCascades, "Tints each cascade (debug view).");
+    EndSection();
+}
+
+/// @brief Shadows of point, spot and area lights; the lights themselves opt in with Cast Shadows.
+void DrawLocalShadowSection(LocalShadowSettings& localShadows)
+{
+    const SectionState section = SectionHeader("Local Shadows", &localShadows.Enabled);
+    if (section.Reset)
+        localShadows = LocalShadowSettings{};
+    if (!section.Open || !BeginSection("##LocalShadowProperties", localShadows.Enabled))
+        return;
+
+    // The scene file clamps to the same range, so the combo never shows a size it cannot pick.
+    static constexpr std::array<int, 4> kTileResolutions = {256, 512, 1024, 2048};
+    PropertyLabel("Tile Resolution", "Texels per side of one shadow tile.");
+    if (ImGui::BeginCombo("##Tile Resolution", std::to_string(localShadows.TileResolution).c_str()))
+    {
+        for (const int resolution : kTileResolutions)
+        {
+            const bool selected = localShadows.TileResolution == resolution;
+            if (ImGui::Selectable(std::to_string(resolution).c_str(), selected))
+                localShadows.TileResolution = resolution;
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    PropertyLabel("Max Tiles", "Tiles in the shadow atlas; lights beyond it go unshadowed.");
+    ImGui::SliderInt("##Max Tiles", &localShadows.MaxTiles, 1, 64, "%d", kClamp);
+    SliderRow("Bias", localShadows.DepthBias, 0.0f, 5.0f, "%.2f", "Constant depth bias, in shadow-map texels.");
+    SliderRow("Normal Bias", localShadows.NormalBias, 0.0f, 5.0f, "%.2f",
+              "Offsets the receiver along its normal, in shadow-map texels.");
+    NoteRow("Point, spot and area lights with Cast Shadows on. A point light takes six tiles; the lights nearest the "
+            "camera are served first.");
     EndSection();
 }
 
@@ -359,6 +404,7 @@ void EnvironmentPanel::OnImGuiRender(bool& open)
     RenderSettings& settings = m_Scene->GetRenderSettings();
     DrawEnvironmentSection(settings.Environment);
     DrawShadowSection(settings.Shadows);
+    DrawLocalShadowSection(settings.LocalShadows);
     DrawSSAOSection(settings.SSAO);
     DrawBloomSection(settings.Bloom);
     DrawWindSection(settings.Wind);
