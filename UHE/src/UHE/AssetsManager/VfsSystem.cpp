@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
+#include "UHE/AssetsManager/GameExporter.h"
 
 namespace UHE
 {
@@ -72,7 +73,15 @@ void FileSystem::Initialize(const char* argv0)
     bool preferGame = exeName.find("UHEGAME") != std::string_view::npos;
     const char* kProjectMarkers[] = {preferGame ? "UHEGAME" : "UHE_EDITOR", preferGame ? "UHE_EDITOR" : "UHEGAME"};
     fs::path searchPath = exePath;
-    while (searchPath.has_parent_path())
+    // An exported game (GameExporter marks its folder) uses the assets it
+    // shipped with, even when it was exported somewhere inside a source tree.
+    std::error_code ec;
+    if (fs::exists(exePath / GameExporter::kMarkerName, ec) && fs::is_directory(exePath / "assets", ec))
+    {
+        m_RootPath = exePath;
+        foundSourceAssets = true;
+    }
+    while (!foundSourceAssets && searchPath.has_parent_path())
     {
         for (const char* marker : kProjectMarkers)
         {
