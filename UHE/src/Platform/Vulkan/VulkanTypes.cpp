@@ -24,6 +24,16 @@ vk::Format MapTextureFormat(TextureFormat format)
             return vk::Format::eD32Sfloat;
         case TextureFormat::R32_SINT:
             return vk::Format::eR32Sint;
+        // Declared in the RHI long before anything created one: a graph-owned
+        // HDR target was the first, and reached vkCreateImage as UNDEFINED.
+        case TextureFormat::R8_UNORM:
+            return vk::Format::eR8Unorm;
+        case TextureFormat::RG8_UNORM:
+            return vk::Format::eR8G8Unorm;
+        case TextureFormat::RGBA16F:
+            return vk::Format::eR16G16B16A16Sfloat;
+        case TextureFormat::RGBA32F:
+            return vk::Format::eR32G32B32A32Sfloat;
         default:
             return vk::Format::eUndefined;
     }
