@@ -30,6 +30,8 @@ enum : u16
     OpTypeStruct = 30,
     OpTypePointer = 32,
     OpConstant = 43,
+    OpFunction = 54,
+    OpFunctionEnd = 56,
     OpVariable = 59,
     OpDecorate = 71,
     OpMemberDecorate = 72,
@@ -146,6 +148,7 @@ struct Variable
 struct EntryPoint
 {
     u32 ExecutionModel = 0;
+    u32 Function = 0; ///< id of the OpFunction it runs
     std::string Name;
     std::vector<u32> Interface;
 };
@@ -213,6 +216,10 @@ struct Reader
     std::unordered_map<u32, Variable> Variables;
     std::vector<EntryPoint> EntryPoints;
     std::vector<std::pair<u32, std::vector<u32>>> ExecutionModes; // entry point id -> words
+    // Function bodies: a module cut short ends inside one, or before the entry
+    // point's function is defined, while every instruction it does hold parses.
+    std::unordered_set<u32> Functions;
+    bool InsideFunction = false;
 
     const TypeInfo* Type(u32 id) const
     {
@@ -446,6 +453,7 @@ bool ParseInstructions(const u32* words, std::size_t wordCount, Reader& reader, 
                 {
                     EntryPoint entry;
                     entry.ExecutionModel = operand[0];
+                    entry.Function = operand[1];
                     // OpEntryPoint <execution model> <entry point id> "<name>" <interface...>
                     entry.Name = ReadString(operand, operandCount, 2);
 
@@ -468,6 +476,26 @@ bool ParseInstructions(const u32* words, std::size_t wordCount, Reader& reader, 
                     }
                     reader.EntryPoints.push_back(std::move(entry));
                 }
+                break;
+
+            case OpFunction:
+                // OpFunction <result type> <result id> <control> <function type>
+                if (reader.InsideFunction || operandCount < 2)
+                {
+                    error = "a function begins inside another";
+                    return false;
+                }
+                reader.InsideFunction = true;
+                reader.Functions.insert(operand[1]);
+                break;
+
+            case OpFunctionEnd:
+                if (!reader.InsideFunction)
+                {
+                    error = "a function ends that never began";
+                    return false;
+                }
+                reader.InsideFunction = false;
                 break;
 
             case OpExecutionMode:
@@ -731,6 +759,19 @@ ShaderReflection ReflectSPIRV(const void* data, std::size_t size)
     {
         reflection.Error = "SPIR-V module declares no entry point";
         return reflection;
+    }
+    if (reader.InsideFunction)
+    {
+        reflection.Error = "malformed SPIR-V: the module ends inside a function (truncated)";
+        return reflection;
+    }
+    for (const EntryPoint& candidate : reader.EntryPoints)
+    {
+        if (reader.Functions.count(candidate.Function) == 0)
+        {
+            reflection.Error = "malformed SPIR-V: entry point '" + candidate.Name + "' has no function body (truncated)";
+            return reflection;
+        }
     }
 
     // Slang emits one entry point per module, and the pipeline names it "main".
