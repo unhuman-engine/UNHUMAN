@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHICommandBuffer.h"
+#include "UHE/Renderer/PostProcess.h"
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 
@@ -55,10 +56,11 @@ void ModelTestLayer::OnUpdate(UHE::Timestep ts)
     // Update rotation
     m_Rotation += ts * 50.0f;
 
-    // The scene is a frame graph pass: it declares what it renders into and
-    // the graph owns the rest. The depth target is the graph's: it is sized
-    // to the backbuffer every frame, so a resize needs no code here, and the
-    // graph puts both attachments in the right state before the pass records.
+    // Two frame graph passes: the scene renders into an HDR target, then the
+    // tonemap pass maps it into the backbuffer. Both intermediate textures are
+    // the graph's (sized to the backbuffer every frame, pooled across frames),
+    // and the graph orders the passes and puts each texture in the state its
+    // use needs: the HDR target is an attachment, then a sampled texture.
     auto& device = UHE::Renderer::GetDevice();
     UHE::RHI::FrameGraph* graph = device.GetFrameGraph();
     if (graph == nullptr)
@@ -68,19 +70,19 @@ void ModelTestLayer::OnUpdate(UHE::Timestep ts)
     const FGTexture::Desc backbuffer = device.GetBackbufferDesc();
     struct SceneData
     {
-        FGHandle<FGTexture> Color;
+        FGHandle<FGTexture> Hdr;
         FGHandle<FGTexture> Depth;
     };
-    const FGHandle<FGTexture> target = graph->ImportBackbuffer(backbuffer);
     const glm::mat4 transform = glm::scale(
         glm::rotate(glm::mat4(1.0f), glm::radians(m_Rotation), glm::vec3(0.0f, 1.0f, 0.0f)), glm::vec3(2.0f));
 
-    graph->AddPass<SceneData>(
+    const SceneData& scene = graph->AddPass<SceneData>(
         "Sandbox.Scene",
         [&](FGBuilder& builder, SceneData& data)
         {
-            data.Color = builder.Write(target, FGWrite::RenderTarget);
+            const FGTexture::Desc hdrDesc{backbuffer.Width, backbuffer.Height, TextureFormat::RGBA16F};
             const FGTexture::Desc depthDesc{backbuffer.Width, backbuffer.Height, TextureFormat::D24_UNORM_S8};
+            data.Hdr = builder.Write(builder.Create("Sandbox.HDR", hdrDesc), FGWrite::RenderTarget);
             data.Depth = builder.Write(builder.Create("Sandbox.Depth", depthDesc), FGWrite::DepthTarget);
         },
         [this, transform](const SceneData&, FGContext& context)
@@ -96,11 +98,13 @@ void ModelTestLayer::OnUpdate(UHE::Timestep ts)
             defaultLight.ColorIntensity = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
             lights.push_back(defaultLight);
 
-            UHE::Renderer3D::SetSwapchainTarget(true);
+            UHE::Renderer3D::SetColorTarget(TextureFormat::RGBA16F);
             UHE::Renderer3D::BeginScene(m_Camera, lights);
             UHE::Renderer3D::SubmitModel(m_Model, transform);
             UHE::Renderer3D::EndScene();
         });
+
+    UHE::PostProcess::AddTonemapPass(*graph, scene.Hdr, graph->ImportBackbuffer(backbuffer), backbuffer.Format);
 }
 
 void ModelTestLayer::OnImGuiRender()
