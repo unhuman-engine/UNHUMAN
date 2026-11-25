@@ -10,7 +10,8 @@ Writes, under --out:
   PondDemo-<name>/     the PondDemo project exported as a game (uhe_export).
 
 The build folder also holds unit tests, static libraries, the Sandbox and
-CMake leftovers; none of those are copied. --zip also writes a .zip of each
+CMake leftovers; none of those are copied. On Linux the executables and
+libraries are stripped of their symbols when `strip` is installed. --zip also writes a .zip of each
 folder next to it. Uses only the standard library, so it runs the same on the
 Linux and Windows CI runners.
 """
@@ -74,6 +75,20 @@ def export_demo(bin_dir, dest):
                     "--engine-assets", os.path.join(ROOT, "UHE_EDITOR", "assets")], check=True)
 
 
+def strip_binaries(folder):
+    """Strips symbols from every ELF file in a package (Linux; a no-op elsewhere)."""
+    strip = shutil.which("strip")
+    if os.name == "nt" or strip is None:
+        return
+    for base, _, files in os.walk(folder):
+        for name in files:
+            path = os.path.join(base, name)
+            with open(path, "rb") as f:
+                if f.read(4) != b"\x7fELF":
+                    continue
+            subprocess.run([strip, "--strip-unneeded", path], check=True)
+
+
 def size_mb(folder):
     total = 0
     for base, _, files in os.walk(folder):
@@ -100,6 +115,7 @@ def main():
     copy_editor(bin_dir, packages[0])
     export_demo(bin_dir, packages[1])
     for package in packages:
+        strip_binaries(package)
         print(f"package: {os.path.relpath(package, out)} ({size_mb(package):.0f} MB)")
         if args.zip:
             archive = shutil.make_archive(package, "zip", root_dir=out, base_dir=os.path.basename(package))
