@@ -161,7 +161,7 @@ void Resolve(FrameState& state)
         return;
     state.Resolved = true;
 
-    Scene* scene = state.Desc.SceneData;
+    Scene* scene = state.Desc.SceneData.get();
     if (scene != nullptr)
         scene->PrepareRenderFrame(state.Desc.Runtime);
     if (state.Desc.ResolveView)
@@ -256,7 +256,7 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
             [state](const ShadowData&, FGContext& context)
             {
                 Resolve(*state);
-                Scene* scene = state->Desc.SceneData;
+                Scene* scene = state->Desc.SceneData.get();
                 if (scene == nullptr || state->CascadeCount == 0)
                     return;
                 Renderer3D::SetFrameData(state->Frame);

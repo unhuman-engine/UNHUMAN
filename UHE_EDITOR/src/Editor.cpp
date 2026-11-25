@@ -343,7 +343,7 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
     SceneRenderer::Desc desc;
     desc.Width = width;
     desc.Height = height;
-    desc.SceneData = m_ActiveScene.get();
+    desc.SceneData = m_ActiveScene;
     desc.Runtime = runtime;
     desc.Lit = m_ViewMode == Renderer3D::ViewMode::Lit;
     desc.Time = m_SceneTime;
@@ -353,11 +353,13 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
         runtime ? std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f} : std::array<float, 4>{0.038f, 0.040f, 0.046f, 1.0f};
     desc.ColorName = kSceneColor;
     desc.EntityName = kSceneEntity;
-    desc.ResolveView = [this, runtime]()
+    // The scene this frame was declared with, not whatever m_ActiveScene is when
+    // the passes run: Play and Stop in the UI swap it in between.
+    desc.ResolveView = [this, runtime, scene = m_ActiveScene]()
     {
         if (runtime)
         {
-            if (std::optional<SceneRenderView> view = m_ActiveScene->GetPrimaryCameraView())
+            if (std::optional<SceneRenderView> view = scene->GetPrimaryCameraView())
                 return *view;
         }
         SceneRenderView view;
@@ -366,7 +368,8 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
         view.Position = m_EditorCamera.GetPosition();
         return view;
     };
-    desc.DrawScene = [this, ts, runtime](FGContext& context) { RecordSceneGraphPass(context, ts, runtime); };
+    desc.DrawScene = [this, ts, runtime, scene = m_ActiveScene](FGContext& context)
+    { RecordSceneGraphPass(context, *scene, ts, runtime); };
     const SceneRenderer::Output scene = SceneRenderer::AddPasses(*graph, desc);
     if (!scene.Color.IsValid())
         return;
@@ -377,7 +380,7 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
     graph->Export(scene.Entity, {.FinalState = FGState::ShaderRead, .CopySource = true});
 }
 
-void Editor::RecordSceneGraphPass(RHI::FGContext& context, Timestep ts, bool runtime)
+void Editor::RecordSceneGraphPass(RHI::FGContext& context, Scene& scene, Timestep ts, bool runtime)
 {
     if (context.Width() == 0 || context.Height() == 0)
         return;
@@ -386,9 +389,9 @@ void Editor::RecordSceneGraphPass(RHI::FGContext& context, Timestep ts, bool run
     // only, so nothing else that renders models inherits it.
     Renderer3D::SetViewMode(m_ViewMode);
     if (runtime)
-        m_ActiveScene->RenderRuntimeScene(ts);
+        scene.RenderRuntimeScene(ts);
     else
-        m_ActiveScene->RenderEditorScene(ts, m_EditorCamera);
+        scene.RenderEditorScene(ts, m_EditorCamera);
     Renderer3D::SetViewMode(Renderer3D::ViewMode::Lit);
 }
 

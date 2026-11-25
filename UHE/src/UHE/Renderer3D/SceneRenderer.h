@@ -33,10 +33,13 @@ public:
     {
         u32 Width = 0;
         u32 Height = 0;
-        Scene* SceneData = nullptr; ///< drawn depth-only for shadows and the prepass
-        bool Runtime = false;       ///< play mode: transforms blend physics ticks (Scene::PrepareRenderFrame)
-        bool Lit = true;            ///< false for the debug shading modes: no HDR, shadows, SSAO or bloom
-        float Time = 0.0f;          ///< seconds; animates the wind
+        /// Drawn by every pass. Held until the frame's passes have run: the UI
+        /// between declaring and executing them can replace the active scene
+        /// (Play, Stop, Open), and a raw pointer would outlive it.
+        Ref<Scene> SceneData;
+        bool Runtime = false; ///< play mode: transforms blend physics ticks (Scene::PrepareRenderFrame)
+        bool Lit = true;      ///< false for the debug shading modes: no HDR, shadows, SSAO or bloom
+        float Time = 0.0f;    ///< seconds; animates the wind
         std::array<float, 4> ClearColor{0.0f, 0.0f, 0.0f, 1.0f};
         std::string ColorName;  ///< the output colour (RGBA8_SRGB), named so the caller can export it
         std::string EntityName; ///< the entity IDs (R32_SINT)

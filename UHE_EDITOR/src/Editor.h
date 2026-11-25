@@ -107,7 +107,8 @@ private:
     void DeclareSceneGraphPass(Timestep ts, bool runtime);
     /// Seconds the viewport has rendered; animates wind and water.
     float m_SceneTime = 0.0f;
-    void RecordSceneGraphPass(UHE::RHI::FGContext& context, Timestep ts, bool runtime);
+    /// @brief The colour pass's draws, for \p scene: the one the frame was declared with.
+    void RecordSceneGraphPass(UHE::RHI::FGContext& context, Scene& scene, Timestep ts, bool runtime);
 
 private:
     Entity m_Square;
