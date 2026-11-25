@@ -1086,6 +1086,54 @@ void DrawConsoleInput()
 }
 } // namespace
 
+namespace
+{
+/**
+ * @brief A level filter as a compact chip: coloured dot, count, accent outline while on.
+ * @return true when clicked (the caller toggles the filter).
+ */
+bool LevelChip(const char* id, const char* tooltip, size_t count, const ImVec4& color, bool enabled)
+{
+    char label[32];
+    std::snprintf(label, sizeof(label), "%zu", count);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float dot = 4.0f;
+    const ImVec2 textSize = ImGui::CalcTextSize(label);
+    const ImVec2 size(style.FramePadding.x * 2.0f + dot * 2.0f + 6.0f + textSize.x, ImGui::GetFrameHeight());
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton(id, size);
+    const bool hovered = ImGui::IsItemHovered();
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 max(pos.x + size.x, pos.y + size.y);
+    const float rounding = style.FrameRounding;
+    if (enabled)
+        draw->AddRectFilled(pos, max, ImGui::GetColorU32(ImGuiCol_FrameBg), rounding);
+    if (hovered)
+        draw->AddRectFilled(pos, max, ImGui::GetColorU32(ImGuiCol_FrameBgHovered), rounding);
+    const ImVec4 tint = enabled ? color : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+    const float midY = pos.y + size.y * 0.5f;
+    draw->AddCircleFilled(ImVec2(pos.x + style.FramePadding.x + dot, midY), dot, ImGui::GetColorU32(tint), 12);
+    draw->AddText(ImVec2(pos.x + style.FramePadding.x + dot * 2.0f + 6.0f, midY - textSize.y * 0.5f),
+                  ImGui::GetColorU32(enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled), label);
+    if (hovered)
+        ImGui::SetTooltip("%s (%s)", tooltip, enabled ? "shown, click to hide" : "hidden, click to show");
+    return clicked;
+}
+
+/// @brief The first line of \p text; \p extra gets how many more lines follow.
+std::string_view FirstLine(const std::string& text, int& extra)
+{
+    const size_t end = text.find('\n');
+    extra = 0;
+    if (end == std::string::npos)
+        return text;
+    for (size_t i = end; i < text.size(); ++i)
+        extra += (text[i] == '\n' && i + 1 < text.size()) ? 1 : 0;
+    return std::string_view(text).substr(0, end);
+}
+} // namespace
+
 void DrawConsolePanel()
 {
     UHE_PROFILE_FUNCTION();
@@ -1095,10 +1143,13 @@ void DrawConsolePanel()
     std::vector<UHE::ImGuiLogEntry> logs = sink->GetSnapshot();
 
     static constexpr int kLevelCount = 6;
-    static const char* kLevelNames[kLevelCount] = {"Trace", "Debug", "Info", "Warn", "Error", "Critical"};
-    static bool s_LevelEnabled[kLevelCount] = {true, true, true, true, true, true};
+    static const char* kLevelNames[kLevelCount] = {"Trace", "Debug", "Info", "Warnings", "Errors", "Critical"};
+    // Trace and debug are noise most of the time: off by default, like Godot's output.
+    static bool s_LevelEnabled[kLevelCount] = {false, true, true, true, true, true};
     static char s_Search[256] = "";
     static bool s_AutoScroll = true;
+    static bool s_ShowTime = true;
+    static bool s_ShowSource = true;
 
     auto levelIndex = [](spdlog::level::level_enum level) -> int
     {
@@ -1118,19 +1169,19 @@ void DrawConsolePanel()
     for (const auto& log : logs)
         counts[levelIndex(log.Level)]++;
 
-    // Theme-aware console palette (readable on light themes too).
-    ImVec4 debugColor = EditorTheme::ConsoleInfo();
+    // Theme-aware palette: info keeps the normal text colour, so only what
+    // needs attention is coloured.
+    ImVec4 debugColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
     debugColor.w *= 0.65f;
     const ImVec4 colors[kLevelCount] = {
         ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
         debugColor,
-        EditorTheme::ConsoleInfo(),
+        ImGui::GetStyleColorVec4(ImGuiCol_Text),
         EditorTheme::ConsoleWarn(),
         EditorTheme::ConsoleError(),
         EditorTheme::ConsoleCritical(),
     };
 
-    // A needle lowercase once instead of per-message.
     auto toLower = [](std::string value)
     {
         for (char& c : value)
@@ -1139,75 +1190,179 @@ void DrawConsolePanel()
     };
     const std::string needle = toLower(s_Search);
 
-    auto isVisible = [&](const UHE::ImGuiLogEntry& entry)
-    {
-        if (!s_LevelEnabled[levelIndex(entry.Level)])
-            return false;
-        if (!needle.empty() && toLower(entry.Message).find(needle) == std::string::npos)
-            return false;
-        return true;
-    };
-
-    // Level filters with per-level counters.
-    for (int i = 0; i < kLevelCount; i++)
-    {
-        if (i > 0)
-            ImGui::SameLine();
-        char label[64];
-        std::snprintf(label, sizeof(label), "%s (%zu)", kLevelNames[i], counts[i]);
-        ImGui::PushStyleColor(ImGuiCol_Text, colors[i]);
-        ImGui::Checkbox(label, &s_LevelEnabled[i]);
-        ImGui::PopStyleColor();
-    }
-
-    if (ImGui::Button("Clear"))
-        sink->Clear();
-    ImGui::SameLine();
-    ImGui::Checkbox("Auto-scroll", &s_AutoScroll);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(240.0f);
-    ImGui::InputTextWithHint("##ConsoleFilter", "Filter text...", s_Search, sizeof(s_Search));
-
     std::vector<const UHE::ImGuiLogEntry*> visible;
     visible.reserve(logs.size());
     for (const auto& log : logs)
-        if (isVisible(log))
-            visible.push_back(&log);
-
-    ImGui::SameLine();
-    ImGui::BeginDisabled(visible.empty());
-    if (ImGui::Button("Copy"))
     {
-        std::string text;
-        for (const auto* entry : visible)
-        {
-            text += entry->Message;
-            if (text.empty() || text.back() != '\n')
-                text += '\n';
-        }
-        ImGui::SetClipboardText(text.c_str());
+        if (!s_LevelEnabled[levelIndex(log.Level)])
+            continue;
+        if (!needle.empty() && toLower(log.Message).find(needle) == std::string::npos)
+            continue;
+        visible.push_back(&log);
     }
-    ImGui::EndDisabled();
 
-    ImGui::SameLine();
-    ImGui::TextDisabled("%zu / %zu", visible.size(), logs.size());
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
+    // ── Toolbar: Clear | filter | level chips | options ─────────────────────
+    if (ImGui::Button("Clear"))
+        sink->Clear();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Log file: %s", UHE::Log::GetLogFilePath().c_str());
+        ImGui::SetTooltip("Remove every message from the console");
+    ImGui::SameLine();
 
-    ImGui::Separator();
+    // Chips for info, warnings and errors (errors include critical); trace
+    // and debug live in the options menu.
+    const float chipsWidth = 3.0f * 64.0f;
+    const float optionsWidth = ImGui::CalcTextSize("...").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - chipsWidth - optionsWidth - 24.0f));
+    ImGui::InputTextWithHint("##ConsoleFilter", "Filter messages", s_Search, sizeof(s_Search));
 
+    ImGui::SameLine();
+    if (LevelChip("##ChipInfo", "Info", counts[2], colors[2], s_LevelEnabled[2]))
+        s_LevelEnabled[2] = !s_LevelEnabled[2];
+    ImGui::SameLine(0.0f, 2.0f);
+    if (LevelChip("##ChipWarn", "Warnings", counts[3], colors[3], s_LevelEnabled[3]))
+        s_LevelEnabled[3] = !s_LevelEnabled[3];
+    ImGui::SameLine(0.0f, 2.0f);
+    if (LevelChip("##ChipError", "Errors", counts[4] + counts[5], colors[4], s_LevelEnabled[4]))
+        s_LevelEnabled[4] = s_LevelEnabled[5] = !s_LevelEnabled[4];
+
+    ImGui::SameLine();
+    if (ImGui::Button("..."))
+        ImGui::OpenPopup("##ConsoleOptions");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Console options");
+    if (ImGui::BeginPopup("##ConsoleOptions"))
+    {
+        ImGui::SeparatorText("Show");
+        for (int i = 0; i < kLevelCount; ++i)
+        {
+            char label[64];
+            std::snprintf(label, sizeof(label), "%s (%zu)", kLevelNames[i], counts[i]);
+            ImGui::Checkbox(label, &s_LevelEnabled[i]);
+        }
+        ImGui::SeparatorText("Columns");
+        ImGui::Checkbox("Time", &s_ShowTime);
+        ImGui::Checkbox("Source", &s_ShowSource);
+        ImGui::SeparatorText("Behaviour");
+        ImGui::Checkbox("Auto-scroll", &s_AutoScroll);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Copy Visible Messages", nullptr, false, !visible.empty()))
+        {
+            std::string text;
+            for (const auto* entry : visible)
+            {
+                text += entry->Message;
+                if (text.empty() || text.back() != '\n')
+                    text += '\n';
+            }
+            ImGui::SetClipboardText(text.c_str());
+        }
+        ImGui::TextDisabled("%zu of %zu shown", visible.size(), logs.size());
+        ImGui::TextDisabled("Log file: %s", UHE::Log::GetLogFilePath().c_str());
+        ImGui::EndPopup();
+    }
+
+    // ── Log: one row per message, clipped to what is on screen ─────────────
     // Leave one row under the log for the command line.
     const float inputHeight = ImGui::GetFrameHeightWithSpacing();
-    ImGui::BeginChild("##ConsoleLogRegion", ImVec2(0, -inputHeight), false, ImGuiWindowFlags_HorizontalScrollbar);
-    for (const auto* entry : visible)
-        ImGui::TextColored(colors[levelIndex(entry->Level)], "%s", entry->Message.c_str());
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+    ImGui::BeginChild("##ConsoleLogRegion", ImVec2(0, -inputHeight), ImGuiChildFlags_None);
+    ImGui::PopStyleColor();
 
-    // Auto-scroll only when already pinned to the bottom, so inspecting older
-    // lines is not interrupted by incoming logs.
-    if (s_AutoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f)
-        ImGui::SetScrollHereY(1.0f);
+    if (visible.empty())
+    {
+        const char* hint = logs.empty() ? "No messages" : "No message matches the filters";
+        const ImVec2 size = ImGui::CalcTextSize(hint);
+        const ImVec2 region = ImGui::GetContentRegionAvail();
+        ImGui::SetCursorPos(ImVec2((region.x - size.x) * 0.5f, (region.y - size.y) * 0.5f));
+        ImGui::TextDisabled("%s", hint);
+    }
+    else
+    {
+        const int columns = 1 + (s_ShowTime ? 1 : 0) + (s_ShowSource ? 1 : 0);
+        const ImGuiTableFlags flags =
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX;
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6.0f, 2.0f));
+        if (ImGui::BeginTable("##ConsoleLog", columns, flags))
+        {
+            if (s_ShowTime)
+                ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("00:00:00").x);
+            if (s_ShowSource)
+                ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("APP").x);
+            ImGui::TableSetupColumn("Message", ImGuiTableColumnFlags_WidthStretch);
+
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(visible.size()));
+            while (clipper.Step())
+            {
+                for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
+                {
+                    const UHE::ImGuiLogEntry& entry = *visible[static_cast<size_t>(row)];
+                    const int level = levelIndex(entry.Level);
+                    ImGui::TableNextRow();
+                    ImGui::PushID(row);
+
+                    // Warnings and errors get a tinted row so they stand out in a long log.
+                    if (level >= 3)
+                    {
+                        ImVec4 tint = colors[level];
+                        tint.w = 0.10f;
+                        ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(tint));
+                    }
+                    if (s_ShowTime)
+                    {
+                        ImGui::TableNextColumn();
+                        ImGui::TextDisabled("%s", entry.Time.c_str());
+                    }
+                    if (s_ShowSource)
+                    {
+                        ImGui::TableNextColumn();
+                        ImGui::TextDisabled("%s", entry.Logger.c_str());
+                    }
+                    ImGui::TableNextColumn();
+                    // One line per row keeps the clipper exact; a multi-line
+                    // message (a Lua traceback) says how much more it has and
+                    // shows all of it on hover.
+                    const std::string& text = entry.Text.empty() ? entry.Message : entry.Text;
+                    int extra = 0;
+                    const std::string_view line = FirstLine(text, extra);
+                    ImGui::PushStyleColor(ImGuiCol_Text, colors[level]);
+                    ImGui::TextUnformatted(line.data(), line.data() + line.size());
+                    ImGui::PopStyleColor();
+                    const bool hovered = ImGui::IsItemHovered();
+                    if (extra > 0)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(+%d lines)", extra);
+                    }
+                    if ((hovered || ImGui::IsItemHovered()) &&
+                        (extra > 0 || ImGui::GetItemRectMax().x > ImGui::GetWindowPos().x + ImGui::GetWindowWidth()))
+                    {
+                        ImGui::BeginTooltip();
+                        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 50.0f);
+                        ImGui::TextUnformatted(text.c_str());
+                        ImGui::PopTextWrapPos();
+                        ImGui::EndTooltip();
+                    }
+                    if (ImGui::BeginPopupContextItem("##LogLine"))
+                    {
+                        if (ImGui::MenuItem("Copy Message"))
+                            ImGui::SetClipboardText(text.c_str());
+                        if (ImGui::MenuItem("Copy Full Line"))
+                            ImGui::SetClipboardText(entry.Message.c_str());
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::PopStyleVar();
+
+        // Auto-scroll only when already pinned to the bottom, so inspecting
+        // older lines is not interrupted by incoming logs.
+        if (s_AutoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f)
+            ImGui::SetScrollHereY(1.0f);
+    }
     ImGui::EndChild();
 
     DrawConsoleInput();
