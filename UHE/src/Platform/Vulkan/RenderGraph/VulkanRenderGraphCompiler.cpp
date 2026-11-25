@@ -192,6 +192,33 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
         for (const RGResourceVersion& v : resources.Buffers()[slot].versionLog)
             producerOf.emplace(std::make_tuple(false, slot, v.version), v.passIndex);
 
+    // An attachment with LoadOp::Load reads what the previous version holds,
+    // though it is declared as a write: the pass that produced that version is
+    // a dependency like any reader's producer. Without the edge, a pass whose
+    // only consumer loads its output (a copy the water pass draws over) was
+    // culled and the loading pass read an uninitialized image.
+    const auto loadedProducers = [&](u32 p)
+    {
+        std::vector<u32> producers;
+        const auto loads = [&](RGTextureHandle texture)
+        {
+            for (const RGColorAttachment& color : passes[p].colors)
+                if (color.texture.index == texture.index && color.load == LoadOp::Load)
+                    return true;
+            return passes[p].hasDepth && passes[p].depth.texture.index == texture.index &&
+                   passes[p].depth.load == LoadOp::Load;
+        };
+        for (const RGResourceAccess& access : passes[p].writes)
+        {
+            if (!access.isTexture || access.version == 0 || !loads(access.texture))
+                continue;
+            const auto it = producerOf.find(std::make_tuple(true, access.texture.index, access.version - 1));
+            if (it != producerOf.end() && it->second != p)
+                producers.push_back(it->second);
+        }
+        return producers;
+    };
+
     std::vector<u32> indegree(passes.size(), 0);
     std::vector<std::vector<u32>> dependents(passes.size()); // producer → readers
     for (u32 p = 0; p < passes.size(); ++p)
@@ -205,6 +232,11 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
             if (it == producerOf.end() || it->second == p)
                 continue; // imported-at-v0 or self
             dependents[it->second].push_back(p);
+            ++indegree[p];
+        }
+        for (const u32 producer : loadedProducers(p))
+        {
+            dependents[producer].push_back(p);
             ++indegree[p];
         }
     }
@@ -263,6 +295,8 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
             if (it != producerOf.end() && it->second != p)
                 producersOf[p].push_back(it->second);
         }
+        for (const u32 producer : loadedProducers(p))
+            producersOf[p].push_back(producer);
     }
 
     std::vector<bool> live(passes.size(), false);

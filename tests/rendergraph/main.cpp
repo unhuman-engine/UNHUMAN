@@ -503,6 +503,34 @@ int main()
         CHECK(edgeOk, "GBuffer node lists Lighting as a dependent");
     }
 
+    // ── A Load attachment depends on the previous writer ──────────────────
+    // "Copy" fills a transient that "Water" then draws over with LoadOp::Load.
+    // Nothing samples the copy, so with only read edges it was culled and the
+    // water pass loaded an uninitialized image.
+    {
+        VulkanRenderGraph rg;
+        RGTextureHandle out =
+            rg.ImportTexture("Viewport", 21, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        RGTextureHandle hdr = rg.CreateTexture({"HDR.Water", TextureFormat::RGBA16F, 16, 16});
+        rg.AddPass("Copy")
+            .Write(hdr)
+            .Color({hdr, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        rg.AddPass("Water")
+            .Write(hdr)
+            .Color({hdr, LoadOp::Load, StoreOp::Store, {0, 0, 0, 1}})
+            .Write(out)
+            .Color({out, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        const RGCompileResult compiled = rg.Compile();
+        CHECK(compiled.Ok(), "load-after-write frame compiles");
+        CHECK(compiled.frame.passes.size() == 2 && compiled.frame.culledPasses.empty(),
+              "the pass whose output is only loaded is kept");
+        if (compiled.frame.passes.size() == 2)
+            CHECK(compiled.frame.passes[1].dependencies.size() == 1 && compiled.frame.passes[1].dependencies[0] == 0,
+                  "the loading pass depends on the pass that wrote what it loads");
+    }
+
     // ── Recording is serial: independent passes still record in compiled order ──
     // Every pass records into one command buffer, so two passes the DAG leaves
     // unrelated must not run at the same time (they did, from two threads).
