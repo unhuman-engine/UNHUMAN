@@ -131,6 +131,11 @@ public:
     [[nodiscard]] bool SupportsTimelineSemaphores() const noexcept { return Supports(Extension::TimelineSemaphore); }
     [[nodiscard]] bool SupportsDynamicRendering() const noexcept { return Supports(Extension::DynamicRendering); }
     [[nodiscard]] SyncTier GetSyncTier() const noexcept { return m_syncTier; }
+    /// Line polygon mode (fillModeNonSolid), enabled whenever the device has it.
+    [[nodiscard]] bool SupportsWireframe() const noexcept
+    {
+        return m_supportedCoreFeatures.fillModeNonSolid == VK_TRUE;
+    }
 
     // Extension strings to enable, built from the table: every extension marked
     // as enabled that this device advertises.
