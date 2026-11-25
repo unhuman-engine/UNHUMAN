@@ -59,6 +59,10 @@ void Renderer2D::NextBatch() {}
 void Renderer3D::Init() {}
 void Renderer3D::Shutdown() {}
 Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator*) { return {}; }
+Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Model&, const RD3d::Animator*)
+{
+    return {};
+}
 Renderer3D::MaterialBinding Renderer3D::PrepareMaterialBinding(const RD3d::Model&) { return {}; }
 void Renderer3D::BeginScene(const EditorCamera&, const std::vector<RD3d::LightData>&) {}
 void Renderer3D::BeginScene(const Camera&, const glm::mat4&, const std::vector<RD3d::LightData>&) {}

@@ -90,6 +90,16 @@ public:
     // entities share one binding instead of losing skinning.
     static BoneBinding PrepareBoneBinding(const RD3d::Animator* animator);
 
+    /**
+     * @brief The bone matrices for \p model: the animator's while it plays a
+     *        clip, the skin's rest pose otherwise (RD3d::Skin::RestPalette).
+     *
+     * A skinned model without an animation still needs its skeleton: glTF
+     * places a skinned mesh by its joints and ignores the mesh node's own
+     * transform, which in many exports turns the model on its side.
+     */
+    static BoneBinding PrepareBoneBinding(const RD3d::Model& model, const RD3d::Animator* animator);
+
     // Uploads the model's material parameters once per frame and returns the
     // buffer location; pass the result to every SubmitMesh of that model.
     static MaterialBinding PrepareMaterialBinding(const RD3d::Model& model);

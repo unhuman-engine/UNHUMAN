@@ -840,6 +840,7 @@ void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const gl
         mesh.geometryIndex = geometryIndex;
         mesh.nodeIndex = nodeIndex;
         mesh.LocalTransform = worldTransform;
+        mesh.skinIndex = node.skinIndex.has_value() ? static_cast<int>(*node.skinIndex) : -1;
 
         // Node name is what the hierarchy panel should show. The glTF mesh name is
         // only a fallback, because every instance of one mesh shares it.

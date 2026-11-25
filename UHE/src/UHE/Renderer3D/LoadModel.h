@@ -195,6 +195,9 @@ struct Mesh
     // time, which keeps skinning correct (bone matrices still apply on top) and
     // needs no vertex rewriting.
     glm::mat4 LocalTransform{1.0f};
+    /// The glTF skin this mesh deforms with, -1 when it is rigid. A skinned
+    /// mesh ignores LocalTransform: its joints place it (glTF 2.0, skins).
+    int skinIndex = -1;
 
     std::vector<Primitive> primitive;
 

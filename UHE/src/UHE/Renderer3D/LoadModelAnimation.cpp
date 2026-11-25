@@ -5,6 +5,7 @@
 // on top. Split out so the geometry path recompiles independently of it.
 
 #include "uhepch.h"
+#include <functional>
 #include "LoadModel.h"
 #include "MeshoptDecode.h"
 #include "fastgltf/math.hpp"
@@ -61,6 +62,23 @@ void Model::ParseSkins(const fastgltf::Asset& asset)
         }
     }
 
+    // Rest pose of every node, from the scene root down: what the joints are
+    // when no animation moves them. Memoized, because a parent can come after
+    // its child in the node list.
+    std::vector<glm::mat4> restWorld(m_Skeleton.Bones.size(), glm::mat4(1.0f));
+    std::vector<char> restDone(m_Skeleton.Bones.size(), 0);
+    const std::function<const glm::mat4&(i32)> worldOf = [&](i32 bone) -> const glm::mat4&
+    {
+        if (!restDone[bone])
+        {
+            const i32 parent = m_Skeleton.Bones[bone].ParentID;
+            restWorld[bone] = parent >= 0 ? worldOf(parent) * m_Skeleton.Bones[bone].LocalTransform
+                                          : m_Skeleton.Bones[bone].LocalTransform;
+            restDone[bone] = 1;
+        }
+        return restWorld[bone];
+    };
+
     // 2. Every skin: joint list + inverse bind matrices.
     for (size_t s = 0; s < asset.skins.size(); ++s)
     {
@@ -87,6 +105,14 @@ void Model::ParseSkins(const fastgltf::Asset& asset)
                                                                    }
                                                                    jointIdx++;
                                                                }, MeshoptBufferDataAdapter{&asset});
+        }
+
+        skin.RestPalette.resize(skin.JointNodes.size(), glm::mat4(1.0f));
+        for (size_t j = 0; j < skin.JointNodes.size(); ++j)
+        {
+            const i32 joint = skin.JointNodes[j];
+            if (joint >= 0 && joint < static_cast<i32>(m_Skeleton.Bones.size()))
+                skin.RestPalette[j] = worldOf(joint) * skin.InverseBindMatrices[j];
         }
 
         // The first skin also feeds the legacy Skeleton fields so existing

@@ -735,32 +735,46 @@ void Renderer3D::DrawGrid(const GridOptions& options)
     cmd.Draw(6, 0);
 }
 
-Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator* animator)
+/// @brief Uploads one model's bone matrices into this frame's region. @return where they live.
+static Renderer3D::BoneBinding UploadBones(const std::vector<glm::mat4>& matrices)
 {
-    BoneBinding binding;
-    if (animator && animator->HasAnimation())
+    Renderer3D::BoneBinding binding;
+    if (!matrices.empty() && s_Data3D.BoneBufferOffset + matrices.size() > kMaxBonesPerFrame)
     {
-        const auto& matrices = animator->GetFinalBoneMatrices();
-        if (!matrices.empty() && s_Data3D.BoneBufferOffset + matrices.size() > kMaxBonesPerFrame)
-        {
-            // Out of room this frame. The upload would be refused while the
-            // binding still pointed past the buffer; draw this model unskinned.
-            UHE_CORE_WARN("Renderer3D: bone buffer full ({0} matrices this frame), a skinned model draws in "
-                          "bind pose",
-                          kMaxBonesPerFrame);
-        }
-        else if (!matrices.empty())
-        {
-            uint64_t size = matrices.size() * sizeof(glm::mat4);
-            auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
-            cmd.UpdateBuffer(s_Data3D.BoneStorageBufferHandle, matrices.data(), size,
-                             s_Data3D.BoneBufferOffset * sizeof(glm::mat4));
-            binding.BufferIndex = s_Data3D.BoneStorageBufferIndex;
-            binding.Offset = s_Data3D.BoneBufferOffset;
-            s_Data3D.BoneBufferOffset += matrices.size();
-        }
+        // Out of room this frame. The upload would be refused while the
+        // binding still pointed past the buffer; draw this model unskinned.
+        UHE_CORE_WARN("Renderer3D: bone buffer full ({0} matrices this frame), a skinned model draws in "
+                      "bind pose",
+                      kMaxBonesPerFrame);
+    }
+    else if (!matrices.empty())
+    {
+        uint64_t size = matrices.size() * sizeof(glm::mat4);
+        auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
+        cmd.UpdateBuffer(s_Data3D.BoneStorageBufferHandle, matrices.data(), size,
+                         s_Data3D.BoneBufferOffset * sizeof(glm::mat4));
+        binding.BufferIndex = s_Data3D.BoneStorageBufferIndex;
+        binding.Offset = s_Data3D.BoneBufferOffset;
+        s_Data3D.BoneBufferOffset += matrices.size();
     }
     return binding;
+}
+
+Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator* animator)
+{
+    if (animator && animator->HasAnimation())
+        return UploadBones(animator->GetFinalBoneMatrices());
+    return {};
+}
+
+Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Model& model, const RD3d::Animator* animator)
+{
+    if (animator && animator->HasAnimation())
+        return UploadBones(animator->GetFinalBoneMatrices());
+    const RD3d::Skin* skin = model.GetSkin(animator != nullptr ? animator->GetSkinIndex() : 0);
+    if (skin != nullptr && !skin->RestPalette.empty())
+        return UploadBones(skin->RestPalette);
+    return {};
 }
 
 Renderer3D::MaterialBinding Renderer3D::PrepareMaterialBinding(const RD3d::Model& model)
@@ -806,7 +820,7 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
     UHE_PROFILE_FUNCTION();
     // Upload bone matrices and material parameters once per model, then
     // forward the buffer locations to every sub-mesh.
-    BoneBinding bones = PrepareBoneBinding(animator);
+    BoneBinding bones = PrepareBoneBinding(model, animator);
     MaterialBinding materials = PrepareMaterialBinding(model);
 
     for (const auto& mesh : model.GetMesh())
@@ -861,7 +875,10 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
 
     const auto& materials = model.GetMaterials();
 
-    pc.model = transform * mesh.LocalTransform;
+    // A skinned mesh is placed by its joints alone; its node's transform is
+    // ignored (glTF 2.0). Applying both turned such models on their side.
+    const bool skinned = boneBufferIndex >= 0 && mesh.skinIndex >= 0;
+    pc.model = skinned ? transform : transform * mesh.LocalTransform;
 
     for (const auto& prim : mesh.primitive)
     {

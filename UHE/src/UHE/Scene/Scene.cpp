@@ -1428,7 +1428,7 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
                 if (animComp.Animator)
                     animator = animComp.Animator.get();
             }
-            boneCache[nodeComp.ModelEntity] = Renderer3D::PrepareBoneBinding(animator);
+            boneCache[nodeComp.ModelEntity] = Renderer3D::PrepareBoneBinding(*mc.ModelData, animator);
             cacheIt = boneCache.find(nodeComp.ModelEntity);
         }
 
@@ -1443,9 +1443,13 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
             Renderer3D::SetFoliage(foliage->Bend, foliage->Height);
         else
             Renderer3D::SetFoliage(0.0f, 1.0f);
-        Renderer3D::SubmitMesh(meshes[meshIndex], GetWorldFromCache(worldTransforms, entity), (int)entity,
-                               *mc.ModelData, materialIt->second, cacheIt->second.BufferIndex,
-                               cacheIt->second.Offset);
+        // A skinned mesh follows its joints, which are relative to the model,
+        // not to the node entity it was expanded into.
+        const entt::entity placedBy = meshes[meshIndex].skinIndex >= 0 && cacheIt->second.BufferIndex >= 0
+                                          ? static_cast<entt::entity>(modelEntity)
+                                          : entity;
+        Renderer3D::SubmitMesh(meshes[meshIndex], GetWorldFromCache(worldTransforms, placedBy), (int)entity,
+                               *mc.ModelData, materialIt->second, cacheIt->second.BufferIndex, cacheIt->second.Offset);
     }
 }
 

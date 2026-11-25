@@ -91,9 +91,7 @@ def main():
 
     # ── character on the bank, looking over the water ──
     spot = (7.9, 4.6)
-    # The file is skinned with no animation: the engine draws it through its
-    # node chain, which lays it on its back. +90 degrees about X stands it up.
-    entity("Lynae", on_ground(*spot), (math.pi / 2, facing(spot, (0.0, 0.0)), 0),
+    entity("Lynae", on_ground(*spot), (0, facing(spot, (0.0, 0.0)), 0),
            components=[model("model/lynae_from_wuthering_waves.glb")])
 
     # ── light, wind and the play camera ──

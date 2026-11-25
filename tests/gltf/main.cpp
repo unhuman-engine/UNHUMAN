@@ -1704,6 +1704,65 @@ int main()
         }
     }
 
+    section("a skinned mesh stands on its skeleton without an animation");
+    {
+        // glTF places a skinned mesh by its joints and ignores the mesh node's
+        // own transform. Exports often put a Z-up correction on that node
+        // (here: 90 degrees about X); applying it laid characters on their
+        // backs. The skin's rest palette (joint world x inverse bind) is what
+        // the renderer draws with when no clip plays.
+        const fs::path bin = dir.path() / "rest_pose_skin.bin";
+        {
+            std::vector<float> data = {// POSITION: one triangle, 3 x vec3
+                                       0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                       // WEIGHTS_0: all on joint 0, 3 x vec4
+                                       1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                                       // inverse bind matrix of joint 0 (at y = 1): translate(0, -1, 0), column-major
+                                       1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                       -1.0f, 0.0f, 1.0f};
+            std::vector<u8> joints(12, 0); // JOINTS_0: 3 x u8vec4, all joint 0
+            std::ofstream out(bin, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(data.data()), 36 + 48);
+            out.write(reinterpret_cast<const char*>(joints.data()), 12);
+            out.write(reinterpret_cast<const char*>(data.data() + 21), 64);
+        }
+        const fs::path path = dir.path() / "rest_pose_skin.gltf";
+        {
+            std::ofstream out(path);
+            out << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
+"nodes":[{"mesh":0,"skin":0,"rotation":[0.7071068,0,0,0.7071068]},{"name":"joint","translation":[0,1,0]}],
+"skins":[{"joints":[1],"inverseBindMatrices":3}],
+"meshes":[{"primitives":[{"attributes":{"POSITION":0,"WEIGHTS_0":1,"JOINTS_0":2}}]}],
+"buffers":[{"uri":"rest_pose_skin.bin","byteLength":160}],
+"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":48},
+{"buffer":0,"byteOffset":84,"byteLength":12},{"buffer":0,"byteOffset":96,"byteLength":64}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+{"bufferView":1,"componentType":5126,"count":3,"type":"VEC4"},
+{"bufferView":2,"componentType":5121,"count":3,"type":"VEC4"},
+{"bufferView":3,"componentType":5126,"count":1,"type":"MAT4"}]})";
+        }
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "skinned model with a rotated mesh node loads"))
+        {
+            check(model.GetMesh().size() == 1 && model.GetMesh()[0].skinIndex == 0,
+                  "the mesh records the skin it deforms with");
+            const UHE::RD3d::Skin* skin = model.GetSkin(0);
+            check(skin != nullptr && skin->RestPalette.size() == 1, "the skin has one rest matrix per joint");
+            if (skin != nullptr && skin->RestPalette.size() == 1)
+            {
+                // Joint at y = 1 times its inverse bind: the identity, so the
+                // triangle stands where it was authored, not rotated by its node.
+                const glm::mat4& rest = skin->RestPalette[0];
+                float error = 0.0f;
+                for (int c = 0; c < 4; ++c)
+                    for (int r = 0; r < 4; ++r)
+                        error = std::max(error, std::abs(rest[c][r] - (c == r ? 1.0f : 0.0f)));
+                check(error < 1e-5f, "the rest palette is joint world x inverse bind (identity here)");
+            }
+        }
+    }
+
     section("tangent generation is skinned-safe");
     {
         // A skinned primitive must not be destructively merged across joints, or
