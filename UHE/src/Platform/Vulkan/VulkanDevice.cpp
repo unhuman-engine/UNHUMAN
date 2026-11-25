@@ -62,6 +62,7 @@ VulkanDevice::VulkanDevice(const SwapchainDesc& swapDesc)
     m_WindowHandle = static_cast<GLFWwindow*>(swapDesc.nativeWindow);
     m_WindowWidth = swapDesc.width;
     m_WindowHeight = swapDesc.height;
+    m_VSync = swapDesc.vsync;
     InitVulkan(swapDesc);
 }
 
@@ -100,7 +101,7 @@ void VulkanDevice::InitVulkan(const SwapchainDesc& swapDesc)
     m_Allocator = m_LogicalDevice.getAllocator();
 
     m_SwapChain.createSwapChain(m_LogicalDevice.getLogicalDevice(), m_PhysicalDevice.getPhysicalDevice(),
-                                m_LogicalDevice.getSurface(), m_WindowHandle);
+                                m_LogicalDevice.getSurface(), m_WindowHandle, m_VSync);
 
     for (auto& frame : m_Frames)
     {
@@ -218,7 +219,7 @@ void VulkanDevice::RecreateSwapchain()
     WaitIdle();
     m_SwapChain.cleanupSwapChain();
     m_SwapChain.createSwapChain(m_LogicalDevice.getLogicalDevice(), m_PhysicalDevice.getPhysicalDevice(),
-                                m_LogicalDevice.getSurface(), m_WindowHandle);
+                                m_LogicalDevice.getSurface(), m_WindowHandle, m_VSync);
 
     // §9.1.4: registrations bound to the dead swapchain are gone — next
     // Begin() re-registers the fresh images (which is why resize rebuilds the
@@ -235,6 +236,16 @@ void VulkanDevice::RecreateSwapchain()
         vk::SemaphoreCreateInfo semaphoreInfo{.flags = {}};
         m_RenderFinishedSemaphores.emplace_back(m_LogicalDevice.getLogicalDevice(), semaphoreInfo);
     }
+}
+
+void VulkanDevice::SetVSync(bool enabled)
+{
+    if (enabled == m_VSync)
+        return;
+    m_VSync = enabled;
+    // The present mode is fixed at swapchain creation: take the resize path,
+    // which recreates the swapchain right after the next present.
+    m_FramebufferResized = true;
 }
 
 // ─── Resource Management Stubs  ───

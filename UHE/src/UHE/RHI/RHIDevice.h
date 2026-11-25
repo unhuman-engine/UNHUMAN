@@ -52,6 +52,16 @@ public:
     /// Wayland compositors never do), so the device must not rely on that alone.
     virtual void OnFramebufferResized() {}
 
+    /**
+     * @brief Asks for presentation synced to the display's refresh (vertical sync).
+     *
+     * Takes effect when the swapchain is next recreated, which a change
+     * schedules for right after the next present, as a resize does.
+     */
+    virtual void SetVSync(bool enabled) { (void)enabled; }
+    /// @brief Whether the device was asked for vertical sync (SetVSync or SwapchainDesc::vsync).
+    [[nodiscard]] virtual bool IsVSync() const { return false; }
+
     /// Blocks the CPU until every piece of GPU work submitted by this device has completed.
     virtual void WaitIdle() = 0;
     /// Rewinds the per-frame command buffers so they can be recorded again.

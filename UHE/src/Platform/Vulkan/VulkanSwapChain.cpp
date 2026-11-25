@@ -4,12 +4,19 @@
 namespace UHE::RHI::VULKAN
 {
 void VulkanSwapChain::createSwapChain(vk::raii::Device& device, vk::raii::PhysicalDevice& physicalDevice,
-                                      vk::raii::SurfaceKHR& surface, GLFWwindow* window)
+                                      vk::raii::SurfaceKHR& surface, GLFWwindow* window, bool vsync)
 {
     auto SurfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(*surface);
     swapChainExtent = chooseSwapExtent(SurfaceCapabilities, window);
     swapChainSurfaceFormat = chooseSwapSurfaceFormat(physicalDevice.getSurfaceFormatsKHR(*surface));
     auto SurfaceFormats = physicalDevice.getSurfaceFormatsKHR(*surface);
+
+    // Logged once and on a change, not on every resize.
+    const vk::PresentModeKHR previousMode = presentMode;
+    const bool firstCreate = swapChainImages.empty();
+    presentMode = chooseSwapPresentMode(physicalDevice.getSurfacePresentModesKHR(*surface), vsync);
+    if (firstCreate || presentMode != previousMode)
+        UHE_CORE_INFO("Swapchain present mode: {0} (vsync {1})", vk::to_string(presentMode), vsync ? "on" : "off");
 
     // Transfer-source lets RequestFrameCapture copy a presented image back
     // (golden-image tests). Only asked for where the surface offers it.
@@ -19,23 +26,22 @@ void VulkanSwapChain::createSwapChain(vk::raii::Device& device, vk::raii::Physic
     if (supportsTransferSrc)
         imageUsage |= vk::ImageUsageFlagBits::eTransferSrc;
 
-    vk::SwapchainCreateInfoKHR swapChainCreateInfo{
-        .flags = {},
-        .surface = *surface,
-        .minImageCount = chooseSwapMinImageCount(SurfaceCapabilities),
-        .imageFormat = swapChainSurfaceFormat.format,
-        .imageColorSpace = swapChainSurfaceFormat.colorSpace,
-        .imageExtent = swapChainExtent,
-        .imageArrayLayers = 1,
-        .imageUsage = imageUsage,
-        .imageSharingMode = vk::SharingMode::eExclusive,
-        .queueFamilyIndexCount = {},
-        .pQueueFamilyIndices = {},
-        .preTransform = SurfaceCapabilities.currentTransform,
-        .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
-        .presentMode = chooseSwapPresentMode(physicalDevice.getSurfacePresentModesKHR(*surface)),
-        .clipped = VK_TRUE,
-        .oldSwapchain = {}};
+    vk::SwapchainCreateInfoKHR swapChainCreateInfo{.flags = {},
+                                                   .surface = *surface,
+                                                   .minImageCount = chooseSwapMinImageCount(SurfaceCapabilities),
+                                                   .imageFormat = swapChainSurfaceFormat.format,
+                                                   .imageColorSpace = swapChainSurfaceFormat.colorSpace,
+                                                   .imageExtent = swapChainExtent,
+                                                   .imageArrayLayers = 1,
+                                                   .imageUsage = imageUsage,
+                                                   .imageSharingMode = vk::SharingMode::eExclusive,
+                                                   .queueFamilyIndexCount = {},
+                                                   .pQueueFamilyIndices = {},
+                                                   .preTransform = SurfaceCapabilities.currentTransform,
+                                                   .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+                                                   .presentMode = presentMode,
+                                                   .clipped = VK_TRUE,
+                                                   .oldSwapchain = {}};
 
     swapChain = vk::raii::SwapchainKHR(device, swapChainCreateInfo);
     swapChainImages = swapChain.getImages();
@@ -93,15 +99,22 @@ u32 VulkanSwapChain::chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const& s
     return minImageCount;
 }
 
-vk::PresentModeKHR VulkanSwapChain::chooseSwapPresentMode(const std::vector<vk::PresentModeKHR>& availablePresentModes)
+vk::PresentModeKHR VulkanSwapChain::chooseSwapPresentMode(const std::vector<vk::PresentModeKHR>& availablePresentModes,
+                                                          bool vsync)
 {
+    // FIFO is the one mode every surface must support, and it is vsync.
     assert(std::ranges::any_of(availablePresentModes,
                                [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
+    if (vsync)
+        return vk::PresentModeKHR::eFifo;
 
-    return std::ranges::any_of(availablePresentModes,
-                               [](const vk::PresentModeKHR value) { return vk::PresentModeKHR::eMailbox == value; })
-               ? vk::PresentModeKHR::eMailbox
-               : vk::PresentModeKHR::eFifo;
+    // Mailbox first: it never waits for the display and still never tears.
+    for (const vk::PresentModeKHR preferred : {vk::PresentModeKHR::eMailbox, vk::PresentModeKHR::eImmediate})
+    {
+        if (std::ranges::find(availablePresentModes, preferred) != availablePresentModes.end())
+            return preferred;
+    }
+    return vk::PresentModeKHR::eFifo;
 }
 
 vk::SurfaceFormatKHR VulkanSwapChain::chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& availableFormats)
@@ -119,6 +132,7 @@ vk::SurfaceFormatKHR VulkanSwapChain::chooseSwapSurfaceFormat(const std::vector<
 void VulkanSwapChain::cleanupSwapChain()
 {
     swapChainImageViews.clear();
+    swapChainImages.clear();
     if (swapChain != nullptr)
     {
         swapChain = nullptr;

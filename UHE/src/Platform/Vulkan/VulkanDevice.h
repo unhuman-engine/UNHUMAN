@@ -95,6 +95,9 @@ public:
     [[nodiscard]] bool FrameSkipped() const override { return m_FrameSkipped; }
     /// Recreates the swapchain after the next present (\copydoc RHIDevice::OnFramebufferResized).
     void OnFramebufferResized() override { m_FramebufferResized = true; }
+    /// \copydoc RHIDevice::SetVSync
+    void SetVSync(bool enabled) override;
+    [[nodiscard]] bool IsVSync() const override { return m_VSync; }
 
     // Set by VulkanCommandBuffer::BeginRenderPass when a frame's legacy scene
     // pass rendered directly into the swapchain (leaving it in the Present
@@ -194,6 +197,7 @@ private:
     u32 m_CurrentFrame = 0;
     u32 m_ImageIndex = 0; // Current swapchain image index
     bool m_FramebufferResized = false;
+    bool m_VSync = true;                    // FIFO when set; MAILBOX or IMMEDIATE otherwise
     bool m_FrameSkipped = false;            // acquire failed → recreate the swapchain and skip the frame
     bool m_FrameGraphFailed = false;        // graph compile/resolve failed → recovery path
     bool m_LegacySwapchainRendered = false; // legacy BeginRenderPass wrote the swapchain this frame
