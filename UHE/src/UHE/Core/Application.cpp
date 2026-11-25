@@ -21,8 +21,9 @@ namespace UHE
 
 Application* Application::s_instance = nullptr;
 
-Application::Application(const std::string& name)
+Application::Application(const std::string& name) : Application(name, WindowProps(name)) {}
 
+Application::Application(const std::string& name, const WindowProps& window)
 {
     UHE_PROFILE_FUNCTION();
     UHE_CORE_ASSERT(!s_instance, "Application already exists!");
@@ -35,7 +36,7 @@ Application::Application(const std::string& name)
         UHE_CORE_INFO("[CAPTURE] fixed timestep {0} s", *m_Capture.FixedTimestep);
 
     s_instance = this;
-    m_Window = std::unique_ptr<Window>(Window::Create(WindowProps(name)));
+    m_Window = std::unique_ptr<Window>(Window::Create(window));
     m_Window->SetEventCallback(BIND_EVENT_FN(OnEvent));
     m_Window->SetVSync(false);
 

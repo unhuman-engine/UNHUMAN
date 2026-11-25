@@ -2586,6 +2586,54 @@ void Editor::DrawPreferencesContent()
         ImGui::SameLine();
         if (ImGui::Button("Close Project"))
             CloseProject();
+
+        // The window an exported game opens (Project.uheproject, Window block).
+        EditorUI::SectionHeader("Game Window");
+        ProjectWindowSettings& window = m_Project->Window;
+        bool changed = false;
+        char title[128];
+        std::snprintf(title, sizeof(title), "%s", window.Title.c_str());
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputTextWithHint("##GameTitle", m_Project->Name.c_str(), title, sizeof(title)))
+            window.Title = title;
+        changed |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Window title; empty uses the project name");
+
+        int size[2] = {static_cast<int>(window.Width), static_cast<int>(window.Height)};
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::DragInt2("##GameSize", size, 1.0f, ProjectWindowSettings::kMinSize, ProjectWindowSettings::kMaxSize,
+                            "%d px", ImGuiSliderFlags_AlwaysClamp))
+        {
+            window.Width = static_cast<u32>(size[0]);
+            window.Height = static_cast<u32>(size[1]);
+        }
+        changed |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Windowed size (width, height)");
+
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::BeginCombo("Mode##GameMode", WindowModeName(window.Mode)))
+        {
+            for (const WindowMode mode : {WindowMode::Windowed, WindowMode::Borderless, WindowMode::Fullscreen})
+            {
+                if (ImGui::Selectable(WindowModeName(mode), mode == window.Mode))
+                {
+                    window.Mode = mode;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("VSync##GameVSync", &window.VSync);
+
+        if (changed)
+        {
+            std::string error;
+            if (!Project::Save(*m_Project, &error))
+                UHE_CORE_WARN("Could not save the project manifest: {0}", error);
+        }
     }
 
     EditorUI::SectionHeader("About");

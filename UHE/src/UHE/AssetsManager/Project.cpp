@@ -1,5 +1,7 @@
 #include "uhepch.h"
 #include "Project.h"
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <system_error>
 #include <yaml-cpp/yaml.h>
@@ -134,6 +136,25 @@ bool Project::Load(const std::filesystem::path& path, ProjectInfo& out, std::str
     info.StartScene = project["StartScene"] ? project["StartScene"].as<std::string>() : std::string();
     info.EngineVersion = project["EngineVersion"] ? project["EngineVersion"].as<std::string>() : std::string();
 
+    // The game window. A missing block or field keeps its default; sizes are
+    // clamped, so a typo cannot open a 0 or 100000 pixel window.
+    if (const YAML::Node window = project["Window"]; window && window.IsMap())
+    {
+        ProjectWindowSettings& settings = info.Window;
+        const auto size = [&](const char* key, u32 fallback)
+        {
+            const i64 value = window[key] ? window[key].as<i64>(fallback) : fallback;
+            return static_cast<u32>(
+                std::clamp<i64>(value, ProjectWindowSettings::kMinSize, ProjectWindowSettings::kMaxSize));
+        };
+        settings.Title = window["Title"] ? window["Title"].as<std::string>(std::string()) : std::string();
+        settings.Width = size("Width", settings.Width);
+        settings.Height = size("Height", settings.Height);
+        settings.Mode = window["Mode"] ? ParseWindowMode(window["Mode"].as<std::string>(std::string()), settings.Mode)
+                                       : settings.Mode;
+        settings.VSync = window["VSync"] ? window["VSync"].as<bool>(settings.VSync) : settings.VSync;
+    }
+
     if (info.Name.empty())
         info.Name = info.RootPath.filename().string();
 
@@ -164,6 +185,13 @@ bool Project::Save(const ProjectInfo& info, std::string* error)
     out << YAML::Key << "EngineVersion" << YAML::Value
         << (info.EngineVersion.empty() ? EngineVersionString() : info.EngineVersion);
     out << YAML::Key << "StartScene" << YAML::Value << info.StartScene;
+    out << YAML::Key << "Window" << YAML::Value << YAML::BeginMap;
+    out << YAML::Key << "Title" << YAML::Value << info.Window.Title;
+    out << YAML::Key << "Width" << YAML::Value << info.Window.Width;
+    out << YAML::Key << "Height" << YAML::Value << info.Window.Height;
+    out << YAML::Key << "Mode" << YAML::Value << WindowModeName(info.Window.Mode);
+    out << YAML::Key << "VSync" << YAML::Value << info.Window.VSync;
+    out << YAML::EndMap;
     out << YAML::EndMap;
     out << YAML::EndMap;
 
@@ -189,6 +217,36 @@ void Project::Mount(const ProjectInfo& info, const std::filesystem::path& engine
         Vfs::Get().Mount("game:", info.AssetPath);
     if (!engineAssetPath.empty())
         Vfs::Get().Mount("engine:", engineAssetPath);
+}
+
+const char* WindowModeName(WindowMode mode)
+{
+    switch (mode)
+    {
+        case WindowMode::Borderless:
+            return "Borderless";
+        case WindowMode::Fullscreen:
+            return "Fullscreen";
+        case WindowMode::Windowed:
+            break;
+    }
+    return "Windowed";
+}
+
+WindowMode ParseWindowMode(const std::string& name, WindowMode fallback)
+{
+    std::string lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const WindowMode mode : {WindowMode::Windowed, WindowMode::Borderless, WindowMode::Fullscreen})
+    {
+        std::string candidate = WindowModeName(mode);
+        std::transform(candidate.begin(), candidate.end(), candidate.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower == candidate)
+            return mode;
+    }
+    return fallback;
 }
 
 std::filesystem::path Project::StartScenePath(const ProjectInfo& info)

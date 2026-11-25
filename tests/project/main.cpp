@@ -79,6 +79,30 @@ int main()
     ProjectInfo fallback;
     Check(Project::Load(unnamed, fallback, &error) && fallback.Name == "Unnamed",
           "load: a nameless manifest falls back to the folder name");
+    Check(fallback.Window.Width == 1280 && fallback.Window.Height == 720 &&
+              fallback.Window.Mode == WindowMode::Windowed && fallback.Window.VSync && fallback.Window.Title.empty(),
+          "window: a manifest without a Window block gets the defaults");
+
+    // ── the game window ─────────────────────────────────────────────────────
+    reloaded.Window = {.Title = "Snake!", .Width = 1600, .Height = 900, .Mode = WindowMode::Borderless, .VSync = false};
+    Check(Project::Save(reloaded, &error), "window: saved with the manifest");
+    ProjectInfo windowed;
+    Check(Project::Load(gameRoot, windowed, &error) && windowed.Window.Title == "Snake!" &&
+              windowed.Window.Width == 1600 && windowed.Window.Height == 900 &&
+              windowed.Window.Mode == WindowMode::Borderless && !windowed.Window.VSync,
+          "window: every field round-trips");
+
+    const fs::path oddWindow = sandbox / "windows" / "OddWindow"; // not in the scanned folder
+    WriteFile(oddWindow / Project::kManifestName, "Project:\n  Name: Odd\n  Window:\n    Width: 0\n"
+                                                  "    Height: 999999\n    Mode: FULLSCREEN\n    VSync: maybe\n");
+    ProjectInfo odd;
+    Check(Project::Load(oddWindow, odd, &error), "window: an odd block still loads");
+    Check(odd.Window.Width == ProjectWindowSettings::kMinSize && odd.Window.Height == ProjectWindowSettings::kMaxSize,
+          "window: sizes are clamped");
+    Check(odd.Window.Mode == WindowMode::Fullscreen, "window: the mode is read in any case");
+    Check(odd.Window.VSync, "window: an unreadable value keeps its default");
+    Check(ParseWindowMode("Exclusive", WindowMode::Windowed) == WindowMode::Windowed,
+          "window: an unknown mode falls back");
 
     // ── failure modes ───────────────────────────────────────────────────────
     error.clear();

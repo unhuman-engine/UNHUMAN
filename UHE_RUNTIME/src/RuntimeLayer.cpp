@@ -1,4 +1,6 @@
 #include "RuntimeLayer.h"
+#include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
@@ -24,9 +26,9 @@ std::filesystem::path ExecutableFolder()
 }
 } // namespace
 
-RuntimeLayer::RuntimeLayer() : Layer("RuntimeLayer") {}
+RuntimeLayer::RuntimeLayer(std::optional<ProjectInfo> project) : Layer("RuntimeLayer"), m_Project(std::move(project)) {}
 
-bool RuntimeLayer::LoadProject()
+std::optional<ProjectInfo> RuntimeLayer::FindProject()
 {
     std::filesystem::path root = CommandLine::GetValue("project");
     if (root.empty())
@@ -35,17 +37,42 @@ bool RuntimeLayer::LoadProject()
     {
         UHE_CORE_ERROR("Runtime: no project at '{0}'; pass -project <folder with {1}>", root.string(),
                        Project::kManifestName);
-        return false;
+        return std::nullopt;
     }
+    ProjectInfo project;
     std::string error;
-    if (!Project::Load(root, m_Project, &error))
+    if (!Project::Load(root, project, &error))
     {
         UHE_CORE_ERROR("Runtime: could not load the project at '{0}': {1}", root.string(), error);
-        return false;
+        return std::nullopt;
     }
-    Project::Mount(m_Project, FileSystem::Get().GetRootPath() / "assets");
-    UHE_CORE_INFO("Runtime: project '{0}'", m_Project.Name);
-    return true;
+    return project;
+}
+
+ProjectWindowSettings RuntimeLayer::ResolveWindow(const ProjectInfo* project)
+{
+    ProjectWindowSettings window = project ? project->Window : ProjectWindowSettings{};
+    if (window.Title.empty())
+        window.Title = project ? project->Name : std::string("UHE Runtime");
+    if (CommandLine::HasFlag("windowed"))
+        window.Mode = WindowMode::Windowed;
+    else if (CommandLine::HasFlag("borderless"))
+        window.Mode = WindowMode::Borderless;
+    else if (CommandLine::HasFlag("fullscreen"))
+        window.Mode = WindowMode::Fullscreen;
+    const auto size = [](const char* name, u32 fallback)
+    {
+        const std::string text = CommandLine::GetValue(name);
+        char* end = nullptr;
+        const long value = std::strtol(text.c_str(), &end, 10);
+        if (text.empty() || *end != '\0')
+            return fallback;
+        return static_cast<u32>(
+            std::clamp<long>(value, ProjectWindowSettings::kMinSize, ProjectWindowSettings::kMaxSize));
+    };
+    window.Width = size("width", window.Width);
+    window.Height = size("height", window.Height);
+    return window;
 }
 
 bool RuntimeLayer::LoadScene(const std::filesystem::path& path)
@@ -69,19 +96,28 @@ bool RuntimeLayer::LoadScene(const std::filesystem::path& path)
 void RuntimeLayer::OnAttach()
 {
     Window& window = Application::Get().GetWindow();
+    // The window was created at the project's size (RuntimeApp); the mode and
+    // VSync are applied once it exists.
+    const ProjectWindowSettings settings = ResolveWindow(m_Project ? &*m_Project : nullptr);
+    window.SetVSync(settings.VSync);
+    if (settings.Mode != WindowMode::Windowed)
+        window.SetWindowMode(settings.Mode);
     m_Width = window.GetWidth();
     m_Height = window.GetHeight();
-    if (!LoadProject())
+    if (!m_Project)
         return;
+    Project::Mount(*m_Project, FileSystem::Get().GetRootPath() / "assets");
+    UHE_CORE_INFO("Runtime: project '{0}', {1}x{2} {3}, VSync {4}", m_Project->Name, settings.Width, settings.Height,
+                  WindowModeName(settings.Mode), settings.VSync ? "on" : "off");
 
     std::filesystem::path scenePath = CommandLine::GetValue("scene");
     if (scenePath.empty())
-        scenePath = Project::StartScenePath(m_Project);
+        scenePath = Project::StartScenePath(*m_Project);
     else if (scenePath.is_relative())
-        scenePath = m_Project.RootPath / scenePath;
+        scenePath = m_Project->RootPath / scenePath;
     if (scenePath.empty())
     {
-        UHE_CORE_ERROR("Runtime: project '{0}' has no StartScene; set one in Project.uheproject", m_Project.Name);
+        UHE_CORE_ERROR("Runtime: project '{0}' has no StartScene; set one in Project.uheproject", m_Project->Name);
         return;
     }
     LoadScene(scenePath);

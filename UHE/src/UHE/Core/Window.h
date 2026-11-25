@@ -60,6 +60,8 @@ public:
 
     // Window attributes
     virtual void SetEventCallback(const EventCallbackFn& callback) = 0;
+    /// @brief The text in the window's title bar.
+    virtual void SetTitle(const std::string& title) = 0;
     /// @brief Asks for vertical sync. Reaches the renderer's swapchain on the next OnUpdate().
     virtual void SetVSync(bool enabled) = 0;
     virtual bool IsVSync() const = 0;

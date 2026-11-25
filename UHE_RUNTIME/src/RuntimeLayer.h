@@ -2,6 +2,7 @@
 
 #include <UHE.h>
 #include <cstdint>
+#include <optional>
 #include "UHE/AssetsManager/Project.h"
 
 /**
@@ -16,7 +17,16 @@
 class RuntimeLayer : public UHE::Layer
 {
 public:
-    RuntimeLayer();
+    /// @param project What FindProject found; nothing leaves the window empty (the error is logged).
+    explicit RuntimeLayer(std::optional<UHE::ProjectInfo> project);
+
+    /// @brief Finds and loads the project to play; nothing (logged) when there is none.
+    [[nodiscard]] static std::optional<UHE::ProjectInfo> FindProject();
+    /**
+     * @brief The window \p project asks for, with the command line's overrides:
+     *        -windowed, -borderless, -fullscreen, -width <px>, -height <px>.
+     */
+    [[nodiscard]] static UHE::ProjectWindowSettings ResolveWindow(const UHE::ProjectInfo* project);
 
     void OnAttach() override;
     void OnDetach() override;
@@ -24,14 +34,12 @@ public:
     void OnEvent(UHE::Event& event) override;
 
 private:
-    /// @brief Finds, loads and mounts the project; @return false (logged) when there is none.
-    bool LoadProject();
     /// @brief Loads \p path and starts it in play mode; @return false (logged) on failure.
     bool LoadScene(const std::filesystem::path& path);
     /// @brief Declares this frame's scene passes, ending in the backbuffer.
     void DeclareFrame(UHE::Timestep ts);
 
-    UHE::ProjectInfo m_Project;
+    std::optional<UHE::ProjectInfo> m_Project;
     UHE::Ref<UHE::Scene> m_Scene;
     float m_Time = 0.0f;
     uint32_t m_Width = 0;
