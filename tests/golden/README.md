@@ -5,7 +5,7 @@ Reference frames for the visual regression step in
 
 | File | Scene |
 |---|---|
-| `sandbox_box.png` | Sandbox, frame 30 at a fixed 1/60 s step, 1920x1080, lavapipe |
+| `sandbox_box.png` | Sandbox, frame 30 at a fixed 1/60 s step, 1920x1080, lavapipe. Three FrameGraph passes: the scene into an RGBA16F target, ACES tonemap into the backbuffer, then the UI |
 
 CI renders the same frame headless on lavapipe and compares it with
 `uhe_imgdiff` (`tools/imgdiff`). A pixel differs when any channel is more

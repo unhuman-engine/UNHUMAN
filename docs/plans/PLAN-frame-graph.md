@@ -1,7 +1,7 @@
 # FrameGraph frontend
 
-> **Status:** IN PROGRESS. Phases 1 and 2 are done, Phase 3 is done, Phase 4 has
-> started (the Sandbox). Issue [#4](https://github.com/unhuman-engine/UNHUMAN/issues/4).
+> **Status:** Phases 1 to 6 DONE (2026-11-25); the deferred items remain. Issue
+> [#4](https://github.com/unhuman-engine/UNHUMAN/issues/4).
 > Design: [framegraph-and-rendergraph.md](../architecture/framegraph-and-rendergraph.md).
 
 ## Why
@@ -45,9 +45,9 @@ a frontend error.
 | 1 | Frontend: `FGHandle<T>` (index, version, frame), `Create`/`Import`/`ImportBackbuffer`, `AddPass<Data>(setup, execute)`, usages, blackboard, parameters, `Lower()`, `Hash()` | `DONE` | `tests/framegraph` |
 | 2 | Bridge: translation, `TransientTexturePool` (reuse by shape, retire after 3 unused frames), `FGContext` with `RHICommandBuffer&`, `RHIDevice::GetFrameGraph()`/`GetBackbufferDesc()` | `DONE` | `tests/framegraph` (pool), Sandbox golden image |
 | 3 | Graph errors stop the run under `UHE_VALIDATION_FATAL` | `DONE` | broken backbuffer size exits 1 with the gate, 0 without |
-| 4 | Passes move to the FrameGraph: Sandbox (done), then Editor and AimLab (their `dynamic_cast` and `RGPassContext` go), then Scene to HDR to Tonemap with a second golden image | `IN PROGRESS` | golden images, editor validation run |
-| 5 | Reuse the compiled render graph while `Hash()` is unchanged | `TODO` | hit/miss tests |
-| 6 | Graph-created buffers (a buffer pool like the texture pool) | `TODO` | `tests/framegraph` |
+| 4 | Passes move to the FrameGraph: Sandbox, Editor and AimLab (no `dynamic_cast`, no Vulkan types left in app code); the Sandbox renders Scene (RGBA16F) then `PostProcess::AddTonemapPass` (ACES) into the backbuffer | `DONE` | golden image, editor validation run |
+| 5 | `VulkanRenderGraphCompileCache` reuses the compiled frame when the declared frame is structurally identical, compared by exact key, with handles rebound to the current generation; `UHE_RENDERGRAPH_NO_CACHE=1` turns it off | `DONE` | `tests/rendergraph` hit/miss/staleness; cached and uncached frames byte-identical |
+| 6 | Graph-created buffers from a `TransientBufferPool` (one `TransientPool` template for both kinds) | `DONE` | `tests/framegraph` (pool); no engine pass creates a buffer yet |
 | later | Per-pass command buffers and parallel recording (needs per-thread command pools), memory aliasing, compute-queue hints, an editor panel listing passes, culled passes and barriers | `DEFERRED` | — |
 
 ## Decisions
@@ -61,9 +61,26 @@ a frontend error.
 - **The backbuffer is imported by the device**, so the UI pass and a frame graph
   pass that render into it share one render graph slot.
 
+## Found and fixed on the way
+
+- **No barrier between two scopes rendering one attachment.** The compiler
+  skipped a barrier when layout and guard were unchanged, so the UI pass's load
+  was not ordered after the scene's writes. Now every write is followed by one.
+- **Attachment access left out the read.** `ColorWrite`/`DepthWrite` mapped to
+  write bits only; a load, a blend and a depth test read the attachment.
+- **Graph errors were silent.** A failing pass was dropped and the run exited 0.
+- **Four RHI formats had no Vulkan mapping** (R8, RG8, RGBA16F, RGBA32F); the
+  first HDR target reached `vkCreateImage` as UNDEFINED, caught by the gate.
+- **The topology hash is not a cache key.** It counts a pass's reads instead of
+  naming them; the compile cache compares an exact key instead.
+
 ## Verified
 
-The Sandbox renders its scene as one FrameGraph pass. Its frame is byte-identical to
-the one the old direct path produced (0 of 1,755,027 pixels differ), and the
-lavapipe golden image is unchanged. Sandbox and editor run clean under
+Moving the Sandbox scene onto one FrameGraph pass changed no pixel: 0 of 1,755,027
+differ locally, and CI's lavapipe golden image passed unchanged. The HDR and
+tonemap frame is the new golden image. Cached and uncached compiles render the
+same frame byte for byte. Sandbox and editor run clean under
 `UHE_VALIDATION_FATAL=1`.
+
+UHEGAME (AimLab) cannot be run on any branch: `UHEGAME/assets` has no shaders or
+fonts on `master`. Its pass compiles and uses the editor's pattern, which runs.

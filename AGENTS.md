@@ -56,6 +56,11 @@ here. Follow them; if a rule is wrong, change it here first.
   compile or resolve drops its passes and the frame still presents, so the
   only symptom is a missing scene. Under `UHE_VALIDATION_FATAL` it stops the
   run like a validation error does.
+- **The compiled render graph is cached by exact structure, not by hash.**
+  `VulkanRenderGraphCompileCache` replays the last compile only when every
+  access, state and name matches, and rebinds handle generations. The topology
+  hash counts a pass's reads instead of naming them; never key a cache on it.
+  `UHE_RENDERGRAPH_NO_CACHE=1` compiles every frame, for an A/B.
 - **Every write is followed by a barrier.** Two passes rendering into one
   attachment in a row are separate rendering scopes; the compiler orders them
   even when the layout does not change, and attachment access includes the
