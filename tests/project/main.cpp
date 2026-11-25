@@ -211,24 +211,101 @@ int main()
 
     // ── export a game ───────────────────────────────────────────────────────
     {
-        // A stand-in build: the runtime, a shared library and an unrelated tool.
+        // A stand-in build: the runtime, shared libraries, Slang's compile-only
+        // modules, a linker-name stand-in and an unrelated tool.
         const fs::path bin = sandbox / "bin";
+        const std::string elf = "\x7f"
+                                "ELF lib";
         WriteFile(bin / "UHE_RUNTIME", "runtime");
         WriteFile(bin / "UHE_RUNTIME.exe", "runtime");
-        WriteFile(bin / "libUHE.so", "lib");
-        WriteFile(bin / "libslang.so.1", "lib");
+        WriteFile(bin / "libUHE.so", elf);
+        WriteFile(bin / "libslang-compiler.so.0.2026.10", elf);
+        WriteFile(bin / "libslang-compiler.so", "libslang-compiler.so.0.2026.10");
+        WriteFile(bin / "libslang-llvm.so", elf);
+        WriteFile(bin / "libslang-glslang-2026.10.so", elf);
+        WriteFile(bin / "slang-glsl-module-2026.10.dll", "MZ dll");
+        WriteFile(bin / "libgfx.so.0.2026.10", elf);
+        WriteFile(bin / "glfw3.dll", "MZ dll");
         WriteFile(bin / "uhe_shaderc", "tool");
         const fs::path engine = sandbox / "engine_assets";
         WriteFile(engine / "shaders/Basic3D.slang", "source");
         WriteFile(engine / "shaders/Basic3D.vertex.default.spv", "spirv");
         WriteFile(engine / "shaders/variants.txt", "default:");
-        WriteFile(engine / "fonts/Inter.ttf", "font");
+        WriteFile(engine / "icon/pointLight.png", "png");
+        WriteFile(engine / "Inter/static/Inter_18pt-Bold.ttf", "font");
+        WriteFile(engine / "Inter/static/Inter_18pt-Regular.ttf", "font");
+        WriteFile(engine / "Inter/static/Inter_24pt-Thin.ttf", "unused font");
+        WriteFile(engine / "Inter/OFL.txt", "font licence");
+        WriteFile(engine / "model/hero.glb", "glb");
+        WriteFile(engine / "model/license.txt", "model licence");
+        WriteFile(engine / "model/unused.glb", "glb");
 
         const fs::path gameRoot2 = sandbox / "Pond Demo";
         ProjectInfo pond;
         Check(Project::Create(gameRoot2, "Pond Demo", pond, &error), "export: a project to export");
-        WriteFile(pond.AssetPath / "Scenes/Pond.unhuman", "Scene: Pond");
-        WriteFile(pond.AssetPath / "Models/Ground.gltf", "{}");
+        WriteFile(pond.AssetPath / "Scenes/Pond.unhuman", "Scene: Pond\n"
+                                                          "Entities:\n"
+                                                          "  - Entity: 1\n"
+                                                          "    TagComponent:\n"
+                                                          "      Tag: Ground.gltf\n"
+                                                          "    Model3DComponent:\n"
+                                                          "      ModelPath: Models/Ground.gltf\n"
+                                                          "  - Entity: 2\n"
+                                                          "    Model3DComponent:\n"
+                                                          "      ModelPath: model/hero.glb\n"
+                                                          "  - Entity: 3\n"
+                                                          "    SpriteRendererComponent:\n"
+                                                          "      TexturePath: engine:/icon/pointLight.png\n"
+                                                          "  - Entity: 4\n"
+                                                          "    Model3DComponent:\n"
+                                                          "      ModelPath: Models/Gone.gltf\n"
+                                                          "  - Entity: 5\n"
+                                                          "    Model3DComponent:\n"
+                                                          "      ModelPath: /home/someone/tree.glb\n");
+        WriteFile(pond.AssetPath / "Models/Ground.gltf",
+                  R"({"buffers":[{"uri":"Ground%20Mesh.bin"}],"images":[{"uri":"../Textures/grass.png"},)"
+                  R"({"uri":"data:image/png;base64,AAAA"},{"uri":"lost.png"}]})");
+        WriteFile(pond.AssetPath / "Models/Ground Mesh.bin", "bin");
+        WriteFile(pond.AssetPath / "Textures/grass.png", "png");
+        WriteFile(pond.AssetPath / "Textures/unused.png", "png");
+        WriteFile(pond.AssetPath / "Scripts/Spawner.lua", "local path = \"Textures/rock.png\"\nprint('hello')\n");
+        WriteFile(pond.AssetPath / "Textures/rock.png", "png");
+        WriteFile(pond.AssetPath / "Big/Unused.glb", "glb");
+
+        {
+            const AssetManifest manifest = GameExporter::CollectAssets(pond.AssetPath, engine);
+            const auto has = [](const std::vector<fs::path>& files, const char* file)
+            { return std::find(files.begin(), files.end(), fs::path(file)) != files.end(); };
+            const auto warned = [&](const char* text)
+            {
+                return std::any_of(manifest.Warnings.begin(), manifest.Warnings.end(),
+                                   [&](const std::string& w) { return w.find(text) != std::string::npos; });
+            };
+            Check(has(manifest.ProjectFiles, "Scenes/Pond.unhuman") &&
+                      has(manifest.ProjectFiles, "Scripts/Spawner.lua"),
+                  "collect: every scene and script is kept");
+            Check(has(manifest.ProjectFiles, "Models/Ground.gltf"), "collect: a model a scene names is kept");
+            Check(has(manifest.ProjectFiles, "Models/Ground Mesh.bin") &&
+                      has(manifest.ProjectFiles, "Textures/grass.png"),
+                  "collect: a glTF brings its buffers and images (decoded, relative to it)");
+            Check(has(manifest.ProjectFiles, "Textures/rock.png"), "collect: a file a script names is kept");
+            Check(!has(manifest.ProjectFiles, "Textures/unused.png") && !has(manifest.ProjectFiles, "Big/Unused.glb"),
+                  "collect: files nothing names are left out");
+            Check(has(manifest.EngineFiles, "model/hero.glb") && !has(manifest.EngineFiles, "model/unused.glb"),
+                  "collect: an engine model a scene names is kept, the others are not");
+            Check(has(manifest.EngineFiles, "model/license.txt") && has(manifest.EngineFiles, "Inter/OFL.txt"),
+                  "collect: licences travel with their assets");
+            Check(has(manifest.EngineFiles, "shaders/Basic3D.vertex.default.spv") &&
+                      has(manifest.EngineFiles, "icon/pointLight.png") &&
+                      has(manifest.EngineFiles, "Inter/static/Inter_18pt-Bold.ttf") &&
+                      !has(manifest.EngineFiles, "Inter/static/Inter_24pt-Thin.ttf"),
+                  "collect: the engine files the runtime loads itself are always in, other fonts are not");
+            Check(!has(manifest.EngineFiles, "shaders/Basic3D.slang"), "collect: shader sources are left out");
+            Check(warned("Models/Gone.gltf") && warned("lost.png"), "collect: a missing reference is a warning");
+            Check(warned("/home/someone/tree.glb"), "collect: an absolute path is a warning");
+            Check(!warned("'Ground.gltf'") && !warned("data:"), "collect: tags and data URIs are not warned about");
+            Check(manifest.Warnings.size() == 3, "collect: exactly the three bad references are warned about");
+        }
 
         ExportOptions options;
         options.RuntimeDir = bin;
@@ -247,15 +324,24 @@ int main()
 #else
         Check(fs::exists(out / "Pond_Demo"), "export: the runtime is renamed after the project");
 #endif
-        Check(fs::exists(out / "libUHE.so") && fs::exists(out / "libslang.so.1"), "export: shared libraries ship");
+        Check(fs::exists(out / "libUHE.so") && fs::exists(out / "libslang-compiler.so.0.2026.10") &&
+                  fs::exists(out / "glfw3.dll"),
+              "export: shared libraries ship");
+        Check(!fs::exists(out / "libslang-llvm.so") && !fs::exists(out / "libslang-glslang-2026.10.so") &&
+                  !fs::exists(out / "slang-glsl-module-2026.10.dll") && !fs::exists(out / "libgfx.so.0.2026.10"),
+              "export: Slang's compile-only modules do not");
+        Check(!fs::exists(out / "libslang-compiler.so"), "export: linker-name stand-ins do not");
         Check(!fs::exists(out / "uhe_shaderc"), "export: other tools in the build folder do not");
         Check(fs::exists(out / "assets/shaders/Basic3D.vertex.default.spv") &&
-                  fs::exists(out / "assets/shaders/variants.txt") && fs::exists(out / "assets/fonts/Inter.ttf"),
+                  fs::exists(out / "assets/shaders/variants.txt") && fs::exists(out / "assets/model/hero.glb"),
               "export: engine assets ship, compiled shaders included");
         Check(!fs::exists(out / "assets/shaders/Basic3D.slang"), "export: shader sources do not ship");
+        Check(!fs::exists(out / "assets/model/unused.glb") && !fs::exists(out / "Assets/Big/Unused.glb"),
+              "export: unreferenced assets do not ship");
         Check(fs::exists(out / Project::kManifestName) && fs::exists(out / "Assets/Scenes/Pond.unhuman") &&
-                  fs::exists(out / "Assets/Models/Ground.gltf"),
+                  fs::exists(out / "Assets/Models/Ground Mesh.bin"),
               "export: the project's manifest and assets ship");
+        Check(report.Warnings.size() == 3, "export: the collector's warnings reach the report");
         Check(fs::exists(out / GameExporter::kMarkerName), "export: the folder is marked as an export");
 
         report = GameExporter::Export(pond, options);
@@ -270,6 +356,15 @@ int main()
         options.OutputDir = gameRoot2 / "Build";
         report = GameExporter::Export(pond, options);
         Check(!report.Ok, "export: an output folder inside the project is refused");
+
+        options.OutputDir = sandbox / "out_all";
+        options.AllAssets = true;
+        report = GameExporter::Export(pond, options);
+        Check(report.Ok && fs::exists(options.OutputDir / "Assets/Big/Unused.glb") &&
+                  fs::exists(options.OutputDir / "assets/model/unused.glb") &&
+                  !fs::exists(options.OutputDir / "assets/shaders/Basic3D.slang"),
+              "export: AllAssets copies every asset but shader sources");
+        options.AllAssets = false;
 
         Check(GameExporter::ExecutableName("My Game: 2!") == "My_Game__2_", "export: names are made file-safe");
     }

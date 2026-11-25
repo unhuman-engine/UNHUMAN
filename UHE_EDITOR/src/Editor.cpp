@@ -1402,11 +1402,17 @@ void Editor::ExportGame()
     options.RuntimeDir = std::filesystem::absolute(CommandLine::GetExecutable()).parent_path();
     options.EngineAssets = FileSystem::Get().GetRootPath() / "assets";
     const ExportReport report = GameExporter::Export(*m_Project, options);
+    for (const std::string& warning : report.Warnings)
+        UHE_CORE_WARN("Export: {0}", warning);
     if (report.Ok)
     {
         UHE_CORE_INFO("Exported '{0}': {1} files, {2} MB, run {3}", m_Project->Name, report.FilesCopied,
                       report.BytesCopied / (1024 * 1024), report.Executable.string());
-        Notify(NotificationCenter::Kind::Success, "Game exported", report.Executable.string());
+        if (report.Warnings.empty())
+            Notify(NotificationCenter::Kind::Success, "Game exported", report.Executable.string());
+        else
+            Notify(NotificationCenter::Kind::Warning, "Game exported with warnings",
+                   std::to_string(report.Warnings.size()) + " references will not load; see the console");
     }
     else
     {

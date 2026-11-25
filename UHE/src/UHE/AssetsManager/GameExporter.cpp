@@ -1,6 +1,15 @@
 #include "uhepch.h"
 #include "UHE/AssetsManager/GameExporter.h"
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstring>
 #include <fstream>
+#include <optional>
+#include <regex>
+#include <set>
+#include <sstream>
+#include <yaml-cpp/yaml.h>
 
 namespace UHE
 {
@@ -23,6 +32,300 @@ bool IsSharedLibrary(const fs::path& file)
     const std::string name = file.filename().string();
     return file.extension() == ".dll" || name.ends_with(".so") || name.find(".so.") != std::string::npos;
 }
+
+/// Slang loads these only while compiling, and a game never compiles: LLVM
+/// (150 MB), glslang, the GLSL module, its runtime and the gfx layer.
+bool IsSlangCompilerModule(const fs::path& file)
+{
+    std::string name = file.filename().string();
+    if (name.starts_with("lib"))
+        name.erase(0, 3);
+    for (const char* module : {"slang-llvm", "slang-glslang", "slang-glsl-module", "slang-rt", "gfx"})
+    {
+        const std::size_t length = std::strlen(module);
+        if (name.compare(0, length, module) == 0 &&
+            (name.size() == length || name[length] == '.' || name[length] == '-'))
+            return true;
+    }
+    return false;
+}
+
+/// An ELF or PE image. The build folder also holds linker-name stand-ins
+/// (libslang.so containing the text "libslang-compiler.so.0..."), which the
+/// loader never opens.
+bool IsBinary(const fs::path& file)
+{
+    std::ifstream in(file, std::ios::binary);
+    std::array<char, 4> magic{};
+    in.read(magic.data(), magic.size());
+    return (in.gcount() == 4 && magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') ||
+           (in.gcount() >= 2 && magic[0] == 'M' && magic[1] == 'Z');
+}
+
+std::string Lower(std::string text)
+{
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+/// Extensions of the files content loads by name: a value with one of these
+/// that resolves to nothing is reported, any other value is just not a path.
+bool LooksLikeAsset(const fs::path& path)
+{
+    static const std::set<std::string> kExtensions = {".gltf", ".glb", ".fbx",  ".obj", ".png",     ".jpg", ".jpeg",
+                                                      ".tga",  ".bmp", ".hdr",  ".ktx", ".ktx2",    ".dds", ".wav",
+                                                      ".ogg",  ".mp3", ".flac", ".lua", ".unhuman", ".ttf", ".otf"};
+    return kExtensions.contains(Lower(path.extension().string()));
+}
+
+/// The engine files the runtime opens by itself, whatever the scenes hold
+/// (Renderer3D/2D, PostProcess, SSAO, Water: shaders; Scene: light icons;
+/// Font and ImGuiLayer: Inter; WindowsWindow: the window icon).
+constexpr std::array kEngineRuntimeFolders = {"shaders", "icon"};
+constexpr std::array kEngineRuntimeFiles = {"Inter/static/Inter_18pt-Regular.ttf", "Inter/static/Inter_18pt-Bold.ttf"};
+
+std::string ReadText(const fs::path& file)
+{
+    std::ifstream in(file, std::ios::binary);
+    std::ostringstream text;
+    text << in.rdbuf();
+    return text.str();
+}
+
+/// The JSON a glTF file holds: the whole .gltf, or the first chunk of a .glb.
+std::string GltfJson(const fs::path& file)
+{
+    if (Lower(file.extension().string()) != ".glb")
+        return ReadText(file);
+    std::ifstream in(file, std::ios::binary);
+    std::array<std::uint32_t, 5> header{}; // magic, version, length, chunk length, chunk type
+    in.read(reinterpret_cast<char*>(header.data()), sizeof(header));
+    if (!in || header[0] != 0x46546C67u || header[4] != 0x4E4F534Au || header[3] > header[2])
+        return {};
+    std::string json(header[3], '\0');
+    in.read(json.data(), static_cast<std::streamsize>(json.size()));
+    return json;
+}
+
+/// "%20" and friends in a glTF URI, decoded to the file name on disk.
+std::string DecodeUri(const std::string& uri)
+{
+    std::string out;
+    for (std::size_t i = 0; i < uri.size(); ++i)
+    {
+        if (uri[i] == '%' && i + 2 < uri.size() && std::isxdigit(static_cast<unsigned char>(uri[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(uri[i + 2])))
+        {
+            out += static_cast<char>(std::stoi(uri.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        }
+        else
+            out += uri[i];
+    }
+    return out;
+}
+
+bool IsLicence(const fs::path& file)
+{
+    const std::string stem = Lower(file.stem().string());
+    for (const char* prefix : {"license", "licence", "copying", "notice", "ofl"})
+        if (stem.starts_with(prefix))
+            return true;
+    return false;
+}
+
+/// Walks the references from the project's scenes and scripts to every file they need.
+class AssetCollector
+{
+public:
+    AssetCollector(fs::path projectAssets, fs::path engineAssets)
+        : m_Roots{std::move(projectAssets), std::move(engineAssets)}
+    {
+    }
+
+    AssetManifest Run()
+    {
+        std::error_code ec;
+        for (const char* folder : kEngineRuntimeFolders)
+        {
+            for (fs::recursive_directory_iterator it(m_Roots[kEngine] / folder, ec), end; it != end && !ec;
+                 it.increment(ec))
+            {
+                if (it->is_regular_file(ec) && !IsShaderSource(it->path()))
+                    Add(kEngine, fs::relative(it->path(), m_Roots[kEngine], ec));
+            }
+        }
+        for (const char* file : kEngineRuntimeFiles)
+            Add(kEngine, file);
+
+        // Every scene and script: a game can load any of them by name.
+        for (fs::recursive_directory_iterator it(m_Roots[kProject], ec), end; it != end && !ec; it.increment(ec))
+        {
+            const std::string extension = Lower(it->path().extension().string());
+            if (it->is_regular_file(ec) && (extension == ".unhuman" || extension == ".lua"))
+                Add(kProject, fs::relative(it->path(), m_Roots[kProject], ec));
+        }
+
+        while (!m_Pending.empty())
+        {
+            const auto [root, file] = m_Pending.back();
+            m_Pending.pop_back();
+            Scan(root, file);
+        }
+
+        AssetManifest manifest;
+        manifest.ProjectFiles.assign(m_Files[kProject].begin(), m_Files[kProject].end());
+        manifest.EngineFiles.assign(m_Files[kEngine].begin(), m_Files[kEngine].end());
+        manifest.Warnings = std::move(m_Warnings);
+        return manifest;
+    }
+
+private:
+    static constexpr int kProject = 0;
+    static constexpr int kEngine = 1;
+
+    /// Queues \p relative under root \p root (and the licences beside it) unless it is already in.
+    void Add(int root, const fs::path& relative)
+    {
+        std::error_code ec;
+        if (!fs::is_regular_file(m_Roots[root] / relative, ec) || !m_Files[root].insert(relative).second)
+            return;
+        m_Pending.emplace_back(root, relative);
+        for (fs::path folder = relative.parent_path();; folder = folder.parent_path())
+        {
+            if (m_LicenceFolders[root].insert(folder).second)
+            {
+                for (const fs::directory_entry& entry : fs::directory_iterator(m_Roots[root] / folder, ec))
+                {
+                    if (entry.is_regular_file(ec) && IsLicence(entry.path()))
+                        Add(root, folder / entry.path().filename());
+                }
+            }
+            if (folder.empty())
+                break;
+        }
+    }
+
+    /// A path that stays inside its root, or nothing when it climbs out of it.
+    static std::optional<fs::path> Inside(const fs::path& path)
+    {
+        const fs::path normal = path.lexically_normal();
+        if (normal.empty() || normal.is_absolute() || normal.has_root_name() || *normal.begin() == "..")
+            return std::nullopt;
+        return normal;
+    }
+
+    /// Resolves a name the way ResolveAssetPath does at run time; adds the file when it exists.
+    /// \p reportMissing: the value is meant to be a path, so one that looks
+    /// like an asset and resolves to nothing is a warning.
+    void Reference(const std::string& value, const fs::path& from, bool reportMissing = true)
+    {
+        std::string name = value;
+        int only = -1;
+        if (name.starts_with("game:"))
+            only = kProject, name.erase(0, 5);
+        else if (name.starts_with("engine:"))
+            only = kEngine, name.erase(0, 7);
+        if (only >= 0)
+            name.erase(0, name.find_first_not_of("/\\"));
+        if (name.empty() || name.size() > 512 || name.find('\n') != std::string::npos)
+            return;
+
+        const fs::path path(name);
+        std::error_code ec;
+        if (path.is_absolute() || path.has_root_name())
+        {
+            if (reportMissing && (fs::is_regular_file(path, ec) || LooksLikeAsset(path)))
+                Warn(from, "'" + name +
+                               "' is an absolute path, which the game's machine will not have; use a path "
+                               "relative to Assets/");
+            return;
+        }
+        const std::optional<fs::path> relative = Inside(path);
+        if (!relative)
+            return;
+        for (const int root : {kProject, kEngine})
+        {
+            if ((only < 0 || only == root) && fs::is_regular_file(m_Roots[root] / *relative, ec))
+            {
+                Add(root, *relative);
+                return;
+            }
+        }
+        if (reportMissing && LooksLikeAsset(path))
+            Warn(from, "'" + name + "' is not in the project's or the engine's assets");
+    }
+
+    void Scan(int root, const fs::path& relative)
+    {
+        const fs::path file = m_Roots[root] / relative;
+        const std::string extension = Lower(relative.extension().string());
+        if (extension == ".unhuman" || extension == ".uheproject")
+        {
+            try
+            {
+                Values(YAML::LoadFile(file.string()), relative, false);
+            }
+            catch (const YAML::Exception& e)
+            {
+                Warn(relative, std::string("could not be read: ") + e.what());
+            }
+        }
+        else if (extension == ".lua")
+        {
+            static const std::regex kString(R"lua("([^"\\\n]*)"|'([^'\\\n]*)')lua");
+            const std::string text = ReadText(file);
+            for (std::sregex_iterator it(text.begin(), text.end(), kString), end; it != end; ++it)
+                Reference((*it)[1].matched ? (*it)[1].str() : (*it)[2].str(), relative);
+        }
+        else if (extension == ".gltf" || extension == ".glb")
+        {
+            // Buffers and images beside the model, relative to its folder.
+            static const std::regex kUri(R"json("uri"\s*:\s*"([^"]*)")json");
+            const std::string json = GltfJson(file);
+            for (std::sregex_iterator it(json.begin(), json.end(), kUri), end; it != end; ++it)
+            {
+                const std::string uri = (*it)[1].str();
+                if (uri.starts_with("data:"))
+                    continue;
+                const std::optional<fs::path> dependency = Inside(relative.parent_path() / DecodeUri(uri));
+                std::error_code ec;
+                if (dependency && fs::is_regular_file(m_Roots[root] / *dependency, ec))
+                    Add(root, *dependency);
+                else
+                    Warn(relative, "points at '" + uri + "', which is missing");
+            }
+        }
+    }
+
+    /// Every scalar in a YAML document; map keys are field names, not paths.
+    /// Any value that resolves is kept; only a value under a "...Path" key
+    /// (ModelPath, TexturePath, ScriptPath, ...) is reported when it does not,
+    /// so a tag named "Ground.gltf" is not a warning.
+    void Values(const YAML::Node& node, const fs::path& from, bool isPath)
+    {
+        if (node.IsScalar())
+            Reference(node.Scalar(), from, isPath);
+        else if (node.IsSequence())
+            for (const YAML::Node& child : node)
+                Values(child, from, isPath);
+        else if (node.IsMap())
+            for (const auto& entry : node)
+                Values(entry.second, from, entry.first.IsScalar() && entry.first.Scalar().ends_with("Path"));
+    }
+
+    void Warn(const fs::path& from, const std::string& message)
+    {
+        m_Warnings.push_back(from.generic_string() + ": " + message);
+    }
+
+    std::array<fs::path, 2> m_Roots;
+    std::array<std::set<fs::path>, 2> m_Files;
+    std::array<std::set<fs::path>, 2> m_LicenceFolders;
+    std::vector<std::pair<int, fs::path>> m_Pending;
+    std::vector<std::string> m_Warnings;
+};
 
 class Copier
 {
@@ -63,6 +366,11 @@ private:
     ExportReport& m_Report;
 };
 } // namespace
+
+AssetManifest GameExporter::CollectAssets(const fs::path& projectAssets, const fs::path& engineAssets)
+{
+    return AssetCollector(projectAssets, engineAssets).Run();
+}
 
 std::string GameExporter::ExecutableName(const std::string& projectName)
 {
@@ -137,16 +445,27 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
                     fs::perm_options::add, ec);
     for (const fs::directory_entry& entry : fs::directory_iterator(options.RuntimeDir, ec))
     {
-        if (entry.is_regular_file(ec) && IsSharedLibrary(entry.path()))
+        if (entry.is_regular_file(ec) && IsSharedLibrary(entry.path()) && !IsSlangCompilerModule(entry.path()) &&
+            IsBinary(entry.path()))
             copy.File(entry.path(), out / entry.path().filename());
     }
 
-    // ── Engine assets, without shader sources ──
-    copy.Tree(options.EngineAssets, out / "assets", [](const fs::path& file) { return IsShaderSource(file); });
-
-    // ── The project ──
+    // ── Assets: what the game references, or everything ──
     copy.File(Project::ManifestPath(project.RootPath), out / Project::kManifestName);
-    copy.Tree(project.AssetPath, out / Project::kAssetFolderName, [](const fs::path&) { return false; });
+    if (options.AllAssets)
+    {
+        copy.Tree(options.EngineAssets, out / "assets", [](const fs::path& file) { return IsShaderSource(file); });
+        copy.Tree(project.AssetPath, out / Project::kAssetFolderName, [](const fs::path&) { return false; });
+    }
+    else
+    {
+        AssetManifest manifest = CollectAssets(project.AssetPath, options.EngineAssets);
+        for (const fs::path& file : manifest.EngineFiles)
+            copy.File(options.EngineAssets / file, out / "assets" / file);
+        for (const fs::path& file : manifest.ProjectFiles)
+            copy.File(project.AssetPath / file, out / Project::kAssetFolderName / file);
+        report.Warnings = std::move(manifest.Warnings);
+    }
 
     {
         std::ofstream marker(out / kMarkerName);
