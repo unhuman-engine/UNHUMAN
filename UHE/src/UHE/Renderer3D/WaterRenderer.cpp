@@ -81,9 +81,12 @@ bool EnsureLoaded()
         return true;
     ShaderCache& library = ShaderCache::Get();
     const std::filesystem::path path = FileSystem::Get().GetRootPath() / "assets/shaders/Water.slang";
+    // Both loaded before either is fetched: a Load can grow the library and
+    // move what an earlier Get pointed at.
     s_Water.Handle = library.Load(path.string());
+    const ShaderCache::Handle copyHandle = library.Load(path.string(), "no_entity_id");
     const ShaderCache::Shader* shader = library.Get(s_Water.Handle);
-    const ShaderCache::Shader* copyShader = library.Get(library.Load(path.string(), "no_entity_id"));
+    const ShaderCache::Shader* copyShader = library.Get(copyHandle);
     if (shader == nullptr || copyShader == nullptr)
     {
         UHE_CORE_ERROR("WaterRenderer: Water.slang failed to load; water will not draw");
