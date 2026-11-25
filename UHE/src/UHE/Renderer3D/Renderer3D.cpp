@@ -24,6 +24,7 @@ namespace
 constexpr uint32_t kMaxMaterialsPerFrame = 2048;
 constexpr uint32_t kMaxLightsPerFrame = 1024;
 constexpr uint32_t kMaxBonesPerFrame = 4096;
+constexpr uint32_t kMaxShadowTiles = 64;
 // The device keeps this many frames in flight (VulkanDevice::MAX_FRAMES_IN_FLIGHT,
 // the same count Renderer2D double-buffers its vertex buffers for).
 constexpr uint32_t kFramesInFlight = 2;
@@ -148,6 +149,8 @@ struct Renderer3DData
         uint32_t MaterialIndex = 0;
         RHI::BufferHandle Frame = nullptr; ///< one SceneFrameData
         uint32_t FrameIndex = 0;
+        RHI::BufferHandle Tiles = nullptr; ///< ShadowTile[kMaxShadowTiles]
+        uint32_t TilesIndex = 0;
     };
     std::array<FrameBuffers, kFramesInFlight> Frames{};
 
@@ -328,6 +331,13 @@ void Renderer3D::Init()
         frameDesc.hostVisible = true;
         frame.Frame = device.CreateBuffer(frameDesc);
         frame.FrameIndex = device.GetBufferBindlessIndex(frame.Frame);
+
+        RHI::BufferDesc tileDesc{};
+        tileDesc.size = sizeof(ShadowTile) * kMaxShadowTiles;
+        tileDesc.usage = RHI::BufferUsage::Storage;
+        tileDesc.hostVisible = true;
+        frame.Tiles = device.CreateBuffer(tileDesc);
+        frame.TilesIndex = device.GetBufferBindlessIndex(frame.Tiles);
     }
     SelectFrameBuffers();
     s_Data3D.MaterialBufferOffset = 1; // Slot 0 is the default material, written each BeginScene.
@@ -343,6 +353,7 @@ void Renderer3D::Shutdown()
         device.DestroyBuffer(frame.Bone);
         device.DestroyBuffer(frame.Material);
         device.DestroyBuffer(frame.Frame);
+        device.DestroyBuffer(frame.Tiles);
         frame = {};
     }
     s_Data3D.LightStorageBufferHandle = nullptr;
@@ -659,6 +670,16 @@ void Renderer3D::SetFrameData(const SceneFrameData& data)
     const auto& frame = s_Data3D.Frames[Renderer::GetDevice().GetCurrentFrameIndex() % kFramesInFlight];
     Renderer::GetDevice().GetCurrentCommandBuffer().UpdateBuffer(frame.Frame, &data, sizeof(data), 0);
     s_Data3D.HasFrameData = true;
+}
+
+int Renderer3D::SetShadowTiles(const std::vector<ShadowTile>& tiles)
+{
+    const auto& frame = s_Data3D.Frames[Renderer::GetDevice().GetCurrentFrameIndex() % kFramesInFlight];
+    const size_t count = std::min<size_t>(tiles.size(), kMaxShadowTiles);
+    if (count > 0)
+        Renderer::GetDevice().GetCurrentCommandBuffer().UpdateBuffer(frame.Tiles, tiles.data(),
+                                                                     count * sizeof(ShadowTile), 0);
+    return static_cast<int>(frame.TilesIndex);
 }
 
 void Renderer3D::ClearFrameData()

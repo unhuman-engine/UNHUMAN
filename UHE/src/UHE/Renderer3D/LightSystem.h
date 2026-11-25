@@ -25,7 +25,7 @@ struct LightData {
     glm::vec4 PositionOrDirection; // position for point/spot/area, direction for directional
     glm::vec4 Direction_Pad;       // spot/area forward axis; directional: w = 1 when it casts shadows
     glm::vec4 ColorIntensity;
-    glm::vec4 AreaRight_Pad{0.0f}; // area: the rectangle's width axis
+    glm::vec4 AreaRight_Pad{0.0f}; // area: xyz the rectangle's width axis; point/spot/area: w = 1 when it casts shadows
 };
 
 class UHE_API LightSystem

@@ -63,9 +63,26 @@ public:
                          1.0f}; ///< xy: 1 / target size, z: occlusion texture (-1 none), w: its strength
         glm::vec4 Wind{0.0f};   ///< xy: steady wind on x/z, z: gust strength, w: time in seconds
         glm::vec4 Flags{0.0f};  ///< x: 1 when the target is HDR (no tonemap in the shader), y: gust frequency
-        glm::vec4 Sky{0.0f, 0.0f, 0.0f,
-                      -1.0f}; ///< rgb: sky colour (linear, unscaled), w: first directional light (-1 none)
+        /// rgb: sky colour (linear, unscaled), w: first directional light (-1 none)
+        glm::vec4 Sky{0.0f, 0.0f, 0.0f, -1.0f};
+        /// x: local shadow atlas texture (-1 none), y: tile count, z: tile buffer (bindless)
+        glm::vec4 LocalShadow{-1.0f, 0.0f, -1.0f, 0.0f};
+        glm::vec4 LocalShadowBias{0.0f}; ///< x: toward the light, y: along the normal (texels)
     };
+
+    /**
+     * @brief One tile of the local shadow atlas: a spot or area light, or one cube face of a point light.
+     *
+     * MUST match ShadowTile in Basic3D.slang.
+     */
+    struct ShadowTile
+    {
+        glm::mat4 ViewProj{1.0f};
+        glm::vec4 Rect{0.0f};   ///< xy: offset, zw: scale, in atlas uv
+        glm::vec4 Params{0.0f}; ///< x: light index, y: cube face (-1 spot/area), z: texel size per metre of distance
+    };
+    /// @brief Uploads this frame's local shadow tiles. @return the buffer's bindless index, for SceneFrameData.
+    static int SetShadowTiles(const std::vector<ShadowTile>& tiles);
 
     // Bone buffer location for one model's animation upload this frame.
     struct BoneBinding

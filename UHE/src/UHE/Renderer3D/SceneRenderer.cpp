@@ -32,11 +32,99 @@ struct FrameState
     u32 CascadeResolution = 0;
     u32 AtlasSize = 0;
 
+    bool LocalShadows = false; ///< a local light casts shadows: the local atlas pass exists
+    u32 LocalTileResolution = 0;
+    u32 LocalTilesPerRow = 1;
+    u32 LocalAtlasSize = 0;
+
     bool Resolved = false;
     SceneRenderView View;
     Renderer3D::SceneFrameData Frame;
     int CascadeCount = 0;
+    std::vector<Renderer3D::ShadowTile> LocalTiles;
 };
+
+/// Whether the light list has a point, spot or area light with CastShadows on.
+bool HasLocalShadowCaster(const std::vector<RD3d::LightData>& lights)
+{
+    for (const RD3d::LightData& light : lights)
+        if (light.Type_Radius_Pad.x != 0.0f && light.AreaRight_Pad.w > 0.5f)
+            return true;
+    return false;
+}
+
+/**
+ * @brief Gives the shadow-casting local lights nearest the camera their tiles of the local atlas.
+ *
+ * A spot or area light takes one tile, a point light six (one per cube face,
+ * a little wider than 90 degrees so faces overlap at their seams). Lights
+ * that no longer fit are skipped: they light without shadows this frame.
+ */
+void FitLocalShadows(FrameState& state, const std::vector<RD3d::LightData>& lights)
+{
+    struct Candidate
+    {
+        int Index;
+        float Distance;
+    };
+    std::vector<Candidate> candidates;
+    for (size_t i = 0; i < lights.size(); ++i)
+    {
+        const RD3d::LightData& light = lights[i];
+        if (light.Type_Radius_Pad.x == 0.0f || light.AreaRight_Pad.w <= 0.5f)
+            continue;
+        candidates.push_back(
+            {static_cast<int>(i), glm::length(glm::vec3(light.PositionOrDirection) - state.View.Position)});
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& a, const Candidate& b) { return a.Distance < b.Distance; });
+
+    const int maxTiles = std::clamp(state.Settings.LocalShadows.MaxTiles, 1, 64);
+    const float tileScale = 1.0f / static_cast<float>(state.LocalTilesPerRow);
+    const float resolution = static_cast<float>(state.LocalTileResolution);
+    const auto addTile =
+        [&](int lightIndex, int face, const glm::vec3& position, const glm::vec3& direction, float fov, float range)
+    {
+        const u32 slot = static_cast<u32>(state.LocalTiles.size());
+        const glm::vec3 up = std::abs(direction.y) > 0.99f ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+        Renderer3D::ShadowTile tile;
+        tile.ViewProj =
+            glm::perspective(fov, 1.0f, 0.05f, std::max(range, 0.1f)) * glm::lookAt(position, position + direction, up);
+        tile.Rect = glm::vec4(static_cast<float>(slot % state.LocalTilesPerRow) * tileScale,
+                              static_cast<float>(slot / state.LocalTilesPerRow) * tileScale, tileScale, tileScale);
+        tile.Params = glm::vec4(static_cast<float>(lightIndex), static_cast<float>(face),
+                                2.0f * std::tan(fov * 0.5f) / resolution, 0.0f);
+        state.LocalTiles.push_back(tile);
+    };
+
+    for (const Candidate& candidate : candidates)
+    {
+        const RD3d::LightData& light = lights[static_cast<size_t>(candidate.Index)];
+        const int type = static_cast<int>(light.Type_Radius_Pad.x);
+        const int need = type == 1 ? 6 : 1;
+        if (static_cast<int>(state.LocalTiles.size()) + need > maxTiles)
+            continue;
+        const glm::vec3 position(light.PositionOrDirection);
+        const float range = light.Type_Radius_Pad.y;
+        if (type == 1)
+        {
+            static const std::array<glm::vec3, 6> kFaces = {glm::vec3(1, 0, 0), glm::vec3(-1, 0, 0),
+                                                            glm::vec3(0, 1, 0), glm::vec3(0, -1, 0),
+                                                            glm::vec3(0, 0, 1), glm::vec3(0, 0, -1)};
+            for (int face = 0; face < 6; ++face)
+                addTile(candidate.Index, face, position, kFaces[face], glm::radians(95.0f), range);
+        }
+        else
+        {
+            const glm::vec3 direction = glm::normalize(glm::vec3(light.Direction_Pad));
+            // A spot covers its outer cone; an area light the half-space in front of the panel.
+            const float fov =
+                type == 2 ? std::min(2.0f * std::acos(std::clamp(light.Type_Radius_Pad.w, -1.0f, 1.0f)) + 0.1f, 2.9f)
+                          : 2.4f;
+            addTile(candidate.Index, -1, position, direction, fov, range);
+        }
+    }
+}
 
 float SrgbToLinear(float c)
 {
@@ -197,6 +285,15 @@ void Resolve(FrameState& state)
             break;
         }
     }
+    if (state.LocalShadows)
+    {
+        FitLocalShadows(state, lights);
+        const int tileBuffer = Renderer3D::SetShadowTiles(state.LocalTiles);
+        frame.LocalShadow =
+            glm::vec4(-1.0f, static_cast<float>(state.LocalTiles.size()), static_cast<float>(tileBuffer), 0.0f);
+        frame.LocalShadowBias =
+            glm::vec4(state.Settings.LocalShadows.DepthBias, state.Settings.LocalShadows.NormalBias, 0.0f, 0.0f);
+    }
     if (!state.Shadows)
         return;
     const int shadowLight = FindShadowLight(lights);
@@ -234,6 +331,16 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
         const auto lights = RD3d::LightSystem::ExtractLights(desc.SceneData->GetRegistry());
         state->Shadows = FindShadowLight(lights) >= 0;
     }
+    if (lit && settings.LocalShadows.Enabled && desc.SceneData != nullptr)
+    {
+        state->LocalShadows = HasLocalShadowCaster(RD3d::LightSystem::ExtractLights(desc.SceneData->GetRegistry()));
+        state->LocalTileResolution = static_cast<u32>(std::clamp(settings.LocalShadows.TileResolution, 256, 2048));
+        const u32 tiles = static_cast<u32>(std::clamp(settings.LocalShadows.MaxTiles, 1, 64));
+        state->LocalTilesPerRow = static_cast<u32>(std::ceil(std::sqrt(static_cast<float>(tiles))));
+        // The atlas stays within 8192 texels per side; tiles shrink to fit.
+        state->LocalTileResolution = std::min(state->LocalTileResolution, 8192u / state->LocalTilesPerRow);
+        state->LocalAtlasSize = state->LocalTileResolution * state->LocalTilesPerRow;
+    }
     state->CascadeResolution = static_cast<u32>(std::clamp(settings.Shadows.Resolution, 256, 4096));
     state->AtlasSize = settings.Shadows.CascadeCount > 1 ? state->CascadeResolution * 2 : state->CascadeResolution;
 
@@ -270,13 +377,55 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
                     const u32 extent = static_cast<u32>(rect.z * size);
                     cmd.SetViewport(static_cast<f32>(x), static_cast<f32>(y), static_cast<f32>(extent),
                                     static_cast<f32>(extent));
-                    cmd.SetScissor(x, y, extent, extent);
+                    cmd.SetScissor(static_cast<i32>(x), static_cast<i32>(y), extent, extent);
                     Renderer3D::BeginDepthPass(state->Frame.CascadeViewProj[i], TextureFormat::D32_FLOAT);
                     scene->RenderDepth();
                     Renderer3D::EndDepthPass();
                 }
             });
         shadowAtlas = shadow.Atlas;
+    }
+
+    // ── Local shadows: point, spot and area lights, one atlas of tiles ──
+    FGHandle<FGTexture> localAtlas;
+    if (state->LocalShadows)
+    {
+        struct LocalData
+        {
+            FGHandle<FGTexture> Atlas;
+        };
+        const LocalData& local = graph.AddPass<LocalData>(
+            "Scene.LocalShadows",
+            [&](FGBuilder& builder, LocalData& d)
+            {
+                d.Atlas = builder.Write(
+                    builder.Create("Scene.LocalShadowAtlas",
+                                   {state->LocalAtlasSize, state->LocalAtlasSize, TextureFormat::D32_FLOAT}),
+                    FGWrite::DepthTarget);
+            },
+            [state](const LocalData&, FGContext& context)
+            {
+                Resolve(*state);
+                Scene* scene = state->Desc.SceneData.get();
+                if (scene == nullptr || state->LocalTiles.empty())
+                    return;
+                Renderer3D::SetFrameData(state->Frame);
+                RHICommandBuffer& cmd = context.Cmd();
+                const float size = static_cast<float>(state->LocalAtlasSize);
+                for (const Renderer3D::ShadowTile& tile : state->LocalTiles)
+                {
+                    const u32 x = static_cast<u32>(tile.Rect.x * size);
+                    const u32 y = static_cast<u32>(tile.Rect.y * size);
+                    const u32 extent = state->LocalTileResolution;
+                    cmd.SetViewport(static_cast<f32>(x), static_cast<f32>(y), static_cast<f32>(extent),
+                                    static_cast<f32>(extent));
+                    cmd.SetScissor(static_cast<i32>(x), static_cast<i32>(y), extent, extent);
+                    Renderer3D::BeginDepthPass(tile.ViewProj, TextureFormat::D32_FLOAT);
+                    scene->RenderDepth();
+                    Renderer3D::EndDepthPass();
+                }
+            });
+        localAtlas = local.Atlas;
     }
 
     // ── Depth prepass and SSAO ──
@@ -321,6 +470,7 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
         FGHandle<FGTexture> Entity;
         FGHandle<FGTexture> Depth;
         FGHandle<FGTexture> Shadow;
+        FGHandle<FGTexture> LocalShadow;
         FGHandle<FGTexture> Occlusion;
     };
     const SceneData& scene = graph.AddPass<SceneData>(
@@ -350,6 +500,8 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
             }
             if (shadowAtlas.IsValid())
                 d.Shadow = builder.Read(shadowAtlas);
+            if (localAtlas.IsValid())
+                d.LocalShadow = builder.Read(localAtlas);
             if (occlusion.IsValid())
                 d.Occlusion = builder.Read(occlusion);
         },
@@ -363,6 +515,8 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
                     frame.Shadow.x = static_cast<float>(BindlessIndex(context.Get(d.Shadow)));
                 if (d.Occlusion.IsValid())
                     frame.Screen.z = static_cast<float>(BindlessIndex(context.Get(d.Occlusion)));
+                if (d.LocalShadow.IsValid())
+                    frame.LocalShadow.x = static_cast<float>(BindlessIndex(context.Get(d.LocalShadow)));
                 Renderer3D::SetFrameData(frame);
                 Renderer3D::SetEntityTargetFormat(TextureFormat::RGBA16F);
                 Renderer2D::SetColorFormat(TextureFormat::RGBA16F);

@@ -36,6 +36,16 @@ struct ShadowSettings
     bool ShowCascades = false; ///< tints each cascade (debug view)
 };
 
+/// @brief Shadows of point, spot and area lights that have CastShadows on.
+struct LocalShadowSettings
+{
+    bool Enabled = true;
+    int TileResolution = 1024; ///< texels per side of one tile; a point light takes six
+    int MaxTiles = 16;         ///< tiles in the atlas; the lights nearest the camera get them first
+    float DepthBias = 1.0f;    ///< toward the light, in shadow texels
+    float NormalBias = 1.5f;   ///< along the surface normal, in shadow texels
+};
+
 /// @brief Screen-space ambient occlusion: darkens creases and contact points in the ambient light.
 struct SSAOSettings
 {
@@ -72,6 +82,7 @@ struct RenderSettings
 {
     EnvironmentSettings Environment;
     ShadowSettings Shadows;
+    LocalShadowSettings LocalShadows;
     SSAOSettings SSAO;
     BloomSettings Bloom;
     WindSettings Wind;

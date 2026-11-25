@@ -265,6 +265,8 @@ struct UHE_API PointLightComponent
     glm::vec3 Color{1.0f, 1.0f, 1.0f};
     float Intensity = 1.0f;
     float Radius = 10.0f;
+    /// Casts shadows: six tiles of the local shadow atlas (one per cube face).
+    bool CastShadows = false;
 
     PointLightComponent() = default;
     PointLightComponent(const PointLightComponent&) = default;
@@ -282,6 +284,8 @@ struct UHE_API SpotLightComponent
     float Radius = 10.0f;
     float InnerConeAngle = 0.2617994f; // ~15 degrees
     float OuterConeAngle = 0.5235988f; // ~30 degrees
+    /// Casts shadows: one tile of the local shadow atlas.
+    bool CastShadows = false;
 
     SpotLightComponent() = default;
     SpotLightComponent(const SpotLightComponent&) = default;
@@ -303,6 +307,8 @@ struct UHE_API AreaLightComponent
     float Height = 1.0f;   ///< along local Y
     float Range = 15.0f;   ///< distance at which the light fades out
     bool TwoSided = false; ///< also lights the side behind the panel
+    /// Casts shadows, from the panel's centre (one tile of the local shadow atlas).
+    bool CastShadows = false;
 
     AreaLightComponent() = default;
     AreaLightComponent(const AreaLightComponent&) = default;

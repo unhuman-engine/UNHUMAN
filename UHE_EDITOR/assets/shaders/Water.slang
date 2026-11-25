@@ -68,6 +68,8 @@ struct FrameData {
     float4 wind;
     float4 flags;
     float4 sky;
+    float4 localShadow;       // x: local atlas texture (-1 none), y: tiles, z: tile buffer
+    float4 localShadowBias;   // x: toward the light, y: along the normal (texels)
 };
 [[vk::binding(0, 0)]] StructuredBuffer<LightData> u_LightBuffers[10000];
 [[vk::binding(0, 0)]] StructuredBuffer<FrameData> u_FrameBuffers[10000];

@@ -162,8 +162,18 @@ struct FrameData {
     float4 wind;              // xy: steady wind on x/z, z: gust strength, w: time (s)
     float4 flags;             // x: HDR target (no tonemap here), y: gust frequency
     float4 sky;               // rgb: sky colour (linear), w: first directional light (-1 none)
+    float4 localShadow;       // x: local atlas texture (-1 none), y: tiles, z: tile buffer
+    float4 localShadowBias;   // x: toward the light, y: along the normal (texels)
 };
 [[vk::binding(0, 0)]] StructuredBuffer<FrameData> u_FrameBuffers[10000];
+
+// MUST match Renderer3D::ShadowTile: one spot/area light or one point-light cube face.
+struct ShadowTile {
+    float4x4 viewProj;
+    float4 rect;   // atlas placement: xy offset, zw scale
+    float4 params; // x: light index, y: cube face (-1 spot/area), z: texel size per metre of distance
+};
+[[vk::binding(0, 0)]] StructuredBuffer<ShadowTile> u_ShadowTiles[10000];
 
 struct FragmentOutput {
     [[vk::location(0)]] float4 Color : SV_Target0;
@@ -404,6 +414,65 @@ float3 RectClosestPoint(float3 P, float3 R, float3 centre, float3 normal, float3
     const float x = clamp(dot(local, right), -halfSize.x, halfSize.x);
     const float y = clamp(dot(local, up), -halfSize.y, halfSize.y);
     return centre + right * x + up * y;
+}
+
+// Shadow of a point, spot or area light from the local atlas: 1 lit, 0 blocked.
+// A point light has six tiles, one per cube face; the face is the major axis
+// of the direction from the light. The receiver is pushed toward the light
+// and along its normal by a few texels of the tile at that distance, as for
+// the sun, and five taps soften the edge.
+float LocalShadowFactor(FrameData f, int lightIndex, int type, float3 lightPos, float3 worldPos, float3 normal,
+                        float3 toLight)
+{
+    const int atlas = int(f.localShadow.x);
+    const int count = int(f.localShadow.y);
+    const int buffer = int(f.localShadow.z);
+    if (atlas < 0 || count <= 0 || buffer < 0)
+        return 1.0;
+
+    int face = -1;
+    if (type == 1)
+    {
+        const float3 d = worldPos - lightPos;
+        const float3 a = abs(d);
+        face = (a.x >= a.y && a.x >= a.z) ? (d.x > 0.0 ? 0 : 1) : (a.y >= a.z ? (d.y > 0.0 ? 2 : 3) : (d.z > 0.0 ? 4 : 5));
+    }
+    for (int t = 0; t < count; ++t)
+    {
+        const ShadowTile tile = u_ShadowTiles[buffer][t];
+        if (int(tile.params.x) != lightIndex || (face >= 0 && int(tile.params.y) != face))
+            continue;
+
+        const float texel = tile.params.z * length(worldPos - lightPos);
+        const float NoL = saturate(dot(normal, toLight));
+        const float slope = min(sqrt(1.0 - NoL * NoL) / max(NoL, 1e-3), 5.0);
+        const float3 offsetPos = worldPos + normal * (f.localShadowBias.y * texel) +
+                                 toLight * ((f.localShadowBias.x + 1.75 * slope) * texel);
+        const float4 clip = mul(tile.viewProj, float4(offsetPos, 1.0));
+        if (clip.w <= 0.0)
+            return 1.0;
+        const float3 ndc = clip.xyz / clip.w;
+        if (any(abs(ndc.xy) > 1.0) || ndc.z >= 1.0 || ndc.z <= 0.0)
+            return 1.0;
+
+        Sampler2D map = u_Textures[NonUniformResourceIndex(atlas)];
+        uint width, height;
+        map.GetDimensions(width, height);
+        const float2 size = float2(width, height);
+        const float2 tileMin = tile.rect.xy * size + 0.5;
+        const float2 tileMax = (tile.rect.xy + tile.rect.zw) * size - 1.5;
+        const float2 centre = (tile.rect.xy + (ndc.xy * 0.5 + 0.5) * tile.rect.zw) * size;
+        const float2 taps[5] = { float2(0.0, 0.0), float2(1.0, 1.0), float2(-1.0, 1.0), float2(1.0, -1.0),
+                                 float2(-1.0, -1.0) };
+        float lit = 0.0;
+        for (int k = 0; k < 5; ++k)
+        {
+            const float2 p = clamp(centre + taps[k], tileMin, tileMax);
+            lit += ndc.z <= map.Load(int3(int2(p), 0)).r ? 1.0 : 0.0;
+        }
+        return lit / 5.0;
+    }
+    return 1.0; // no tile this frame (atlas full): unshadowed
 }
 
 // Karis' analytic fit of the split-sum environment BRDF (Unreal, mobile).
@@ -813,6 +882,16 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
                 if (!isFrontFace && pc.foliage.x <= 0.0) // foliage keeps its normals on both sides (grass cards)
                     geometricNormal = -geometricNormal;
                 radiance *= ShadowFactor(frame, input.v_WorldPos, geometricNormal, L, input.location, cascade);
+            }
+            else if (type != 0 && hasFrame && light.area_right.w > 0.5)
+            {
+                float3 geometricNormal = normalize(input.v_Normal);
+                if (!isFrontFace && pc.foliage.x <= 0.0)
+                    geometricNormal = -geometricNormal;
+                // Area lights cast from their centre, so the shadow ray aims there, not at the representative point.
+                const float3 toLight = normalize(light.position_or_direction.xyz - input.v_WorldPos);
+                radiance *= LocalShadowFactor(frame, i, type, light.position_or_direction.xyz, input.v_WorldPos,
+                                              geometricNormal, toLight);
             }
 
             float NoL = dot(normal, L);
