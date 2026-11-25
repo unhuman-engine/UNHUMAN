@@ -368,10 +368,11 @@ add_subdirectory(tools)
 add_subdirectory(sandbox)
 add_subdirectory(UHE_EDITOR)
 add_subdirectory(UHEGAME)
+add_subdirectory(UHE_RUNTIME)
 
 # Every app ships the assets the shaders live in, so each one needs the
 # artifacts to exist before its post-build asset copy runs.
-foreach(uhe_app Sandbox UHE_EDITOR UHEGAME)
+foreach(uhe_app Sandbox UHE_EDITOR UHEGAME UHE_RUNTIME)
     if(TARGET ${uhe_app})
         add_dependencies(${uhe_app} uhe_shaders)
     endif()
