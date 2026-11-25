@@ -165,7 +165,11 @@ void VulkanGraphicPipeline::createGraphicsPipeline(VulkanLogicalDevice& Device,
         .colorAttachmentCount = static_cast<uint32_t>(colorFormats.size()),
         .pColorAttachmentFormats = colorFormats.data(),
         .depthAttachmentFormat = (desc.depthTest || desc.depthWrite) ? depthFormat : vk::Format::eUndefined,
-        .stencilAttachmentFormat = (desc.depthTest || desc.depthWrite) ? depthFormat : vk::Format::eUndefined};
+        // Only a format with a stencil aspect may be named here (D32_FLOAT has none).
+        .stencilAttachmentFormat =
+            (desc.depthTest || desc.depthWrite) && desc.depthFormat == TextureFormat::D24_UNORM_S8
+                ? depthFormat
+                : vk::Format::eUndefined};
 
     vk::GraphicsPipelineCreateInfo pipelineInfo{
         .pNext = &pipelineRenderCreateInfo,

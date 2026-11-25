@@ -52,13 +52,21 @@ void VulkanTexture::Init(VulkanDevice& device, const TextureDesc& desc)
 
     if (desc.usage & TextureUsage::Sampled)
     {
+        // Clamped: these are render targets read back at screen UVs (post
+        // effects, shadow maps, depth), where repeat would filter the opposite
+        // edge into the border.
         textureSampler = CreateSampler(vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
-                                       vk::SamplerAddressMode::eRepeat, static_cast<float>(m_MipLevels));
-        if (!(aspect & vk::ImageAspectFlagBits::eDepth))
+                                       vk::SamplerAddressMode::eClampToEdge, static_cast<float>(m_MipLevels));
+        vk::ImageView sampledView = *textureImageView;
+        if (aspect & vk::ImageAspectFlagBits::eDepth)
         {
-            m_TextureIndex = device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle, *textureImageView,
-                                                                        *textureSampler);
+            // A sampled view names one aspect: a depth-stencil image is read
+            // through a depth-only view, while attachments keep the full one.
+            m_SampledDepthView = CreateImageView(textureImage, format, vk::ImageAspectFlagBits::eDepth, m_MipLevels);
+            sampledView = *m_SampledDepthView;
         }
+        m_TextureIndex =
+            device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle, sampledView, *textureSampler);
     }
 }
 
@@ -71,13 +79,14 @@ VulkanTexture::~VulkanTexture()
         auto imageMemory = textureImageMemory;
 
         auto imageViewPtr = new vk::raii::ImageView(std::move(textureImageView));
+        auto depthViewPtr = new vk::raii::ImageView(std::move(m_SampledDepthView));
         auto samplerPtr = new vk::raii::Sampler(std::move(textureSampler));
         auto ds = m_ImGuiDescriptorSet;
         auto slot = m_TextureIndex;
         auto* descriptorManager = m_Device->GetDescriptorManager();
 
         m_Device->DeferDestruction(
-            [allocator, image, imageMemory, imageViewPtr, samplerPtr, ds, slot, descriptorManager]()
+            [allocator, image, imageMemory, imageViewPtr, depthViewPtr, samplerPtr, ds, slot, descriptorManager]()
             {
                 if (ds != VK_NULL_HANDLE && ImGui::GetCurrentContext() != nullptr)
                 {
@@ -91,6 +100,7 @@ VulkanTexture::~VulkanTexture()
                 {
                     descriptorManager->UnbindTexture(slot);
                 }
+                delete depthViewPtr;
                 delete imageViewPtr;
                 delete samplerPtr;
             });
@@ -107,6 +117,7 @@ VulkanTexture::~VulkanTexture()
             m_ImGuiDescriptorSet = VK_NULL_HANDLE;
         }
 
+        m_SampledDepthView.clear();
         textureImageView.clear();
         textureSampler.clear();
 
