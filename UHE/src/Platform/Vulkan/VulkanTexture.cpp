@@ -78,15 +78,22 @@ VulkanTexture::~VulkanTexture()
         auto image = textureImage;
         auto imageMemory = textureImageMemory;
 
-        auto imageViewPtr = new vk::raii::ImageView(std::move(textureImageView));
-        auto depthViewPtr = new vk::raii::ImageView(std::move(m_SampledDepthView));
-        auto samplerPtr = new vk::raii::Sampler(std::move(textureSampler));
+        // The views and sampler move into the deferred deletion, which runs
+        // once no frame in flight can still read them.
+        struct Owned
+        {
+            vk::raii::ImageView View;
+            vk::raii::ImageView DepthView;
+            vk::raii::Sampler Sampler;
+        };
+        auto owned = std::make_shared<Owned>(
+            Owned{std::move(textureImageView), std::move(m_SampledDepthView), std::move(textureSampler)});
         auto ds = m_ImGuiDescriptorSet;
         auto slot = m_TextureIndex;
         auto* descriptorManager = m_Device->GetDescriptorManager();
 
         m_Device->DeferDestruction(
-            [allocator, image, imageMemory, imageViewPtr, depthViewPtr, samplerPtr, ds, slot, descriptorManager]()
+            [allocator, image, imageMemory, owned, ds, slot, descriptorManager]() mutable
             {
                 if (ds != VK_NULL_HANDLE && ImGui::GetCurrentContext() != nullptr)
                 {
@@ -100,9 +107,7 @@ VulkanTexture::~VulkanTexture()
                 {
                     descriptorManager->UnbindTexture(slot);
                 }
-                delete depthViewPtr;
-                delete imageViewPtr;
-                delete samplerPtr;
+                owned.reset();
             });
 
         textureImage = nullptr;

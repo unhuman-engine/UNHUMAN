@@ -90,8 +90,10 @@ void FitLocalShadows(FrameState& state, const std::vector<RD3d::LightData>& ligh
         Renderer3D::ShadowTile tile;
         tile.ViewProj =
             glm::perspective(fov, 1.0f, 0.05f, std::max(range, 0.1f)) * glm::lookAt(position, position + direction, up);
-        tile.Rect = glm::vec4(static_cast<float>(slot % state.LocalTilesPerRow) * tileScale,
-                              static_cast<float>(slot / state.LocalTilesPerRow) * tileScale, tileScale, tileScale);
+        const u32 column = slot % state.LocalTilesPerRow;
+        const u32 row = slot / state.LocalTilesPerRow; // whole rows: integer division
+        tile.Rect = glm::vec4(static_cast<float>(column) * tileScale, static_cast<float>(row) * tileScale, tileScale,
+                              tileScale);
         tile.Params = glm::vec4(static_cast<float>(lightIndex), static_cast<float>(face),
                                 2.0f * std::tan(fov * 0.5f) / resolution, 0.0f);
         state.LocalTiles.push_back(tile);
@@ -234,9 +236,12 @@ void FitCascades(FrameState& state, const glm::vec3& lightDirection)
         frame.CascadeViewProj[i] = lightProjection * lightView;
         frame.CascadeSplits[i] = sliceEnd;
         frame.CascadeTexel[i] = 2.0f * radius / resolution;
+        // 2x2 atlas: cascade i sits in column i % 2, row i / 2.
+        const int column = i % 2;
+        const int row = i / 2;
         frame.CascadeRects[i] =
             count == 1 ? glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)
-                       : glm::vec4(static_cast<float>(i % 2) * 0.5f, static_cast<float>(i / 2) * 0.5f, 0.5f, 0.5f);
+                       : glm::vec4(static_cast<float>(column) * 0.5f, static_cast<float>(row) * 0.5f, 0.5f, 0.5f);
         sliceStart = sliceEnd;
     }
     state.CascadeCount = count;

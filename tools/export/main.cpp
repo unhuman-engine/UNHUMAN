@@ -73,6 +73,6 @@ int main(int argc, char** argv)
     if (!report.Ok)
         return 1;
     std::printf("uhe_export: %s -> %s (%zu files, %ju MB)\n", info.Name.c_str(), report.Executable.string().c_str(),
-                report.FilesCopied, static_cast<std::uintmax_t>(report.BytesCopied / (1024 * 1024)));
+                report.FilesCopied, static_cast<std::uintmax_t>(report.BytesCopied / (std::uintmax_t{1024} * 1024)));
     return 0;
 }
