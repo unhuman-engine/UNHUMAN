@@ -22,6 +22,7 @@
 #include "UHE/Math/Math.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHICommandBuffer.h"
+#include "UHE/RHI/RHITexture.h"
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 #include "UHE/Scripting/ScriptEngine.h"
@@ -57,13 +58,6 @@ void Editor::OnAttach()
             const std::string firstLine = error.substr(0, error.find('\n'));
             Notify(NotificationCenter::Kind::Error, name + " failed to compile", firstLine);
         });
-
-    FramebufferSpecification fbSpec;
-    fbSpec.Attachments = {FramebufferTextureFormat::RGBA8, FramebufferTextureFormat::RED_INTEGER,
-                          FramebufferTextureFormat::Depth};
-    fbSpec.Width = 1280;
-    fbSpec.Height = 720;
-    m_Framebuffer = Framebuffer::Create(fbSpec);
 
     m_ActiveScene = CreateRef<Scene>();
     m_EditorCamera = EditorCamera(45.0f, 1.766f, 0.1f, 1000.0f);
@@ -219,14 +213,18 @@ void Editor::OnUpdate(UHE::Timestep ts)
     m_Notifications.Update(ts.GetSeconds());
     m_SecondsSinceTransformPush += ts.GetSeconds();
     m_CameraController.OnUpdate(ts);
-    if (FramebufferSpecification spec = m_Framebuffer->GetSpecification();
-        m_ViewPortSize.x > 0.0f && m_ViewPortSize.y > 0.0f && // zero sized framebuffer is invalid
-        (spec.Width != m_ViewPortSize.x || spec.Height != m_ViewPortSize.y))
+    // The scene targets follow the viewport panel: the frame graph creates
+    // them at this size, so a resize is a new size here and nothing else.
+    const u32 sceneWidth = std::clamp(static_cast<u32>(m_ViewPortSize.x), 1u, kMaxSceneSize);
+    const u32 sceneHeight = std::clamp(static_cast<u32>(m_ViewPortSize.y), 1u, kMaxSceneSize);
+    if (m_ViewPortSize.x > 0.0f && m_ViewPortSize.y > 0.0f &&
+        (sceneWidth != m_SceneWidth || sceneHeight != m_SceneHeight))
     {
-        m_Framebuffer->Resize((uint32_t)m_ViewPortSize.x, (uint32_t)m_ViewPortSize.y);
+        m_SceneWidth = sceneWidth;
+        m_SceneHeight = sceneHeight;
         m_CameraController.OnResize(m_ViewPortSize.x, m_ViewPortSize.y);
         m_EditorCamera.SetViewportSize(m_ViewPortSize.x, m_ViewPortSize.y);
-        m_ActiveScene->OnViewportResize((uint32_t)m_ViewPortSize.x, (uint32_t)m_ViewPortSize.y);
+        m_ActiveScene->OnViewportResize(m_SceneWidth, m_SceneHeight);
         m_FramesSinceResize = 0;
     }
     else
@@ -234,36 +232,7 @@ void Editor::OnUpdate(UHE::Timestep ts)
         m_FramesSinceResize++;
     }
 
-    auto& device = Renderer::GetDevice();
-    const bool graphMode = m_RenderPath == RenderPath::RenderGraph && device.GetFrameGraph() != nullptr;
     const bool runtimeScene = m_SceneState != SceneState::Edit;
-
-    auto& cmd = device.GetCurrentCommandBuffer();
-    RHI::RenderPassDesc passDesc{};
-    if (!graphMode)
-    {
-        passDesc.renderWidth = m_Framebuffer->GetSpecification().Width;
-        passDesc.renderHeight = m_Framebuffer->GetSpecification().Height;
-
-        RHI::ColorAttachment colorAttachment{};
-        colorAttachment.texture = m_Framebuffer->GetColorAttachments()[0];
-        colorAttachment.clearColor = {0.0f, 0.0f, 0.0f, 1.0f};
-        passDesc.colorAttachments[0] = colorAttachment;
-
-        RHI::ColorAttachment entityAttachment{};
-        entityAttachment.texture = m_Framebuffer->GetColorAttachments()[1];
-        entityAttachment.clearColor = {-1.0f, -1.0f, -1.0f, -1.0f}; // Clear to -1
-        passDesc.colorAttachments[1] = entityAttachment;
-
-        passDesc.colorAttachmentCount = 2;
-
-        passDesc.hasDepth = true;
-        passDesc.depthAttachment.texture = m_Framebuffer->GetDepthAttachment();
-
-        cmd.BeginRenderPass(passDesc);
-        cmd.SetViewport(0.0f, 0.0f, (float)passDesc.renderWidth, (float)passDesc.renderHeight);
-        cmd.SetScissor(0, 0, passDesc.renderWidth, passDesc.renderHeight);
-    }
 
     // Timestep handed to the renderer. While paused the scene is redrawn from
     // the frozen state (stepping advances it by exactly one frame), so sprite and
@@ -279,19 +248,12 @@ void Editor::OnUpdate(UHE::Timestep ts)
                 m_CameraController.OnUpdate(ts);
             }
             m_EditorCamera.OnUpdate(ts);
-
-            if (graphMode)
-                m_ActiveScene->OnUpdateEditorSimulation(ts);
-            else
-                m_ActiveScene->OnUpdateEditor(ts, m_EditorCamera);
+            m_ActiveScene->OnUpdateEditorSimulation(ts);
             break;
         }
         case SceneState::Play:
         {
-            if (graphMode)
-                m_ActiveScene->OnUpdateRuntimeSimulation(ts);
-            else
-                m_ActiveScene->OnUpdateRuntime(ts);
+            m_ActiveScene->OnUpdateRuntimeSimulation(ts);
             break;
         }
         case SceneState::Paused:
@@ -303,34 +265,19 @@ void Editor::OnUpdate(UHE::Timestep ts)
                 // Issue #49: a step is exactly one fixed simulation tick, not a
                 // frame of wall time, so stepping is reproducible.
                 m_ActiveScene->StepSimulation();
-                if (!graphMode)
-                    m_ActiveScene->RenderRuntimeScene(ts);
                 m_StepRequested = false;
             }
             else
             {
-                renderTs = 0.0f;
-                // The graph path renders the runtime scene in EndFrameGraph; the
-                // immediate path owns the render pass here and has to draw, or
-                // pausing would leave the viewport black.
-                if (!graphMode)
-                    m_ActiveScene->RenderRuntimeScene(renderTs);
+                renderTs = 0.0f; // the scene pass redraws the frozen state
             }
             break;
         }
     }
 
-    if (graphMode)
-    {
-        // Scene rendering is deferred into EndFrameGraph so the compiler owns
-        // the attachment transitions; the ImGui pass is declared after this
-        // and therefore runs second (UI on top).
-        DeclareSceneGraphPass(renderTs, runtimeScene);
-    }
-    else
-    {
-        cmd.EndRenderPass();
-    }
+    // Recorded when the device realizes the frame graph, before the UI pass,
+    // which samples the scene colour this pass renders.
+    DeclareSceneGraphPass(renderTs, runtimeScene);
 
     // The editor camera is the listener while editing; playing uses the scene's
     // primary camera so 3D audio follows what the player sees.
@@ -370,40 +317,38 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
     if (graph == nullptr)
         return;
 
-    const auto& spec = m_Framebuffer->GetSpecification();
-    const u32 width = spec.Width;
-    const u32 height = spec.Height;
+    const u32 width = m_SceneWidth;
+    const u32 height = m_SceneHeight;
+    if (width == 0 || height == 0)
+        return; // the viewport has not been laid out yet
 
-    // Imported every frame: the framebuffer's textures are recreated on resize,
-    // and a frame graph handle does not outlive its frame. The viewport panel
-    // and picking sample colour and entity after this, so the frame leaves them
-    // ShaderRead; depth is needed only inside the pass.
-    const FGHandle<FGTexture> color =
-        graph->Import("Editor.Scene.Color", {width, height, TextureFormat::RGBA8_SRGB},
-                      m_Framebuffer->GetColorAttachments()[0], FGState::Undefined, FGState::ShaderRead);
-    const FGHandle<FGTexture> entity =
-        graph->Import("Editor.Scene.Entity", {width, height, TextureFormat::R32_SINT},
-                      m_Framebuffer->GetColorAttachments()[1], FGState::Undefined, FGState::ShaderRead);
-    const FGHandle<FGTexture> depth =
-        graph->Import("Editor.Scene.Depth", {width, height, TextureFormat::D24_UNORM_S8},
-                      m_Framebuffer->GetDepthAttachment(), FGState::Undefined, FGState::Undefined);
-
+    // All three targets are the graph's: it allocates them at this size and
+    // retires the old size after a resize. Depth lives only inside the pass.
     struct SceneTargets
     {
         FGHandle<FGTexture> Color, Entity, Depth;
     };
-    graph->AddPass<SceneTargets>(
+    const SceneTargets& scene = graph->AddPass<SceneTargets>(
         "Editor.Scene",
         [&](FGBuilder& builder, SceneTargets& targets)
         {
-            targets.Color = builder.Write(color, FGWrite::RenderTarget);
+            targets.Color = builder.Write(builder.Create(kSceneColor, {width, height, TextureFormat::RGBA8_SRGB}),
+                                          FGWrite::RenderTarget);
             // Entity IDs clear to -1: "no entity" under the cursor.
             FGAttachment noEntity;
             noEntity.ClearColor = {-1.0f, -1.0f, -1.0f, -1.0f};
-            targets.Entity = builder.Write(entity, FGWrite::RenderTarget, noEntity);
-            targets.Depth = builder.Write(depth, FGWrite::DepthTarget);
+            targets.Entity = builder.Write(builder.Create(kSceneEntity, {width, height, TextureFormat::R32_SINT}),
+                                           FGWrite::RenderTarget, noEntity);
+            targets.Depth =
+                builder.Write(builder.Create("Editor.Scene.Depth", {width, height, TextureFormat::D24_UNORM_S8}),
+                              FGWrite::DepthTarget);
         },
         [this, ts, runtime](const SceneTargets&, FGContext& context) { RecordSceneGraphPass(context, ts, runtime); });
+
+    // Read after the frame: the viewport panel samples the colour, and
+    // picking copies one pixel out of the entity IDs.
+    graph->Export(scene.Color);
+    graph->Export(scene.Entity, {.FinalState = FGState::ShaderRead, .CopySource = true});
 }
 
 void Editor::RecordSceneGraphPass(RHI::FGContext& context, Timestep ts, bool runtime)
@@ -1434,9 +1379,14 @@ void Editor::OnImGuiRender()
 
     m_ViewPortSize = {viewPortSize.x, viewPortSize.y};
     const ImVec2 imageMin = ImGui::GetCursorScreenPos();
-    void* textureId = m_Framebuffer->GetColorAttachmentRendererID(0);
-
-    ImGui::Image(textureId, viewPortSize, ImVec2{0, 1}, ImVec2{1, 0});
+    // The texture the scene pass renders this frame; it changes after a resize.
+    RHI::TextureHandle sceneColor = Renderer::GetDevice().GetExportedTexture(kSceneColor);
+    void* textureId =
+        sceneColor != nullptr ? reinterpret_cast<RHI::RHITexture*>(sceneColor)->GetImGuiTextureID() : nullptr;
+    if (textureId != nullptr)
+        ImGui::Image(textureId, viewPortSize, ImVec2{0, 1}, ImVec2{1, 0});
+    else
+        ImGui::Dummy(viewPortSize); // keeps the layout, drop target and gizmo rect
     const ImVec2 imageMax = ImGui::GetItemRectMax();
 
     m_ViewportPos = {imageMin.x, imageMin.y};
@@ -1465,11 +1415,16 @@ void Editor::OnImGuiRender()
 
     if (mouseX >= 0 && mouseY >= 0 && mouseX < (int)viewportSize.x && mouseY < (int)viewportSize.y)
     {
-        if (m_FramesSinceResize > 1)
+        RHI::TextureHandle entityIds = Renderer::GetDevice().GetExportedTexture(kSceneEntity);
+        if (m_FramesSinceResize > 1 && entityIds != nullptr && static_cast<u32>(mouseX) < m_SceneWidth &&
+            static_cast<u32>(mouseY) < m_SceneHeight)
         {
             // Async: the blocking read waited on the GPU every hovered frame.
-            int pixelData = m_Framebuffer->ReadPixelAsync(1, mouseX, mouseY);
-            if (pixelData == -1 || pixelData < 0)
+            // -1 until the first read lands, and where no entity was drawn.
+            int pixelData = -1;
+            if (!Renderer::GetDevice().ReadPixelAsync(entityIds, mouseX, mouseY, &pixelData))
+                pixelData = -1;
+            if (pixelData < 0)
             {
                 m_HoverdEntity = Entity();
             }
@@ -1630,8 +1585,6 @@ void Editor::DrawViewportOverlay(const ImVec2& imageMin, const ImVec2& imageMax)
         }
     }
 
-    drawBadge(m_RenderPath == RenderPath::RenderGraph ? "Render Graph" : "Immediate", EditorTheme::Success());
-
     // Playing without a camera renders nothing: say so instead of showing a
     // black viewport.
     if (m_SceneState != SceneState::Edit && m_ActiveScene && !m_ActiveScene->GetPrimaryCameraEntity())
@@ -1773,10 +1726,6 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
     add("Step One Tick", "Play", "F7", m_SceneState == SceneState::Paused, [this] { OnScreenStep(); });
     add("Stop", "Play", "F5", m_SceneState != SceneState::Edit, [this] { OnSceneStop(); });
 
-    add("Use Immediate Render Path", "Render", "", m_RenderPath != RenderPath::Immediate,
-        [this] { m_RenderPath = RenderPath::Immediate; });
-    add("Use Render Graph Path", "Render", "", m_RenderPath != RenderPath::RenderGraph,
-        [this] { m_RenderPath = RenderPath::RenderGraph; });
     add("Toggle Lighting", "Render", "", true,
         [this] { Renderer3D::SetLightingEnabled(!Renderer3D::IsLightingEnabled()); });
     add("Reload Shaders", "Render", "Ctrl+Shift+R", true, [this] { ReloadShaders(); });
@@ -2098,10 +2047,6 @@ void Editor::DrawViewportHeader()
     if (ImGui::IsItemHovered() && !m_CurrentScenePath.empty())
         ImGui::SetTooltip("%s", m_CurrentScenePath.string().c_str());
 
-    const char* renderPathLabel = m_RenderPath == RenderPath::RenderGraph ? "Render Graph" : "Immediate";
-    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::CalcTextSize(renderPathLabel).x - 10.0f);
-    ImGui::TextDisabled("%s", renderPathLabel);
-
     ImGui::EndChild();
 }
 
@@ -2172,13 +2117,6 @@ void Editor::DrawPreferencesContent()
 {
     UHE_PROFILE_FUNCTION();
     EditorUI::SectionHeader("Rendering");
-    const char* renderPaths[] = {"Immediate", "Render Graph"};
-    int renderPath = static_cast<int>(m_RenderPath);
-    if (ImGui::Combo("Render Path", &renderPath, renderPaths, 2))
-        m_RenderPath = static_cast<RenderPath>(renderPath);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Immediate records directly into the frame command buffer.\n"
-                          "Render Graph defers the scene into a graph pass owned by the compiler.");
     bool enableLighting = Renderer3D::IsLightingEnabled();
     if (ImGui::Checkbox("Enable Basic3D Lighting", &enableLighting))
         Renderer3D::SetLightingEnabled(enableLighting);
