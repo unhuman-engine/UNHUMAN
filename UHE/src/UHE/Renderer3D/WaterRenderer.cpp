@@ -44,7 +44,9 @@ struct WaterData
     ShaderCache::Handle Handle = 0;
     RHI::ShaderHandle Vertex = nullptr;
     RHI::ShaderHandle Fragment = nullptr;
-    RHI::PipelineHandle Pipeline = nullptr;
+    RHI::ShaderHandle FragmentCopy = nullptr; ///< no_entity_id variant: the copy pass has one target
+    RHI::PipelineHandle Pipeline = nullptr;   ///< surfaces: HDR colour + entity ID
+    RHI::PipelineHandle CopyPipeline = nullptr;
     WaterRenderer::Frame Current;
     bool Active = false;
 };
@@ -56,6 +58,12 @@ void DestroyResources()
     auto& device = Renderer::GetDevice();
     if (s_Water.Pipeline != nullptr)
         device.DestroyGraphicsPipeline(s_Water.Pipeline);
+    if (s_Water.CopyPipeline != nullptr)
+        device.DestroyGraphicsPipeline(s_Water.CopyPipeline);
+    if (s_Water.FragmentCopy != nullptr)
+        device.DestroyShader(s_Water.FragmentCopy);
+    s_Water.CopyPipeline = nullptr;
+    s_Water.FragmentCopy = nullptr;
     if (s_Water.Vertex != nullptr)
         device.DestroyShader(s_Water.Vertex);
     if (s_Water.Fragment != nullptr)
@@ -75,7 +83,8 @@ bool EnsureLoaded()
     const std::filesystem::path path = FileSystem::Get().GetRootPath() / "assets/shaders/Water.slang";
     s_Water.Handle = library.Load(path.string());
     const ShaderCache::Shader* shader = library.Get(s_Water.Handle);
-    if (shader == nullptr)
+    const ShaderCache::Shader* copyShader = library.Get(library.Load(path.string(), "no_entity_id"));
+    if (shader == nullptr || copyShader == nullptr)
     {
         UHE_CORE_ERROR("WaterRenderer: Water.slang failed to load; water will not draw");
         return false;
@@ -84,6 +93,8 @@ bool EnsureLoaded()
     auto& device = Renderer::GetDevice();
     s_Water.Vertex = CreateStageShader(device, *shader, RHI::ShaderStage::Vertex, "Water.vertex");
     s_Water.Fragment = CreateStageShader(device, *shader, RHI::ShaderStage::Fragment, "Water.fragment");
+    s_Water.FragmentCopy =
+        CreateStageShader(device, *copyShader, RHI::ShaderStage::Fragment, "Water.fragment.noEntityId");
     const u32 pushConstantSize = ReflectedPushConstantSize(*shader);
     if (pushConstantSize != sizeof(WaterPushConstants))
         UHE_CORE_ERROR("WaterRenderer: Water.slang push constants are {0} bytes, the host struct is {1}",
@@ -92,8 +103,9 @@ bool EnsureLoaded()
     RHI::GraphicsPipelineDesc desc{};
     desc.vertexShader = s_Water.Vertex;
     desc.fragmentShader = s_Water.Fragment;
-    desc.colorAttachmentCount = 1;
+    desc.colorAttachmentCount = 2;
     desc.colorFormats[0] = RHI::TextureFormat::RGBA16F;
+    desc.colorFormats[1] = RHI::TextureFormat::R32_SINT;
     // No depth attachment: the opaque depth is a texture the shader tests against.
     desc.depthTest = false;
     desc.depthWrite = false;
@@ -102,6 +114,10 @@ bool EnsureLoaded()
     desc.pushConstantSize = pushConstantSize;
     desc.debugName = "Water";
     s_Water.Pipeline = device.CreateGraphicsPipeline(desc);
+    desc.fragmentShader = s_Water.FragmentCopy;
+    desc.colorAttachmentCount = 1;
+    desc.debugName = "Water.Copy";
+    s_Water.CopyPipeline = device.CreateGraphicsPipeline(desc);
 
     if (!s_Water.ListenerRegistered)
     {
@@ -115,7 +131,8 @@ bool EnsureLoaded()
                 DestroyResources();
             });
     }
-    s_Water.Loaded = s_Water.Vertex != nullptr && s_Water.Fragment != nullptr && s_Water.Pipeline != nullptr;
+    s_Water.Loaded = s_Water.Vertex != nullptr && s_Water.Fragment != nullptr && s_Water.Pipeline != nullptr &&
+                     s_Water.CopyPipeline != nullptr;
     return s_Water.Loaded;
 }
 
@@ -141,22 +158,27 @@ WaterPushConstants BasePushConstants()
 }
 } // namespace
 
-void WaterRenderer::Begin(const Frame& frame)
+void WaterRenderer::CopyOpaque(i32 sceneColor)
 {
-    s_Water.Current = frame;
-    s_Water.Active = EnsureLoaded() && frame.SceneColor >= 0 && frame.SceneDepth >= 0;
-    if (!s_Water.Active)
+    if (!EnsureLoaded() || sceneColor < 0)
         return;
-    // The target starts as a copy of the opaque scene; surfaces draw over it.
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
-    cmd.BindPipeline(s_Water.Pipeline);
-    WaterPushConstants pc = BasePushConstants();
+    cmd.BindPipeline(s_Water.CopyPipeline);
+    WaterPushConstants pc;
+    pc.SceneColor = sceneColor;
+    pc.SceneDepth = sceneColor; // unused by the copy; any valid slot
     pc.WaveDir.w = 0.0f;
     cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(pc), 0);
     cmd.Draw(3, 0);
 }
 
-void WaterRenderer::Submit(const glm::mat4& transform, const WaterComponent& water)
+void WaterRenderer::Begin(const Frame& frame)
+{
+    s_Water.Current = frame;
+    s_Water.Active = EnsureLoaded() && frame.SceneColor >= 0 && frame.SceneDepth >= 0;
+}
+
+void WaterRenderer::Submit(const glm::mat4& transform, const WaterComponent& water, int entityID)
 {
     if (!s_Water.Active)
         return;
@@ -175,7 +197,8 @@ void WaterRenderer::Submit(const glm::mat4& transform, const WaterComponent& wat
     pc.Wave = glm::vec4(std::max(water.WaveHeight, 0.0f), std::max(water.WaveLength, 0.1f),
                         std::max(water.WaveSpeed, 0.0f), std::clamp(water.Choppiness, 0.0f, 1.0f));
     pc.WaveDir = glm::vec4(glm::normalize(direction), static_cast<float>(cells), 1.0f);
-    pc.Size = glm::vec4(std::max(water.Size.x, 0.01f), std::max(water.Size.y, 0.01f), 0.0f, 0.0f);
+    pc.Size =
+        glm::vec4(std::max(water.Size.x, 0.01f), std::max(water.Size.y, 0.01f), static_cast<float>(entityID), 0.0f);
 
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
     cmd.BindPipeline(s_Water.Pipeline);

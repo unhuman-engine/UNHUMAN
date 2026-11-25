@@ -1,8 +1,9 @@
 #pragma warning(disable: 41012)
 // Water surfaces (WaterComponent), drawn after the opaque scene.
 //
-// The pass writes a new HDR image: mode 0 copies the opaque scene into it with
-// a fullscreen triangle, then mode 1 draws each water surface on top. The
+// Mode 0 copies the opaque scene into a new HDR image with a fullscreen
+// triangle (the no_entity_id variant: that pass has no entity target); mode 1
+// then draws each water surface on top and writes its entity ID for picking. The
 // opaque colour and depth are read as textures, so the water can refract what
 // is below it, measure how deep it is there, and hide itself behind geometry
 // (the depth test is done here: the depth buffer is an input, not an
@@ -33,7 +34,7 @@ struct PushConstants
     float4 deep;         // rgb: deep colour (linear), a: foam
     float4 wave;         // x: height, y: length, z: speed, w: choppiness
     float4 waveDir;      // xy: main direction on x/z, z: grid cells per side, w: mode (0 copy, 1 water)
-    float4 size;         // xy: extent on local x/z
+    float4 size;         // xy: extent on local x/z, z: entity ID (picking)
     float4 projection;   // depth to view z: P[2][2], P[3][2], P[2][3], P[3][3]
     int frameData;       // SceneFrameData buffer (-1 none)
     int lightBuffer;     // light buffer
@@ -173,8 +174,26 @@ float FoamPattern(float2 xz, float t)
     return saturate(a * 0.5 + b * 0.5 + 0.35);
 }
 
+struct FSOutput
+{
+    float4 color : SV_Target0;
+#ifndef UHE_NO_ENTITY_ID
+    int entityID : SV_Target1;
+#endif
+};
+
+FSOutput Output(float3 color)
+{
+    FSOutput output;
+    output.color = float4(color, 1.0);
+#ifndef UHE_NO_ENTITY_ID
+    output.entityID = int(pc.size.z);
+#endif
+    return output;
+}
+
 [shader("fragment")]
-float4 fragmentMain(VSOutput input) : SV_Target0
+FSOutput fragmentMain(VSOutput input)
 {
     Sampler2D sceneColor = u_Textures[NonUniformResourceIndex(pc.sceneColor)];
     Sampler2D sceneDepth = u_Textures[NonUniformResourceIndex(pc.sceneDepth)];
@@ -183,7 +202,7 @@ float4 fragmentMain(VSOutput input) : SV_Target0
     const int2 pixel = int2(input.position.xy);
 
     if (pc.waveDir.w < 0.5)
-        return float4(sceneColor.Load(int3(pixel, 0)).rgb, 1.0);
+        return Output(sceneColor.Load(int3(pixel, 0)).rgb);
 
     // Behind the opaque scene: hidden.
     const float opaqueDepth = sceneDepth.Load(int3(pixel, 0)).r;
@@ -271,5 +290,5 @@ float4 fragmentMain(VSOutput input) : SV_Target0
     // A soft edge where the surface meets geometry, instead of a hard line.
     const float edge = smoothstep(0.0, 0.08, thickness);
     color = lerp(sceneColor.Load(int3(pixel, 0)).rgb, color, edge);
-    return float4(color, 1.0);
+    return Output(color);
 }

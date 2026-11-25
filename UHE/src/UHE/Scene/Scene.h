@@ -111,7 +111,10 @@ public:
     // step while the simulation/timestep still runs on the main thread. The
     // combined OnUpdate* functions keep the immediate path unchanged.
     void OnUpdateEditorSimulation(Timestep ts);
-    void RenderEditorScene(Timestep ts, EditorCamera& camera);
+    /// @param drawGrid false when the grid is drawn later, as an overlay (RenderEditorGrid)
+    void RenderEditorScene(Timestep ts, EditorCamera& camera, bool drawGrid = true);
+    /// @brief The ground grid per GetEditorOverlays(), with the last Renderer3D::BeginScene's camera.
+    void RenderEditorGrid();
     /// One rendered frame of play mode: feeds `frame` to the simulation clock,
     /// runs the fixed ticks it is due (StepSimulation), then advances the
     /// per-frame systems (animators, audio) by the frame time.

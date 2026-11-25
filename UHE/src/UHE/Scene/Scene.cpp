@@ -1104,7 +1104,7 @@ void Scene::StopAudioSources()
         });
 }
 
-void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera)
+void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera, bool drawGrid)
 {
     UHE_PROFILE_FUNCTION();
     // Called immediately before drawing (legacy path) or from the render-graph
@@ -1124,9 +1124,16 @@ void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera)
     RenderModels(ts, m_WorldTransformCache);
     // Last: the grid blends over what is drawn and is hidden where geometry is nearer.
     const EditorOverlays& overlays = GetEditorOverlays();
+    if (drawGrid)
+        RenderEditorGrid();
+    Renderer3D::EndScene();
+}
+
+void Scene::RenderEditorGrid()
+{
+    const EditorOverlays& overlays = GetEditorOverlays();
     if (overlays.Grid)
         Renderer3D::DrawGrid({.Axes = overlays.GridAxes, .Opacity = overlays.GridOpacity});
-    Renderer3D::EndScene();
 }
 
 Scene::EditorOverlays& Scene::GetEditorOverlays()
@@ -1644,7 +1651,8 @@ void Scene::RenderWater()
 {
     auto view = m_registry.view<TransformComponent, WaterComponent>();
     for (auto entity : view)
-        WaterRenderer::Submit(GetWorldFromCache(m_WorldTransformCache, entity), view.get<WaterComponent>(entity));
+        WaterRenderer::Submit(GetWorldFromCache(m_WorldTransformCache, entity), view.get<WaterComponent>(entity),
+                              static_cast<int>(entity));
 }
 
 void Scene::BuildRuntimeRenderCache()

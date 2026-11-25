@@ -386,15 +386,41 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
         return output;
     }
 
-    // ── Water: a new HDR image, the opaque scene with the surfaces over it ──
+    // ── Water: the opaque scene copied into a new HDR image, surfaces over it ──
     FGHandle<FGTexture> hdr = scene.Color;
+    FGHandle<FGTexture> entity = scene.Entity;
     if (desc.SceneData != nullptr && desc.SceneData->HasWater())
     {
+        // The surfaces sample the opaque colour, so they cannot draw into it:
+        // a copy first, then the water over the copy.
+        struct CopyData
+        {
+            FGHandle<FGTexture> Opaque;
+            FGHandle<FGTexture> Output;
+        };
+        const CopyData& copy = graph.AddPass<CopyData>(
+            "Scene.WaterCopy",
+            [&](FGBuilder& builder, CopyData& d)
+            {
+                d.Opaque = builder.Read(scene.Color);
+                // Every pixel is written by the copy.
+                d.Output = builder.Write(builder.Create("Scene.HDR.Water", {width, height, TextureFormat::RGBA16F}),
+                                         FGWrite::RenderTarget);
+            },
+            [](const CopyData& d, FGContext& context)
+            {
+                RHICommandBuffer& cmd = context.Cmd();
+                cmd.SetViewport(0.0f, 0.0f, static_cast<f32>(context.Width()), static_cast<f32>(context.Height()));
+                cmd.SetScissor(0, 0, context.Width(), context.Height());
+                WaterRenderer::CopyOpaque(BindlessIndex(context.Get(d.Opaque)));
+            });
+
         struct WaterData
         {
             FGHandle<FGTexture> Opaque;
             FGHandle<FGTexture> Depth;
             FGHandle<FGTexture> Output;
+            FGHandle<FGTexture> Entity;
         };
         const WaterData& water = graph.AddPass<WaterData>(
             "Scene.Water",
@@ -402,9 +428,11 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
             {
                 d.Opaque = builder.Read(scene.Color);
                 d.Depth = builder.Read(scene.Depth);
-                // Every pixel is written: the pass starts by copying the opaque scene.
-                d.Output = builder.Write(builder.Create("Scene.HDR.Water", {width, height, TextureFormat::RGBA16F}),
-                                         FGWrite::RenderTarget);
+                FGAttachment keep;
+                keep.Load = LoadOp::Load;
+                d.Output = builder.Write(copy.Output, FGWrite::RenderTarget, keep);
+                // Surfaces write their entity, so clicking the water selects it.
+                d.Entity = builder.Write(scene.Entity, FGWrite::RenderTarget, keep);
             },
             [state](const WaterData& d, FGContext& context)
             {
@@ -427,7 +455,41 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
                 WaterRenderer::End();
             });
         hdr = water.Output;
+        entity = water.Entity;
     }
+
+    // ── Editor overlays (the grid): after the water, tested against the opaque depth ──
+    if (desc.DrawOverlays)
+    {
+        struct OverlayData
+        {
+            FGHandle<FGTexture> Color;
+            FGHandle<FGTexture> Entity;
+            FGHandle<FGTexture> Depth;
+        };
+        const OverlayData& overlays = graph.AddPass<OverlayData>(
+            "Scene.Overlays",
+            [&](FGBuilder& builder, OverlayData& d)
+            {
+                FGAttachment keep;
+                keep.Load = LoadOp::Load;
+                d.Color = builder.Write(hdr, FGWrite::RenderTarget, keep);
+                d.Entity = builder.Write(entity, FGWrite::RenderTarget, keep);
+                d.Depth = builder.Write(scene.Depth, FGWrite::DepthTarget, keep);
+            },
+            [state](const OverlayData&, FGContext& context)
+            {
+                RHICommandBuffer& cmd = context.Cmd();
+                cmd.SetViewport(0.0f, 0.0f, static_cast<f32>(context.Width()), static_cast<f32>(context.Height()));
+                cmd.SetScissor(0, 0, context.Width(), context.Height());
+                Renderer3D::SetEntityTargetFormat(TextureFormat::RGBA16F);
+                state->Desc.DrawOverlays(context);
+                Renderer3D::SetEntityTargetFormat(TextureFormat::RGBA8_SRGB);
+            });
+        hdr = overlays.Color;
+        entity = overlays.Entity;
+    }
+    output.Entity = entity;
 
     // ── Bloom and tonemap ──
     const FGHandle<FGTexture> bloom = PostProcess::AddBloomPasses(graph, hdr, width, height, settings.Bloom);

@@ -370,6 +370,9 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
     };
     desc.DrawScene = [this, ts, runtime, scene = m_ActiveScene](FGContext& context)
     { RecordSceneGraphPass(context, *scene, ts, runtime); };
+    // Lit and editing: the grid goes over the water, as an overlay.
+    if (desc.Lit && !runtime)
+        desc.DrawOverlays = [scene = m_ActiveScene](FGContext&) { scene->RenderEditorGrid(); };
     const SceneRenderer::Output scene = SceneRenderer::AddPasses(*graph, desc);
     if (!scene.Color.IsValid())
         return;
@@ -391,7 +394,7 @@ void Editor::RecordSceneGraphPass(RHI::FGContext& context, Scene& scene, Timeste
     if (runtime)
         scene.RenderRuntimeScene(ts);
     else
-        scene.RenderEditorScene(ts, m_EditorCamera);
+        scene.RenderEditorScene(ts, m_EditorCamera, m_ViewMode != Renderer3D::ViewMode::Lit);
     Renderer3D::SetViewMode(Renderer3D::ViewMode::Lit);
 }
 

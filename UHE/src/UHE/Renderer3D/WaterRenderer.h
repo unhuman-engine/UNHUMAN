@@ -11,9 +11,9 @@ struct WaterComponent;
 /**
  * @brief Draws water surfaces (WaterComponent) with Water.slang.
  *
- * Used by SceneRenderer's water pass, which writes a new HDR image: Begin
- * copies the opaque scene into it, then each Submit draws one surface that
- * reads the opaque colour and depth as textures.
+ * Used by SceneRenderer: CopyOpaque fills a new HDR image with the opaque
+ * scene, then each Submit draws one surface over it that reads the opaque
+ * colour and depth as textures.
  */
 class UHE_API WaterRenderer
 {
@@ -29,10 +29,12 @@ public:
         i32 SceneDepth = -1;                 ///< bindless index of the opaque depth
     };
 
-    /// @brief Copies the opaque scene into the bound target and selects \p frame for the surfaces that follow.
+    /// @brief Copies the opaque colour (bindless \p sceneColor) into the bound single target.
+    static void CopyOpaque(i32 sceneColor);
+    /// @brief Selects \p frame for the surfaces that follow (target: HDR colour + entity IDs).
     static void Begin(const Frame& frame);
-    /// @brief Draws one surface with world transform \p transform.
-    static void Submit(const glm::mat4& transform, const WaterComponent& water);
+    /// @brief Draws one surface with world transform \p transform; \p entityID makes it pickable.
+    static void Submit(const glm::mat4& transform, const WaterComponent& water, int entityID);
     static void End();
 
     /// @brief Destroys the pipeline and shaders. Called at application shutdown.

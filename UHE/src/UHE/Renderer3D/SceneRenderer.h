@@ -45,8 +45,11 @@ public:
         std::string EntityName; ///< the entity IDs (R32_SINT)
         /// The camera, asked once when the first pass executes.
         std::function<SceneRenderView()> ResolveView;
-        /// Records the colour pass's draws (scene, sprites, grid, icons); viewport and scissor are set.
+        /// Records the colour pass's draws (scene, sprites, icons); viewport and scissor are set.
         std::function<void(RHI::FGContext&)> DrawScene;
+        /// Lit view only: editor overlays (the grid), drawn after the water into
+        /// the HDR image with the opaque depth bound, so water does not refract them.
+        std::function<void(RHI::FGContext&)> DrawOverlays;
     };
 
     struct Output

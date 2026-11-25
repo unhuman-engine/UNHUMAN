@@ -73,7 +73,7 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh&, const glm::mat4&, int, const RD3d
 void Renderer3D::DrawGrid() {}
 void Renderer3D::DrawGrid(const GridOptions&) {}
 void Renderer3D::SetFoliage(float, float) {}
-void WaterRenderer::Submit(const glm::mat4&, const WaterComponent&) {}
+void WaterRenderer::Submit(const glm::mat4&, const WaterComponent&, int) {}
 bool Renderer3D::IsLightingEnabled() { return false; }
 void Renderer3D::SetLightingEnabled(bool) {}
 void Renderer3D::RestartMaterialRegion() {}
