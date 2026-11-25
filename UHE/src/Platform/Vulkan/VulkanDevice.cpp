@@ -735,7 +735,10 @@ void VulkanDevice::EndFrameGraph()
     // the frame is compiled exactly as declared. Reset happens at the end of
     // this function (or on an error path).
     FlushFrontend(); // a frame without a UI pass still realizes the frontend
-    RGCompileResult compiled = m_FrameGraph.Compile();
+    // UHE_RENDERGRAPH_NO_CACHE=1 compiles every frame: the A/B for a suspected
+    // cache bug, read once (the answer cannot change mid-run).
+    static const bool s_NoCache = Validation::ParseEnabledFlag(std::getenv("UHE_RENDERGRAPH_NO_CACHE"));
+    RGCompileResult compiled = s_NoCache ? m_FrameGraph.Compile() : m_FrameGraph.CompileCached();
     if (!compiled.Ok())
     {
         for (const RGValidationError& error : compiled.errors)

@@ -2,6 +2,7 @@
 #include <string>
 #include <vulkan/vulkan_raii.hpp>
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraphBuilder.h"
+#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphCompileCache.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraphCompiler.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraphResources.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraphTypes.h"
@@ -75,6 +76,11 @@ public:
         return result;
     }
 
+    /// @brief Compile(), reusing the previous frame's result when the declared
+    /// frame is structurally identical (see VulkanRenderGraphCompileCache).
+    [[nodiscard]] RGCompileResult CompileCached() { return m_CompileCache.Compile(m_Builder); }
+    [[nodiscard]] const VulkanRenderGraphCompileCache& CompileCache() const { return m_CompileCache; }
+
     // §8.3 cache key (resource material + pass structure slice for step 1).
     [[nodiscard]] u64 ComputeTopologyHash() const { return m_Builder.ComputeTopologyHash(); }
 
@@ -92,6 +98,7 @@ public:
 
 private:
     VulkanRenderGraphBuilder m_Builder;
+    VulkanRenderGraphCompileCache m_CompileCache; // survives Reset(): it is keyed, not owned by a frame
 };
 
 } // namespace UHE::RHI::VULKAN

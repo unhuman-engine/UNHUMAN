@@ -14,6 +14,7 @@ add_executable(rg_test
     ${RG_SRC_DIR}/VulkanRenderGraphResources.cpp
     ${RG_SRC_DIR}/VulkanRenderGraphBuilder.cpp
     ${RG_SRC_DIR}/VulkanRenderGraphCompiler.cpp
+    ${RG_SRC_DIR}/VulkanRenderGraphCompileCache.cpp
     ${RG_SRC_DIR}/VulkanRenderGraph.cpp
     ${RG_SRC_DIR}/VulkanRenderGraphExecutor.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Jobsystem/Taskgraph.cpp
