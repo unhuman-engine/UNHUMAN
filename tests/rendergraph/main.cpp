@@ -503,6 +503,42 @@ int main()
         CHECK(edgeOk, "GBuffer node lists Lighting as a dependent");
     }
 
+    // ── Recording is serial: independent passes still record in compiled order ──
+    // Every pass records into one command buffer, so two passes the DAG leaves
+    // unrelated must not run at the same time (they did, from two threads).
+    {
+        VulkanRenderGraph rg;
+        RGTextureHandle a =
+            rg.ImportTexture("ShadowAtlas", 11, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        RGTextureHandle b = rg.ImportTexture("Prepass", 12, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        rg.AddPass("Shadows")
+            .Write(a)
+            .Color({a, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        rg.AddPass("Prepass")
+            .Write(b)
+            .Color({b, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        const RGCompileResult compiled = rg.Compile();
+        CHECK(compiled.Ok() && compiled.frame.passes.size() == 2, "two independent passes compile");
+
+        VulkanRenderGraphExecutor executor;
+        executor.RegisterTexture(a, reinterpret_cast<VkImage>(0x51ull), reinterpret_cast<VkImageView>(0x52ull), 16, 16,
+                                 TextureFormat::RGBA8_UNORM);
+        executor.RegisterTexture(b, reinterpret_cast<VkImage>(0x53ull), reinterpret_cast<VkImageView>(0x54ull), 16, 16,
+                                 TextureFormat::RGBA8_UNORM);
+        std::vector<std::string> errors;
+        const RGResolvedFrame resolved = executor.Resolve(compiled.frame, rg.GetBuilder().Passes(), errors);
+        CHECK(errors.empty(), "independent passes resolve");
+
+        UHE::Jobsystem::TaskGraph graph;
+        VulkanBarrierEncoder scratchEncoder;
+        const std::vector<UHE::Jobsystem::TaskID> nodes = executor.MapToTaskgraph(
+            graph, resolved, rg.GetBuilder().Passes(), vk::CommandBuffer{nullptr}, scratchEncoder);
+        CHECK(nodes.size() == 2 && graph.GetNode(nodes[1]).dependencyCount == 1,
+              "the second pass waits for the first even with no data between them");
+    }
+
     // ── Write after write: two rendering scopes on one attachment ─────────────
     // The scene renders into the swapchain, then the UI pass loads it and draws
     // on top. Same layout, same guard - but they are separate rendering scopes,
