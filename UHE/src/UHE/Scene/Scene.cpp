@@ -1109,9 +1109,18 @@ void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera)
 
     auto lights = RD3d::LightSystem::ExtractLights(m_registry);
     Renderer3D::BeginScene(camera, lights);
-    Renderer3D::DrawGrid();
     RenderModels(ts, m_WorldTransformCache);
+    // Last: the grid blends over what is drawn and is hidden where geometry is nearer.
+    const EditorOverlays& overlays = GetEditorOverlays();
+    if (overlays.Grid)
+        Renderer3D::DrawGrid({.Axes = overlays.GridAxes, .Opacity = overlays.GridOpacity});
     Renderer3D::EndScene();
+}
+
+Scene::EditorOverlays& Scene::GetEditorOverlays()
+{
+    static EditorOverlays s_Overlays;
+    return s_Overlays;
 }
 
 void Scene::FlushPendingReparents()
@@ -1269,7 +1278,8 @@ void Scene::RenderSprites(Timestep ts, const std::unordered_map<entt::entity, gl
 void Scene::RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms)
 {
     UHE_PROFILE_FUNCTION();
-    if (!GetShowLightIcons()) return;
+    if (!GetEditorOverlays().LightIcons)
+        return;
 
     if (!m_DirLightIcon)
     {

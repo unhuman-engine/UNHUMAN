@@ -12,6 +12,29 @@ namespace UHE
 class UHE_API Renderer3D
 {
 public:
+    /**
+     * @brief How models are shaded: the editor viewport's shading modes.
+     *
+     * Like Blender's viewport shading and Godot's view modes. Only the editor
+     * changes it; a game renders Lit. The values are the shader's `viewMode`
+     * (Basic3D.slang), so their order is part of that contract.
+     */
+    enum class ViewMode : int
+    {
+        Lit = 0,       ///< materials and scene lights
+        Unlit = 1,     ///< base colour only
+        Solid = 2,     ///< neutral clay with a studio light: shape without materials
+        Normals = 3,   ///< world-space normal as colour
+        Wireframe = 4, ///< triangle edges only (needs RHIDevice::SupportsWireframe)
+    };
+
+    /// @brief What the editor's ground grid shows.
+    struct GridOptions
+    {
+        bool Axes = true;     ///< the red X and blue Z axis lines through the origin
+        float Opacity = 1.0f; ///< 0..1, multiplies every line
+    };
+
     // Bone buffer location for one model's animation upload this frame.
     struct BoneBinding
     {
@@ -55,7 +78,20 @@ public:
                            const RD3d::Model& model, const MaterialBinding& materialBinding,
                            int boneBufferIndex = -1, int boneOffset = -1);
 
+    /**
+     * @brief Draws the ground grid (the y = 0 plane) over what is already drawn.
+     *
+     * Draw it after the scene: it blends on top, is hidden where geometry is
+     * nearer, and writes no depth, so it never cuts into what follows.
+     */
+    static void DrawGrid(const GridOptions& options);
     static void DrawGrid();
+
+    /// @brief Shading for the models submitted from now on.
+    static void SetViewMode(ViewMode mode);
+    [[nodiscard]] static ViewMode GetViewMode();
+    /// @brief Whether ViewMode::Wireframe draws edges on this device; it draws filled otherwise.
+    [[nodiscard]] static bool SupportsWireframe();
 
     /// Selects the pipeline set for a pass whose only attachment is the swapchain.
     ///

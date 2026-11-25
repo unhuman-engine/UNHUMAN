@@ -379,7 +379,7 @@ static void TestFixedStepDeterminism()
 
 int main()
 {
-    Scene::GetShowLightIcons() = false; // no texture loading in headless tests
+    Scene::GetEditorOverlays().LightIcons = false; // no texture loading in headless tests
     Physics::PhysicsSystem3D::Init();   // Jolt global registration (Factory/RegisterTypes)
 
     TestCreationAndIndex();

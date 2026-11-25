@@ -140,7 +140,16 @@ public:
     /// (velocity and force), so it is reachable rather than private.
     [[nodiscard]] Physics::PhysicsSystem3D& GetPhysicsSystem3D() { return m_PhysicsSystem3D; }
 
-    static bool& GetShowLightIcons() { static bool s_ShowLightIcons = true; return s_ShowLightIcons; }
+    /// @brief What the editor viewport draws besides the scene itself (Blender's "overlays").
+    struct EditorOverlays
+    {
+        bool Grid = true;         ///< the ground grid
+        bool GridAxes = true;     ///< its red X and blue Z axis lines
+        float GridOpacity = 1.0f; ///< 0..1
+        bool LightIcons = true;   ///< billboards where lights are
+    };
+    /// @brief The overlays RenderEditorScene draws; the editor's viewport header edits them.
+    static EditorOverlays& GetEditorOverlays();
 
 public:
     template <typename T> void OnComponentAdded(Entity entity, T& components);
