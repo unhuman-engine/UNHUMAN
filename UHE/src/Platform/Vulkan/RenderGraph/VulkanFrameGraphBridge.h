@@ -4,7 +4,7 @@
 #include <vector>
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
-#include "UHE/RHI/FrameGraph/TransientTexturePool.h"
+#include "UHE/RHI/FrameGraph/TransientPool.h"
 
 namespace UHE::RHI::VULKAN
 {
@@ -32,16 +32,26 @@ public:
      */
     bool Translate(const FrameGraph& frontend, VulkanRenderGraph& graph, std::vector<std::string>& errors);
 
-    /// @brief Ends the frame: pooled textures nothing used for a while are released.
-    void EndFrame() { m_Pool.EndFrame(); }
-    /// @brief Releases every pooled texture. Call with the device idle.
-    void Shutdown() { m_Pool.Clear(); }
+    /// @brief Ends the frame: pooled objects nothing used for a while are released.
+    void EndFrame()
+    {
+        m_Pool.EndFrame();
+        m_BufferPool.EndFrame();
+    }
+    /// @brief Releases every pooled object. Call with the device idle.
+    void Shutdown()
+    {
+        m_Pool.Clear();
+        m_BufferPool.Clear();
+    }
 
     [[nodiscard]] const TransientTexturePool& Pool() const { return m_Pool; }
+    [[nodiscard]] const TransientBufferPool& BufferPool() const { return m_BufferPool; }
 
 private:
     VulkanDevice& m_Device;
     TransientTexturePool m_Pool;
+    TransientBufferPool m_BufferPool;
     // This frame's mapping from frontend resource index to the physical object;
     // the execute callbacks read it while the render graph records.
     std::vector<TextureHandle> m_Textures;

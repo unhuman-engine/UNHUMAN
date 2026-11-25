@@ -258,7 +258,10 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc)
     }
     else if (desc.usage == BufferUsage::Storage)
     {
-        usage = vk::BufferUsageFlagBits::eStorageBuffer;
+        // Transfer both ways too: a storage buffer is also what a frame graph
+        // pass copies into or out of.
+        usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+                vk::BufferUsageFlagBits::eTransferDst;
     }
     else if (desc.usage == BufferUsage::Staging)
     {

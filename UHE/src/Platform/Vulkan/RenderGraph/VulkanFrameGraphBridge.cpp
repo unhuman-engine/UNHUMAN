@@ -113,7 +113,9 @@ private:
 
 VulkanFrameGraphBridge::VulkanFrameGraphBridge(VulkanDevice& device)
     : m_Device(device), m_Pool([&device](const TextureDesc& desc) { return device.CreateTexture(desc); },
-                               [&device](TextureHandle texture) { device.DestroyTexture(texture); })
+                               [&device](TextureHandle texture) { device.DestroyTexture(texture); }),
+      m_BufferPool([&device](const BufferDesc& desc) { return device.CreateBuffer(desc); },
+                   [&device](BufferHandle buffer) { device.DestroyBuffer(buffer); })
 {
 }
 
@@ -144,12 +146,31 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
         const FGLoweredResource& resource = frame.Resources[i];
         if (!resource.IsTexture)
         {
-            if (!resource.Imported)
+            if (resource.Imported)
             {
-                errors.push_back("'" + resource.Name + "': graph-created buffers are not supported yet; import it");
+                m_Buffers[i] = resource.ImportedBuffer;
+                const u64 identity = static_cast<u64>(reinterpret_cast<uintptr_t>(resource.ImportedBuffer));
+                rgBuffers[i] = graph.ImportBuffer(resource.Name, identity);
+                continue;
+            }
+            // Device-local storage: written by compute passes, read by shaders,
+            // and a copy source or destination for transfer passes.
+            BufferDesc desc;
+            desc.size = resource.Buffer.Size;
+            desc.usage = BufferUsage::Storage;
+            desc.hostVisible = false;
+            m_Buffers[i] = m_BufferPool.Acquire(desc);
+            if (m_Buffers[i] == nullptr)
+            {
+                errors.push_back("'" + resource.Name + "': could not allocate a " + std::to_string(desc.size) +
+                                 "-byte buffer");
                 return false;
             }
-            m_Buffers[i] = resource.ImportedBuffer;
+            RGBufferDesc rgDesc;
+            rgDesc.name = resource.Name;
+            rgDesc.size = desc.size;
+            rgDesc.usage = resource.Buffer.Usage;
+            rgBuffers[i] = graph.CreateBuffer(rgDesc);
             continue;
         }
 
@@ -205,16 +226,6 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
         rgDesc.sampleCount = resource.Texture.SampleCount;
         rgDesc.usage = desc.usage;
         rgTextures[i] = graph.CreateTexture(rgDesc);
-    }
-
-    // Imported buffers need their render graph slot too.
-    for (u32 i = 0; i < frame.Resources.size(); ++i)
-    {
-        if (!frame.Resources[i].IsTexture)
-        {
-            const u64 identity = static_cast<u64>(reinterpret_cast<uintptr_t>(frame.Resources[i].ImportedBuffer));
-            rgBuffers[i] = graph.ImportBuffer(frame.Resources[i].Name, identity);
-        }
     }
 
     for (const FGLoweredPass& pass : frame.Passes)

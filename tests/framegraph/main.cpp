@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
-#include "UHE/RHI/FrameGraph/TransientTexturePool.h"
+#include "UHE/RHI/FrameGraph/TransientPool.h"
 
 using namespace UHE;
 using namespace UHE::RHI;
@@ -505,6 +505,24 @@ int main()
 
         TransientTexturePool failing([](const TextureDesc&) { return TextureHandle{nullptr}; }, [](TextureHandle) {});
         check(failing.Acquire(hdr) == nullptr && failing.Size() == 0, "a failed allocation is reported and not kept");
+
+        int buffersCreated = 0;
+        TransientBufferPool buffers(
+            [&](const BufferDesc&)
+            {
+                ++buffersCreated;
+                return reinterpret_cast<BufferHandle>(static_cast<uintptr_t>(0x7000 + buffersCreated));
+            },
+            [](BufferHandle) {});
+        BufferDesc histogram;
+        histogram.size = 1024;
+        histogram.usage = BufferUsage::Storage;
+        const BufferHandle first = buffers.Acquire(histogram);
+        buffers.EndFrame();
+        check(buffers.Acquire(histogram) == first && buffersCreated == 1, "buffers are pooled the same way");
+        BufferDesc bigger = histogram;
+        bigger.size = 2048;
+        check(buffers.Acquire(bigger) != first && buffersCreated == 2, "and a different size is a different buffer");
     }
 
     std::cout << '\n' << (g_failures == 0 ? "all frame graph checks passed" : "frame graph checks FAILED") << '\n';
