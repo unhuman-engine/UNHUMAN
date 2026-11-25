@@ -140,7 +140,9 @@ namespace EditorTheme
             c[ImGuiCol_TableBorderStrong]     = raise(0.140f);
             c[ImGuiCol_TableBorderLight]      = raise(0.080f);
             c[ImGuiCol_TableRowBg]            = ImVec4(0, 0, 0, 0);
-            c[ImGuiCol_TableRowBgAlt]         = light ? ImVec4(0, 0, 0, 0.030f) : ImVec4(1, 1, 1, 0.025f);
+            // Opaque: a translucent white blends in linear light on the sRGB
+            // swapchain and came out as a harsh zebra stripe.
+            c[ImGuiCol_TableRowBgAlt] = raise(light ? 0.020f : 0.012f);
             c[ImGuiCol_TextLink]              = A;
             c[ImGuiCol_TextSelectedBg]        = WithAlpha(A, 0.35f);
             c[ImGuiCol_TreeLines]             = raise(0.170f);
