@@ -3,6 +3,7 @@
 // drop) is in SceneHierachyPanel.cpp.
 #include <algorithm>
 #include <cctype>
+#include <cstdarg>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -20,166 +21,364 @@
 namespace UHE
 {
 
-static void DrawVec3Control(const std::string& label, glm::vec3& value, f32 resetValue = 0.0f, f32 columeWidth = 100.0f)
+/// @brief Narrowest axis field a vector row keeps on one line before it stacks
+/// X, Y and Z vertically, as Godot does in a narrow inspector.
+static constexpr float kMinAxisFieldWidth = 54.0f;
+
+/// @brief Width of a "Browse" button next to a path field.
+static constexpr float kBrowseButtonWidth = 60.0f;
+
+/// @brief Height of the drop zone shown while an asset slot is empty.
+static constexpr float kDropZoneHeight = 64.0f;
+
+/// @brief The bold UI font (Inter Bold), or null when only the default font is loaded.
+static ImFont* BoldFont()
 {
     ImGuiIO& io = ImGui::GetIO();
-    ImFont* boldFont = io.Fonts->Fonts.Size > 1 ? io.Fonts->Fonts[1] : nullptr;
-    ImGui::PushID(label.c_str());
-    ImGui::Columns(2);
-    ImGui::SetColumnWidth(0, columeWidth);
-    ImGui::TextColored(DimText(0.70f), "%s", label.c_str());
-    ImGui::NextColumn();
-    ImGui::PushMultiItemsWidths(3, ImGui::CalcItemWidth());
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-    float lineHeight = ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f;
-    ImVec2 buttonSize = {lineHeight + 2.0f, lineHeight};
-    ImGui::PushStyleColor(ImGuiCol_Button, kAxisX);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kAxisXHover);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kAxisXActive);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
-    if (boldFont)
-        ImGui::PushFont(boldFont);
-    if (ImGui::Button("X", buttonSize))
-        value.x = resetValue;
-    if (boldFont)
-        ImGui::PopFont();
+    return io.Fonts->Fonts.Size > 1 ? io.Fonts->Fonts[1] : nullptr;
+}
+
+/**
+ * @brief Opens the two-column label/value table a section draws its fields into.
+ *
+ * Every section opens its own table with the same proportional label column,
+ * so labels and values line up down the whole panel. The cell padding is
+ * tighter than the theme's so rows sit about as close as Godot's. Close it
+ * with EndPropertyTable() only when this returned true.
+ */
+static bool BeginPropertyTable(const char* id)
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 2.0f));
+    // Accumulated unsigned: ImGui's flag typedefs are int, and OR-ing into a
+    // signed int is what bugprone-signed-bitwise rejects.
+    unsigned flags = ImGuiTableFlags_SizingStretchProp;
+    flags |= ImGuiTableFlags_NoSavedSettings;
+    flags |= ImGuiTableFlags_PadOuterX;
+    if (!ImGui::BeginTable(id, 2, static_cast<ImGuiTableFlags>(flags)))
+    {
+        ImGui::PopStyleVar();
+        return false;
+    }
+    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthStretch, kPropertyLabelRatio);
+    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0f - kPropertyLabelRatio);
+    return true;
+}
+
+/// @brief Closes a table opened by BeginPropertyTable(). The cell padding stays
+/// pushed until here because the table reads it for every row, not only at begin.
+static void EndPropertyTable()
+{
+    ImGui::EndTable();
     ImGui::PopStyleVar();
+}
+
+/**
+ * @brief Starts a property row: the name in the left column, the cursor in the right one.
+ *
+ * The name is drawn by hand instead of with Text() so a name longer than its
+ * column ends in an ellipsis rather than running under the value; the full
+ * name is then the tooltip. The next item is set to fill the value column, so
+ * the caller only gives its widget a hidden "##" label.
+ *
+ * @param label   Name shown in the label column.
+ * @param tooltip Optional help shown when the name is hovered.
+ */
+static void PropertyLabel(const char* label, const char* tooltip = nullptr)
+{
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const float width = ImMax(ImGui::GetContentRegionAvail().x, 1.0f);
+    const float height = ImGui::GetFrameHeight();
+    const ImVec2 textSize = ImGui::CalcTextSize(label);
+    const ImVec2 textMin(pos.x, pos.y + style.FramePadding.y);
+    const ImVec2 textMax(pos.x + width, pos.y + height);
+
+    // RenderTextEllipsis draws with ImGuiCol_Text, so the dimmed colour is pushed.
+    ImGui::PushStyleColor(ImGuiCol_Text, PropertyLabelText());
+    ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), textMin, textMax, textMax.x, label, nullptr, &textSize);
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(width, height));
+
+    const bool truncated = textSize.x > width;
+    if ((truncated || tooltip) && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+    {
+        if (truncated && tooltip)
+            ImGui::SetTooltip("%s\n%s", label, tooltip);
+        else
+            ImGui::SetTooltip("%s", truncated ? label : tooltip);
+    }
+
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+}
+
+/// @brief A read-only property, its value as text aligned with the editable rows' frames.
+static void PropertyText(const char* label, const char* fmt, ...) IM_FMTARGS(2);
+static void PropertyText(const char* label, const char* fmt, ...)
+{
+    PropertyLabel(label);
+    ImGui::AlignTextToFramePadding();
+    va_list args;
+    va_start(args, fmt);
+    ImGui::TextV(fmt, args);
+    va_end(args);
+}
+
+/// @brief A dimmed help line under the values of a section, wrapped to the value column.
+static void PropertyNote(const char* text)
+{
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(1);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
+/**
+ * @brief One component of a vector property: an axis tag and a drag field in one frame.
+ *
+ * The tag is a thin coloured stripe and letter rather than a filled button, so
+ * a row of three reads as one calm field, as in Godot and Blender. The frame is
+ * drawn here across the whole width and the DragFloat's own background is made
+ * transparent, so tag and value never show a seam between two rounded frames.
+ * Clicking the tag resets the component, as the old axis buttons did.
+ */
+static void DrawAxisField(int axis, float& component, float resetValue, float width)
+{
+    static constexpr const char* kAxisLetters[3] = {"X", "Y", "Z"};
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float height = ImGui::GetFrameHeight();
+    const float tagWidth = ImMin(ImGui::GetFontSize() + 4.0f, width * 0.4f);
+    const float stripeWidth = 3.0f;
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const ImVec2 max(min.x + width, min.y + height);
+
+    ImGui::PushID(axis);
+
+    // The frame is drawn before the widgets exist, so its hover and active
+    // state come from the mouse and the drag's ID rather than from the items.
+    const ImGuiID dragId = ImGui::GetID("##value");
+    const bool active = ImGui::GetActiveID() == dragId;
+    const bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(min, max);
+    const ImGuiCol frameCol = active ? ImGuiCol_FrameBgActive : (hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(min, max, ImGui::GetColorU32(frameCol), style.FrameRounding);
+    const ImVec4 axisColor = AxisColor(axis);
+    draw->AddRectFilled(min, ImVec2(min.x + stripeWidth, max.y), ImGui::GetColorU32(axisColor), style.FrameRounding,
+                        ImDrawFlags_RoundCornersLeft);
+
+    if (ImGui::InvisibleButton("##reset", ImVec2(tagWidth, height)))
+        component = resetValue;
+    const bool tagHovered = ImGui::IsItemHovered();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Reset %s to %.2f", kAxisLetters[axis], resetValue);
+
+    ImFont* font = BoldFont() ? BoldFont() : ImGui::GetFont();
+    const float fontSize = ImGui::GetFontSize();
+    const char* letter = kAxisLetters[axis];
+    const ImVec2 letterSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, letter);
+    ImVec4 letterColor = axisColor;
+    letterColor.w = tagHovered ? 1.0f : 0.85f;
+    const ImVec2 letterPos(min.x + stripeWidth + (tagWidth - stripeWidth - letterSize.x) * 0.5f,
+                           min.y + (height - letterSize.y) * 0.5f);
+    draw->AddText(font, fontSize, letterPos, ImGui::GetColorU32(letterColor), letter);
+
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::SetNextItemWidth(ImMax(width - tagWidth, 1.0f));
+    ImGui::DragFloat("##value", &component, 0.01f, 0.0f, 0.0f, "%.2f");
     ImGui::PopStyleColor(3);
-    ImGui::SameLine();
-    ImGui::DragFloat("##x", &value.x, 0.01f, 0.0f, 0.0f, "%.2f");
-    ImGui::PopItemWidth();
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, kAxisY);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kAxisYHover);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kAxisYActive);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
-    if (boldFont)
-        ImGui::PushFont(boldFont);
-    if (ImGui::Button("Y", buttonSize))
-        value.y = resetValue;
-    if (boldFont)
-        ImGui::PopFont();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
-    ImGui::SameLine();
-    ImGui::DragFloat("##y", &value.y, 0.01f, 0.0f, 0.0f, "%.2f");
-    ImGui::PopItemWidth();
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, kAxisZ);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kAxisZHover);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kAxisZActive);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
-    if (boldFont)
-        ImGui::PushFont(boldFont);
-    if (ImGui::Button("Z", buttonSize))
-        value.z = resetValue;
-    if (boldFont)
-        ImGui::PopFont();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
-    ImGui::SameLine();
-    ImGui::DragFloat("##z", &value.z, 0.01f, 0.0f, 0.0f, "%.2f");
-    ImGui::PopItemWidth();
-    ImGui::PopStyleVar();
-    ImGui::Columns(1);
+
     ImGui::PopID();
 }
-const ImGuiTreeNodeFlags TreeNodeFlag = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed |
-                                        ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_AllowOverlap |
-                                        ImGuiTreeNodeFlags_FramePadding;
+
+/**
+ * @brief A vec3 property row: the name in the label column, X/Y/Z fields in the value column.
+ *
+ * The fields share a line while each keeps a usable width and stack
+ * vertically below that, so a narrow panel clips no digits.
+ * Must be called inside a BeginPropertyTable() table.
+ */
+static void DrawVec3Control(const char* label, glm::vec3& value, f32 resetValue = 0.0f)
+{
+    PropertyLabel(label);
+    ImGui::PushID(label);
+    const float spacing = 4.0f;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float inlineWidth = (avail - spacing * 2.0f) / 3.0f;
+    const bool stacked = inlineWidth < kMinAxisFieldWidth;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(spacing, 2.0f));
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (axis > 0 && !stacked)
+            ImGui::SameLine(0.0f, spacing);
+        DrawAxisField(axis, value[axis], resetValue, stacked ? avail : inlineWidth);
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopID();
+}
+
+/**
+ * @brief Tree node flags of an inspector section header.
+ *
+ * The header does not push the tree, so a section's fields span the full
+ * panel width and the caller never calls TreePop(). Accumulated unsigned for
+ * the same reason as the table flags above.
+ */
+static ImGuiTreeNodeFlags SectionHeaderFlags()
+{
+    unsigned flags = ImGuiTreeNodeFlags_DefaultOpen;
+    flags |= ImGuiTreeNodeFlags_Framed;
+    flags |= ImGuiTreeNodeFlags_SpanAvailWidth;
+    flags |= ImGuiTreeNodeFlags_AllowOverlap;
+    flags |= ImGuiTreeNodeFlags_FramePadding;
+    flags |= ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    return static_cast<ImGuiTreeNodeFlags>(flags);
+}
+
+/**
+ * @brief A collapsible section header in the flat style of Godot's inspector categories.
+ *
+ * The band uses the theme's neutral button colour rather than the accent-tinted
+ * header colour, which is meant for selection; the title is bold at the body
+ * size, so every header has the height of a field row.
+ *
+ * @param id    Tree node ID; it carries the open/closed state between frames.
+ * @param title Visible section name.
+ * @return Whether the section is open.
+ */
+static bool SectionHeader(ImGuiID id, const char* title)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, style.FramePadding.y));
+    ImGui::PushStyleColor(ImGuiCol_Header, ImGui::GetStyleColorVec4(ImGuiCol_Button));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+    ImFont* boldFont = BoldFont();
+    if (boldFont)
+        ImGui::PushFont(boldFont, 0.0f);
+    const bool open = ImGui::TreeNodeBehavior(id, SectionHeaderFlags(), title);
+    if (boldFont)
+        ImGui::PopFont();
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
+    return open;
+}
+
+/**
+ * @brief The settings button at the right end of the section header just drawn.
+ *
+ * Three dots drawn with the draw list, because "..." as text sits on the
+ * baseline and looks off-centre in a header band.
+ *
+ * @return True when clicked.
+ */
+static bool SectionMenuButton(const char* id)
+{
+    const ImVec2 headerMin = ImGui::GetItemRectMin();
+    const ImVec2 headerMax = ImGui::GetItemRectMax();
+    const float size = headerMax.y - headerMin.y;
+    ImGui::SameLine();
+    ImGui::SetCursorScreenPos(ImVec2(headerMax.x - size, headerMin.y));
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size));
+    const bool hovered = ImGui::IsItemHovered();
+    const bool held = ImGui::IsItemActive();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Component settings");
+
+    const ImVec2 min = ImGui::GetItemRectMin();
+    const ImVec2 max = ImGui::GetItemRectMax();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    if (hovered || held)
+        draw->AddRectFilled(ImVec2(min.x + 2.0f, min.y + 2.0f), ImVec2(max.x - 2.0f, max.y - 2.0f),
+                            ImGui::GetColorU32(held ? kAccentHover() : kAccentMuted()),
+                            ImGui::GetStyle().FrameRounding);
+    const ImVec2 center((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+    const float radius = ImMax(1.5f, size * 0.065f);
+    const ImU32 dotColor = ImGui::GetColorU32(hovered ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : DimText(0.65f));
+    for (int i = -1; i <= 1; ++i)
+        draw->AddCircleFilled(ImVec2(center.x + static_cast<float>(i) * radius * 3.0f, center.y), radius, dotColor);
+    return pressed;
+}
+
 template <typename T, typename UIFunction>
 static void DrawComponents(const std::string& name, Entity entity, UIFunction function)
 {
-    if (entity.HasComponent<T>())
+    if (!entity.HasComponent<T>())
+        return;
+
+    auto& components = entity.GetComponent<T>();
+    const bool open = SectionHeader(ImGui::GetID((void*)typeid(T).hash_code()), name.c_str());
+    ImGui::PushID(name.c_str());
+    if (SectionMenuButton("##ComponentSettingsButton"))
+        ImGui::OpenPopup("ComponentSettings");
+    bool removeComponent = false;
+    if (ImGui::BeginPopup("ComponentSettings"))
     {
-        auto& components = entity.GetComponent<T>();
-        ImVec2 contentRegionAvailable = ImGui::GetContentRegionAvail();
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{5, 5});
-        float lineHeight = ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f;
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
+        ImGui::TextColored(DimText(0.50f), "Component");
         ImGui::Separator();
+        if (ImGui::MenuItem("Remove Component"))
+            removeComponent = true;
+        ImGui::EndPopup();
+    }
+    if (open && BeginPropertyTable("##Properties"))
+    {
+        function(components);
+        EndPropertyTable();
         ImGui::Spacing();
-        ImGuiIO& io = ImGui::GetIO();
-        ImFont* boldFont = io.Fonts->Fonts.Size > 1 ? io.Fonts->Fonts[1] : nullptr;
-        if (boldFont)
-            ImGui::PushFont(boldFont);
-        bool open = ImGui::TreeNodeEx((void*)typeid(T).hash_code(), TreeNodeFlag, name.c_str());
-        if (boldFont)
-            ImGui::PopFont();
-        ImGui::PopStyleVar();
-        ImGui::SameLine(contentRegionAvailable.x - lineHeight * 0.5f);
-        ImGui::PushID(name.c_str());
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kAccentMuted());
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, kAccentHover());
-        if (ImGui::Button("...", ImVec2{lineHeight, lineHeight}))
+    }
+    ImGui::PopID();
+    if (removeComponent)
+        entity.RemoveComponent<T>();
+}
+
+/**
+ * @brief Body type combo shared by the 2D and 3D rigid bodies (Static, Kinematic, Dynamic).
+ * @tparam Component RigidBody2DComponent or RigidBody3DComponent.
+ */
+template <typename Component> static void DrawBodyTypeProperty(Component& component)
+{
+    const char* bodyTypeStrings[] = {"Static", "Kinematic", "Dynamic"};
+    const char* currentBodyTypeString = bodyTypeStrings[(int)component.Type];
+    PropertyLabel("Body Type");
+    if (ImGui::BeginCombo("##Body Type", currentBodyTypeString))
+    {
+        for (int i = 0; i < 3; i++)
         {
-            ImGui::OpenPopup("ComponentSettings");
+            bool isSelected = currentBodyTypeString == bodyTypeStrings[i];
+            if (ImGui::Selectable(bodyTypeStrings[i], isSelected))
+            {
+                currentBodyTypeString = bodyTypeStrings[i];
+                // Access via the Component Type, not the instance
+                component.Type = (typename Component::BodyType)i;
+            }
+            if (isSelected)
+                ImGui::SetItemDefaultFocus();
         }
-        ImGui::PopStyleColor(3);
-        bool removeComponent = false;
-        if (ImGui::BeginPopup("ComponentSettings"))
-        {
-            ImGui::TextColored(DimText(0.50f), "Component");
-            ImGui::Separator();
-            if (ImGui::MenuItem("  Remove Component"))
-                removeComponent = true;
-            ImGui::EndPopup();
-        }
-        ImGui::PopID();
-        if (open)
-        {
-            ImGui::Spacing();
-            function(components);
-            ImGui::Spacing();
-            ImGui::TreePop();
-        }
-        if (removeComponent)
-            entity.RemoveComponent<T>();
+        ImGui::EndCombo();
     }
 }
+
+/// @brief Width left for a path field once \p buttonsWidth of buttons share its line.
+static float PathFieldWidth(float buttonsWidth, int buttonCount)
+{
+    const float spacing = ImGui::GetStyle().ItemSpacing.x * static_cast<float>(buttonCount);
+    return ImMax(ImGui::GetContentRegionAvail().x - buttonsWidth - spacing, 10.0f);
+}
+
 void SceneHierarchyPanel::DrawComponents(Entity entity)
 {
-    // Issue #17: read-only info for entities expanded from a glTF model's node
-    // tree, plus a toggle between the collapsed (single model) and expanded
-    // (one entity per node) representations.
-    if (entity.HasComponent<ModelNodeComponent>())
-    {
-        auto& mnc = entity.GetComponent<ModelNodeComponent>();
-        if (ImGui::TreeNodeEx("##ModelNodeInfo", TreeNodeFlag, "Model Node"))
-        {
-            ImGui::TextDisabled("glTF node of: %s", mnc.NodeName.c_str());
-            ImGui::Text("Node Index: %d", mnc.NodeIndex);
-            ImGui::TreePop();
-        }
-    }
-    if (entity.HasComponent<Model3DComponent>() && !entity.HasComponent<ModelNodeComponent>())
-    {
-        auto& mc = entity.GetComponent<Model3DComponent>();
-        if (mc.IsLoaded && mc.ModelData && !mc.ModelData->GetNodes().empty())
-        {
-            // Expand/collapse toggle. Queued, not executed here: the previous
-            // direct call mutated the registry mid-draw AND ran on every click,
-            // duplicating the whole node tree (the reported UI/engine weirdness).
-            bool expanded = m_Context->IsModelExpanded(entity);
-            ImGui::PushStyleColor(ImGuiCol_Text, kAccentText());
-            ImGui::PushStyleColor(ImGuiCol_Button, kAccent());
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kAccentHover());
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, kAccentActive());
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-            if (ImGui::Button(expanded ? "Collapse Child Nodes" : "Expand Child Nodes", ImVec2(-1, 0)))
-            {
-                if (expanded)
-                    m_Context->QueueModelCollapse(entity.GetUUID());
-                else
-                    m_Context->QueueModelExpand(entity.GetUUID());
-            }
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor(4);
-            ImGui::TextDisabled(expanded ? "One entity per glTF node" : "Fold the glTF tree into editable entities");
-        }
-    }
-
+    // Name and Add Component share one row: the name field takes what the
+    // button leaves, and the button shortens its label in a narrow panel.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const char* addLabel =
+        ImGui::GetContentRegionAvail().x >= 260.0f ? "Add Component##AddComponentButton" : "+ Add##AddComponentButton";
+    const float addWidth = ImGui::CalcTextSize(addLabel, nullptr, true).x + style.FramePadding.x * 2.0f;
     if (entity.HasComponent<TagComponent>())
     {
         auto& tag = entity.GetComponent<TagComponent>().Tag;
@@ -187,24 +386,22 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         memset(buffer, 0, sizeof(buffer));
         strncpy(buffer, tag.c_str(), sizeof(buffer) - 1);
         buffer[sizeof(buffer) - 1] = '\0';
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 5));
-        if (ImGui::InputText("##Tag", buffer, sizeof(buffer)))
+        ImGui::SetNextItemWidth(ImMax(ImGui::GetContentRegionAvail().x - addWidth - style.ItemSpacing.x, 40.0f));
+        if (ImGui::InputTextWithHint("##Tag", "Name", buffer, sizeof(buffer)))
         {
             tag = std::string(buffer);
         }
-        ImGui::PopStyleVar(2);
+        ImGui::SameLine();
     }
-    ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Text, kAccentText());
     ImGui::PushStyleColor(ImGuiCol_Button, kAccent());
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kAccentHover());
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, kAccentActive());
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-    if (ImGui::Button("+ Add"))
+    if (ImGui::Button(addLabel, ImVec2(addWidth, 0.0f)))
         ImGui::OpenPopup("AddComponents");
-    ImGui::PopStyleVar();
     ImGui::PopStyleColor(4);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Add a component to this entity");
     if (ImGui::BeginPopup("AddComponents"))
     {
         static char addFilter[128] = {};
@@ -315,7 +512,52 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         }
         ImGui::EndPopup();
     }
+
+    if (entity.HasComponent<Model3DComponent>() && !entity.HasComponent<ModelNodeComponent>())
+    {
+        auto& mc = entity.GetComponent<Model3DComponent>();
+        if (mc.IsLoaded && mc.ModelData && !mc.ModelData->GetNodes().empty())
+        {
+            // Expand/collapse toggle. Queued, not executed here: the previous
+            // direct call mutated the registry mid-draw AND ran on every click,
+            // duplicating the whole node tree (the reported UI/engine weirdness).
+            // A plain button in a property row: it is a secondary action of the
+            // model, not the panel's primary one, so it does not take the accent.
+            bool expanded = m_Context->IsModelExpanded(entity);
+            const char* hint = expanded ? "One entity per glTF node" : "Fold the glTF tree into editable entities";
+            if (BeginPropertyTable("##ModelNodes"))
+            {
+                PropertyLabel("Child Nodes", hint);
+                if (ImGui::Button(expanded ? "Collapse Child Nodes" : "Expand Child Nodes", ImVec2(-FLT_MIN, 0.0f)))
+                {
+                    if (expanded)
+                        m_Context->QueueModelCollapse(entity.GetUUID());
+                    else
+                        m_Context->QueueModelExpand(entity.GetUUID());
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                    ImGui::SetTooltip("%s", hint);
+                EndPropertyTable();
+            }
+        }
+    }
     ImGui::Spacing();
+
+    // Issue #17: read-only info for entities expanded from a glTF model's node
+    // tree, plus a toggle between the collapsed (single model) and expanded
+    // (one entity per node) representations.
+    if (entity.HasComponent<ModelNodeComponent>())
+    {
+        auto& mnc = entity.GetComponent<ModelNodeComponent>();
+        if (SectionHeader(ImGui::GetID("##ModelNodeInfo"), "Model Node") && BeginPropertyTable("##ModelNodeProperties"))
+        {
+            PropertyText("glTF Node", "%s", mnc.NodeName.c_str());
+            PropertyText("Node Index", "%d", mnc.NodeIndex);
+            EndPropertyTable();
+            ImGui::Spacing();
+        }
+    }
+
     ::UHE::DrawComponents<TransformComponent>("Transform", entity,
                                               [](auto& components)
                                               {
@@ -326,111 +568,96 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                                                   DrawVec3Control("Scale", components.Scale, 1.0f);
                                               });
 
-    ::UHE::DrawComponents<ScriptComponent>(
-        "Script (Lua)", entity,
-        [](ScriptComponent& sc)
-        {
-            // The path resolves through the asset registry like any other asset, so
-            // a script lives with the project's content: "Scripts/drone.lua".
-            ImGui::InputText("Script", &sc.ScriptPath);
-            ImGui::Checkbox("Enabled", &sc.Enabled);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("A disabled script keeps its state and stops updating.");
-            ImGui::TextDisabled("OnCreate(self)  OnUpdate(self, dt)  OnDestroy(self)");
-            ImGui::TextDisabled("File > Reload Scripts re-runs OnCreate.");
-        });
+    ::UHE::DrawComponents<ScriptComponent>("Script (Lua)", entity,
+                                           [](ScriptComponent& sc)
+                                           {
+                                               // The path resolves through the asset registry like any other asset, so
+                                               // a script lives with the project's content: "Scripts/drone.lua".
+                                               PropertyLabel("Script", "Project asset path, e.g. Scripts/drone.lua");
+                                               ImGui::InputText("##Script", &sc.ScriptPath);
+                                               PropertyLabel("Enabled");
+                                               ImGui::Checkbox("##Enabled", &sc.Enabled);
+                                               if (ImGui::IsItemHovered())
+                                                   ImGui::SetTooltip(
+                                                       "A disabled script keeps its state and stops updating.");
+                                               PropertyNote("OnCreate(self)  OnUpdate(self, dt)  OnDestroy(self)");
+                                               PropertyNote("File > Reload Scripts re-runs OnCreate.");
+                                           });
 
     ::UHE::DrawComponents<TextComponent>("Text Node", entity,
                                          [](TextComponent& tc)
                                          {
-                                             ImGui::ColorEdit4("Color", glm::value_ptr(tc.Color));
+                                             PropertyLabel("Color");
+                                             ImGui::ColorEdit4("##Color", glm::value_ptr(tc.Color));
 
-                                             ImGui::InputTextMultiline("Text", &tc.TextString, ImVec2(0, 0));
+                                             PropertyLabel("Text");
+                                             ImGui::InputTextMultiline("##Text", &tc.TextString,
+                                                                       ImVec2(-FLT_MIN, 0.0f));
 
-                                             ImGui::DragFloat("Kerning", &tc.Kerning, 0.025f);
-                                             ImGui::DragFloat("Line Spacing", &tc.LineSpacing, 0.025f);
+                                             PropertyLabel("Kerning");
+                                             ImGui::DragFloat("##Kerning", &tc.Kerning, 0.025f);
+                                             PropertyLabel("Line Spacing");
+                                             ImGui::DragFloat("##Line Spacing", &tc.LineSpacing, 0.025f);
                                          });
 
     ::UHE::DrawComponents<RigidBody2DComponent>("Rigid Body 2D", entity,
                                                 [](auto& components)
                                                 {
-                                                    // To this (correct scoping):
-                                                    const char* bodyTypeStrings[] = {"Static", "Kinematic", "Dynamic"};
-                                                    const char* currentBodyTypeString =
-                                                        bodyTypeStrings[(int)components.Type];
-
-                                                    if (ImGui::BeginCombo("Body Type", currentBodyTypeString))
-                                                    {
-                                                        for (int i = 0; i < 3; i++)
-                                                        {
-                                                            bool isSelected =
-                                                                currentBodyTypeString == bodyTypeStrings[i];
-                                                            if (ImGui::Selectable(bodyTypeStrings[i], isSelected))
-                                                            {
-                                                                currentBodyTypeString = bodyTypeStrings[i];
-                                                                // Access via the Component Type, not the instance
-                                                                components.Type = (RigidBody2DComponent::BodyType)i;
-                                                            }
-                                                            if (isSelected)
-                                                                ImGui::SetItemDefaultFocus();
-                                                        }
-                                                        ImGui::EndCombo();
-                                                    }
-
-                                                    ImGui::Checkbox("Fixed Rotation", &components.FixedRotation);
+                                                    DrawBodyTypeProperty(components);
+                                                    PropertyLabel("Fixed Rotation");
+                                                    ImGui::Checkbox("##Fixed Rotation", &components.FixedRotation);
                                                 });
 
     ::UHE::DrawComponents<BoxColliderComponent>(
         "Box Collider 2D", entity,
         [](auto& components)
         {
-            ImGui::DragFloat2("Offset", glm::value_ptr(components.Offset), 0.01f);
-            ImGui::DragFloat2("Size", glm::value_ptr(components.Size), 0.01f, 0.01f, 100.0f);
-            ImGui::DragFloat("Density", &components.Density, 0.1f, 0.0f, 100.0f);
-            ImGui::DragFloat("Friction", &components.Friction, 0.01f, 0.0f, 1.0f);
-            ImGui::DragFloat("Restitution", &components.Restitution, 0.01f, 0.0f, 1.0f);
-            ImGui::DragFloat("Restitution Threshold", &components.RestitutionThreshold, 0.01f, 0.0f, 10.0f);
+            PropertyLabel("Offset");
+            ImGui::DragFloat2("##Offset", glm::value_ptr(components.Offset), 0.01f);
+            PropertyLabel("Size");
+            ImGui::DragFloat2("##Size", glm::value_ptr(components.Size), 0.01f, 0.01f, 100.0f);
+            PropertyLabel("Density");
+            ImGui::DragFloat("##Density", &components.Density, 0.1f, 0.0f, 100.0f);
+            PropertyLabel("Friction");
+            ImGui::DragFloat("##Friction", &components.Friction, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Restitution");
+            ImGui::DragFloat("##Restitution", &components.Restitution, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Restitution Threshold");
+            ImGui::DragFloat("##Restitution Threshold", &components.RestitutionThreshold, 0.01f, 0.0f, 10.0f);
         });
 
     ::UHE::DrawComponents<RigidBody3DComponent>(
         "Rigid Body 3D", entity,
         [](auto& components)
         {
-            const char* bodyTypeStrings[] = {"Static", "Kinematic", "Dynamic"};
-            const char* currentBodyTypeString = bodyTypeStrings[(int)components.Type];
+            DrawBodyTypeProperty(components);
 
-            if (ImGui::BeginCombo("Body Type", currentBodyTypeString))
-            {
-                for (int i = 0; i < 3; i++)
-                {
-                    bool isSelected = currentBodyTypeString == bodyTypeStrings[i];
-                    if (ImGui::Selectable(bodyTypeStrings[i], isSelected))
-                    {
-                        currentBodyTypeString = bodyTypeStrings[i];
-                        components.Type = (RigidBody3DComponent::BodyType)i;
-                    }
-                    if (isSelected)
-                        ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
+            PropertyLabel("Mass");
+            ImGui::DragFloat("##Mass", &components.Mass, 0.1f, 0.0f, 10000.0f);
+            PropertyLabel("Linear Damping");
+            ImGui::DragFloat("##Linear Damping", &components.LinearDamping, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Angular Damping");
+            ImGui::DragFloat("##Angular Damping", &components.AngularDamping, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Is Sensor");
+            ImGui::Checkbox("##Is Sensor", &components.IsSensor);
 
-            ImGui::DragFloat("Mass", &components.Mass, 0.1f, 0.0f, 10000.0f);
-            ImGui::DragFloat("Linear Damping", &components.LinearDamping, 0.01f, 0.0f, 1.0f);
-            ImGui::DragFloat("Angular Damping", &components.AngularDamping, 0.01f, 0.0f, 1.0f);
-            ImGui::Checkbox("Is Sensor", &components.IsSensor);
-
-            ImGui::Text("Allowed Degrees of Freedom");
-            ImGui::Checkbox("Trans X", &components.AllowedDOFs[0]);
+            // Allowed degrees of freedom: one row per kind, one checkbox per axis.
+            PropertyLabel("Translation DOF", "Allowed degrees of freedom: translation along X, Y and Z.");
+            ImGui::PushID("TranslationDOF");
+            ImGui::Checkbox("X", &components.AllowedDOFs[0]);
             ImGui::SameLine();
-            ImGui::Checkbox("Trans Y", &components.AllowedDOFs[1]);
+            ImGui::Checkbox("Y", &components.AllowedDOFs[1]);
             ImGui::SameLine();
-            ImGui::Checkbox("Trans Z", &components.AllowedDOFs[2]);
-            ImGui::Checkbox("Rot X", &components.AllowedDOFs[3]);
+            ImGui::Checkbox("Z", &components.AllowedDOFs[2]);
+            ImGui::PopID();
+            PropertyLabel("Rotation DOF", "Allowed degrees of freedom: rotation about X, Y and Z.");
+            ImGui::PushID("RotationDOF");
+            ImGui::Checkbox("X", &components.AllowedDOFs[3]);
             ImGui::SameLine();
-            ImGui::Checkbox("Rot Y", &components.AllowedDOFs[4]);
+            ImGui::Checkbox("Y", &components.AllowedDOFs[4]);
             ImGui::SameLine();
-            ImGui::Checkbox("Rot Z", &components.AllowedDOFs[5]);
+            ImGui::Checkbox("Z", &components.AllowedDOFs[5]);
+            ImGui::PopID();
         });
 
     ::UHE::DrawComponents<BoxCollider3DComponent>(
@@ -439,8 +666,10 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         {
             DrawVec3Control("Offset", components.Offset);
             DrawVec3Control("Half Extent", components.HalfExtent);
-            ImGui::DragFloat("Friction", &components.Friction, 0.01f, 0.0f, 1.0f);
-            ImGui::DragFloat("Restitution", &components.Restitution, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Friction");
+            ImGui::DragFloat("##Friction", &components.Friction, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Restitution");
+            ImGui::DragFloat("##Restitution", &components.Restitution, 0.01f, 0.0f, 1.0f);
         });
 
     ::UHE::DrawComponents<SphereCollider3DComponent>(
@@ -448,9 +677,12 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         [](auto& components)
         {
             DrawVec3Control("Offset", components.Offset);
-            ImGui::DragFloat("Radius", &components.Radius, 0.01f, 0.0f, 100.0f);
-            ImGui::DragFloat("Friction", &components.Friction, 0.01f, 0.0f, 1.0f);
-            ImGui::DragFloat("Restitution", &components.Restitution, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Radius");
+            ImGui::DragFloat("##Radius", &components.Radius, 0.01f, 0.0f, 100.0f);
+            PropertyLabel("Friction");
+            ImGui::DragFloat("##Friction", &components.Friction, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Restitution");
+            ImGui::DragFloat("##Restitution", &components.Restitution, 0.01f, 0.0f, 1.0f);
         });
 
     ::UHE::DrawComponents<CapsuleCollider3DComponent>(
@@ -458,10 +690,14 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         [](auto& components)
         {
             DrawVec3Control("Offset", components.Offset);
-            ImGui::DragFloat("Radius", &components.Radius, 0.01f, 0.0f, 100.0f);
-            ImGui::DragFloat("Half Height", &components.HalfHeight, 0.01f, 0.0f, 100.0f);
-            ImGui::DragFloat("Friction", &components.Friction, 0.01f, 0.0f, 1.0f);
-            ImGui::DragFloat("Restitution", &components.Restitution, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Radius");
+            ImGui::DragFloat("##Radius", &components.Radius, 0.01f, 0.0f, 100.0f);
+            PropertyLabel("Half Height");
+            ImGui::DragFloat("##Half Height", &components.HalfHeight, 0.01f, 0.0f, 100.0f);
+            PropertyLabel("Friction");
+            ImGui::DragFloat("##Friction", &components.Friction, 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Restitution");
+            ImGui::DragFloat("##Restitution", &components.Restitution, 0.01f, 0.0f, 1.0f);
         });
 
     ::UHE::DrawComponents<CameraComponent>(
@@ -469,10 +705,12 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         [](auto& components)
         {
             auto& camera = components.Camera;
-            ImGui::Checkbox("Primary", &components.Primary);
+            PropertyLabel("Primary");
+            ImGui::Checkbox("##Primary", &components.Primary);
             const char* projectionTypeString[] = {"Projection", "Orthographic"};
             const char* currnetProjectionTypeString = projectionTypeString[(int)(camera).GetProjectionType()];
-            if (ImGui::BeginCombo("Projection", currnetProjectionTypeString))
+            PropertyLabel("Projection");
+            if (ImGui::BeginCombo("##Projection", currnetProjectionTypeString))
             {
                 for (int i{0}; i < 2; i++)
                 {
@@ -490,17 +728,20 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             if (camera.GetProjectionType() == SceneCamera::ProjectionType::Perpective)
             {
                 f32 ProjFOV = glm::degrees(camera.GetProjectionFOV());
-                if (ImGui::DragFloat("FOV", &ProjFOV))
+                PropertyLabel("FOV");
+                if (ImGui::DragFloat("##FOV", &ProjFOV))
                 {
                     camera.SetPerspectiveFOV(glm::radians(ProjFOV));
                 }
                 f32 ProjNear = camera.GetProjectionNear();
-                if (ImGui::DragFloat("FOV Near", &ProjNear))
+                PropertyLabel("FOV Near");
+                if (ImGui::DragFloat("##FOV Near", &ProjNear))
                 {
                     camera.SetPerpecstiveNear(ProjNear);
                 }
                 f32 ProjFar = camera.GetProjectionFar();
-                if (ImGui::DragFloat("FOV Far", &ProjFar))
+                PropertyLabel("FOV Far");
+                if (ImGui::DragFloat("##FOV Far", &ProjFar))
                 {
                     camera.SetPerspecstiveFar(ProjFar);
                 }
@@ -508,42 +749,47 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             if (camera.GetProjectionType() == SceneCamera::ProjectionType::Orhtographic)
             {
                 f32 orthoSize = camera.GetOrthographicSize();
-                if (ImGui::DragFloat("Size", &orthoSize))
+                PropertyLabel("Size");
+                if (ImGui::DragFloat("##Size", &orthoSize))
                 {
                     camera.SetOrthographicSize(orthoSize);
                 }
                 f32 orthoNear = camera.GetOrthographicNearClip();
-                if (ImGui::DragFloat("Near", &orthoNear))
+                PropertyLabel("Near");
+                if (ImGui::DragFloat("##Near", &orthoNear))
                 {
                     camera.SetOrthoGraphicNearClip(orthoNear);
                 }
                 f32 orthoFar = camera.GetOrthographicFarClip();
-                if (ImGui::DragFloat("Far", &orthoFar))
+                PropertyLabel("Far");
+                if (ImGui::DragFloat("##Far", &orthoFar))
                 {
                     camera.SetOrthoGraphicFarClip(orthoFar);
                 }
-                ImGui::Checkbox("Fixed aspect ratio", &components.FixedAspectRatio);
+                PropertyLabel("Fixed Aspect Ratio");
+                ImGui::Checkbox("##Fixed aspect ratio", &components.FixedAspectRatio);
             }
         });
     ::UHE::DrawComponents<SpriteRendererComponent>(
         "Sprite Renderer", entity,
         [](SpriteRendererComponent& src)
         {
-            ImGui::ColorEdit4("Color", glm::value_ptr(src.Color));
+            PropertyLabel("Color");
+            ImGui::ColorEdit4("##Color", glm::value_ptr(src.Color));
+
             char texBuf[256];
             memset(texBuf, 0, sizeof(texBuf));
             strncpy(texBuf, src.TexturePath.c_str(), sizeof(texBuf) - 1);
             texBuf[sizeof(texBuf) - 1] = '\0';
-            float inputWidth = ImGui::GetContentRegionAvail().x - 70.0f - ImGui::CalcTextSize("Texture").x - 10.0f;
-            ImGui::PushItemWidth(inputWidth > 10.0f ? inputWidth : 10.0f);
+            PropertyLabel("Texture Path");
+            ImGui::SetNextItemWidth(PathFieldWidth(kBrowseButtonWidth, 1));
             if (ImGui::InputText("##TextureInput", texBuf, sizeof(texBuf)))
             {
                 src.TexturePath = std::string(texBuf);
                 src.Texture = nullptr;
             }
-            ImGui::PopItemWidth();
             ImGui::SameLine();
-            if (ImGui::Button("Browse##Tex", ImVec2(60, 0)))
+            if (ImGui::Button("Browse##Tex", ImVec2(kBrowseButtonWidth, 0)))
             {
                 std::string path = FileDialogs::OpenFile("Image (*.png;*.jpg)\0*.png;*.jpg\0");
                 if (!path.empty())
@@ -553,7 +799,7 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                 }
             }
 
-            ImGui::Spacing();
+            PropertyLabel("Texture", "Drop a .png or .jpg from the Content Browser here.");
             if (src.Texture)
             {
                 ImGui::Image((ImTextureID)(intptr_t)src.Texture->GetImGuiTextureID(), ImVec2(100.0f, 100.0f),
@@ -561,7 +807,7 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             }
             else
             {
-                ImGui::Button("Drop Texture Here", ImVec2(100.0f, 100.0f));
+                ImGui::Button("Drop Texture Here", ImVec2(-FLT_MIN, kDropZoneHeight));
             }
 
             if (ImGui::BeginDragDropTarget())
@@ -592,15 +838,18 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                 ImGui::EndDragDropTarget();
             }
 
-            ImGui::SameLine();
-            ImGui::Text("Texture");
-            ImGui::DragFloat("Tiling", &src.TilingFactor, 0.1f, 0.0f, 100.0f);
-            ImGui::Checkbox("Use SubTexture", &src.UseSubTexture);
+            PropertyLabel("Tiling");
+            ImGui::DragFloat("##Tiling", &src.TilingFactor, 0.1f, 0.0f, 100.0f);
+            PropertyLabel("Use SubTexture");
+            ImGui::Checkbox("##Use SubTexture", &src.UseSubTexture);
             if (src.UseSubTexture)
             {
-                ImGui::DragFloat2("Coords", glm::value_ptr(src.SubTextureCoords), 1.0f);
-                ImGui::DragFloat2("Cell Size", glm::value_ptr(src.SubTextureCellSize), 1.0f);
-                ImGui::DragFloat2("Sprite Size", glm::value_ptr(src.SubTextureSpriteSize), 1.0f);
+                PropertyLabel("Coords");
+                ImGui::DragFloat2("##Coords", glm::value_ptr(src.SubTextureCoords), 1.0f);
+                PropertyLabel("Cell Size");
+                ImGui::DragFloat2("##Cell Size", glm::value_ptr(src.SubTextureCellSize), 1.0f);
+                PropertyLabel("Sprite Size");
+                ImGui::DragFloat2("##Sprite Size", glm::value_ptr(src.SubTextureSpriteSize), 1.0f);
                 if (src.Texture)
                 {
                     float texWidth = static_cast<float>(src.Texture->GetWidth());
@@ -611,17 +860,15 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                     glm::vec2 max = {
                         ((src.SubTextureCoords.x + src.SubTextureSpriteSize.x) * src.SubTextureCellSize.x) / texWidth,
                         ((src.SubTextureCoords.y + src.SubTextureSpriteSize.y) * src.SubTextureCellSize.y) / texHeight};
+                    PropertyLabel("SubTexture Preview");
                     ImGui::Image((ImTextureID)src.Texture->GetImGuiTextureID(), ImVec2(64, 64), ImVec2(min.x, max.y),
                                  ImVec2(max.x, min.y));
-                    ImGui::SameLine();
-                    ImGui::Text("SubTexture Preview");
                 }
             }
             else if (src.Texture)
             {
+                PropertyLabel("Texture Preview");
                 ImGui::Image((ImTextureID)src.Texture->GetImGuiTextureID(), ImVec2(64, 64), ImVec2(0, 1), ImVec2(1, 0));
-                ImGui::SameLine();
-                ImGui::Text("Texture Preview");
             }
         });
     ::UHE::DrawComponents<SpriteAnimationComponent>(
@@ -632,16 +879,15 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             memset(sheetBuf, 0, sizeof(sheetBuf));
             strncpy(sheetBuf, animComp.SpriteSheetPath.c_str(), sizeof(sheetBuf) - 1);
             sheetBuf[sizeof(sheetBuf) - 1] = '\0';
-            ImGui::Text("SpriteSheet");
+            PropertyLabel("SpriteSheet");
+            ImGui::SetNextItemWidth(PathFieldWidth(kBrowseButtonWidth, 1));
             if (ImGui::InputText("##SpritesheetInput", sheetBuf, sizeof(sheetBuf)))
             {
                 animComp.SpriteSheetPath = std::string(sheetBuf);
                 animComp.Animation.SpriteSheet = nullptr;
             }
-
-            ImGui::PopItemWidth();
             ImGui::SameLine();
-            if (ImGui::Button("Browse##Anim", ImVec2(60, 0)))
+            if (ImGui::Button("Browse##Anim", ImVec2(kBrowseButtonWidth, 0)))
             {
                 std::string path = FileDialogs::OpenFile("Image (*.png;*.jpg)\0*.png;*.jpg\0");
                 if (!path.empty())
@@ -651,18 +897,16 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                 }
             }
 
-            ImGui::Spacing();
             // Spritesheet preview
+            PropertyLabel("Atlas Preview", "Drop a .png or .jpg from the Content Browser here.");
             if (animComp.Animation.SpriteSheet)
             {
                 ImGui::Image((ImTextureID)(intptr_t)animComp.Animation.SpriteSheet->GetImGuiTextureID(), ImVec2(64, 64),
                              ImVec2(0, 1), ImVec2(1, 0));
-                ImGui::SameLine();
-                ImGui::Text("Atlas Preview");
             }
             else
             {
-                ImGui::Button("Drop Texture Here##Anim", ImVec2(100.0f, 100.0f));
+                ImGui::Button("Drop Texture Here##Anim", ImVec2(-FLT_MIN, kDropZoneHeight));
             }
 
             if (ImGui::BeginDragDropTarget())
@@ -680,14 +924,18 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                 }
                 ImGui::EndDragDropTarget();
             }
-            ImGui::DragFloat2("Frame Size", glm::value_ptr(animComp.Animation.FrameSize), 1.0f, 1.0f, 4096.0f);
-            ImGui::DragInt("Frame Count", &animComp.Animation.FrameCount, 1, 1, 1000);
-            ImGui::DragFloat("Frame Duration", &animComp.Animation.FrameDuration, 0.01f, 0.001f, 10.0f, "%.3f s");
-            ImGui::Checkbox("Loop", &animComp.Animation.Loop);
-            ImGui::ColorEdit4("Color", glm::value_ptr(animComp.Color));
-            ImGui::Spacing();
-            ImGui::Separator();
-            ImGui::Text("Playback Controls");
+            PropertyLabel("Frame Size");
+            ImGui::DragFloat2("##Frame Size", glm::value_ptr(animComp.Animation.FrameSize), 1.0f, 1.0f, 4096.0f);
+            PropertyLabel("Frame Count");
+            ImGui::DragInt("##Frame Count", &animComp.Animation.FrameCount, 1, 1, 1000);
+            PropertyLabel("Frame Duration");
+            ImGui::DragFloat("##Frame Duration", &animComp.Animation.FrameDuration, 0.01f, 0.001f, 10.0f, "%.3f s");
+            PropertyLabel("Loop");
+            ImGui::Checkbox("##Loop", &animComp.Animation.Loop);
+            PropertyLabel("Color");
+            ImGui::ColorEdit4("##Color", glm::value_ptr(animComp.Color));
+
+            PropertyLabel("Playback");
             if (ImGui::Button(animComp.Animation.Playing ? "Pause" : "Play"))
                 animComp.Animation.Playing = !animComp.Animation.Playing;
             ImGui::SameLine();
@@ -696,7 +944,7 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                 animComp.Animation.CurrentFrameIndex = 0;
                 animComp.Animation.Timer = 0.0f;
             }
-            ImGui::Text("Frame: %d / %d", animComp.Animation.CurrentFrameIndex, animComp.Animation.FrameCount);
+            PropertyText("Frame", "%d / %d", animComp.Animation.CurrentFrameIndex, animComp.Animation.FrameCount);
         });
 
     ::UHE::DrawComponents<Model3DComponent>(
@@ -707,20 +955,20 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             memset(pathBuf, 0, sizeof(pathBuf));
             strncpy(pathBuf, mc.ModelPath.c_str(), sizeof(pathBuf) - 1);
             pathBuf[sizeof(pathBuf) - 1] = '\0';
-            float inputWidth = ImGui::GetContentRegionAvail().x - 70.0f - ImGui::CalcTextSize("Model").x - 10.0f;
-            ImGui::PushItemWidth(inputWidth > 10.0f ? inputWidth : 10.0f);
+            const float loadWidth = ImGui::CalcTextSize("Load").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+            PropertyLabel("Model");
+            ImGui::SetNextItemWidth(PathFieldWidth(loadWidth + kBrowseButtonWidth, 2));
             if (ImGui::InputText("##ModelInput", pathBuf, sizeof(pathBuf)))
             {
                 mc.ModelPath = std::string(pathBuf);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Load"))
+            if (ImGui::Button("Load", ImVec2(loadWidth, 0)))
             {
                 mc.IsLoaded = mc.ModelData->loadModel(mc.ModelPath);
             }
-            ImGui::PopItemWidth();
             ImGui::SameLine();
-            if (ImGui::Button("Browse##Model", ImVec2(60, 0)))
+            if (ImGui::Button("Browse##Model", ImVec2(kBrowseButtonWidth, 0)))
             {
                 std::string path = FileDialogs::OpenFile("GLTF/GLB (*.gltf;*.glb)\0*.gltf;*.glb\0");
                 if (!path.empty())
@@ -730,14 +978,15 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                 }
             }
 
-            ImGui::Spacing();
+            PropertyLabel("Status", "Drop a .gltf or .glb from the Content Browser here.");
             if (mc.IsLoaded)
             {
-                ImGui::Text("Model Loaded Successfully");
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextColored(EditorTheme::Success(), "Model Loaded Successfully");
             }
             else
             {
-                ImGui::Button("Drop 3D Model Here", ImVec2(100.0f, 100.0f));
+                ImGui::Button("Drop 3D Model Here", ImVec2(-FLT_MIN, kDropZoneHeight));
             }
 
             if (ImGui::BeginDragDropTarget())
@@ -773,35 +1022,46 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         "Directional Light", entity,
         [](DirectionalLightComponent& light)
         {
-            ImGui::ColorEdit3("Color", glm::value_ptr(light.Color));
-            ImGui::DragFloat("Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
-            ImGui::TextDisabled("Rotate the entity's Transform to change light direction.");
+            PropertyLabel("Color");
+            ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
+            PropertyLabel("Intensity");
+            ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
+            PropertyNote("Rotate the entity's Transform to change light direction.");
         });
 
     ::UHE::DrawComponents<PointLightComponent>("Point Light", entity,
                                                [](PointLightComponent& light)
                                                {
-                                                   ImGui::ColorEdit3("Color", glm::value_ptr(light.Color));
-                                                   ImGui::DragFloat("Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
-                                                   ImGui::DragFloat("Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
+                                                   PropertyLabel("Color");
+                                                   ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
+                                                   PropertyLabel("Intensity");
+                                                   ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f,
+                                                                    100.0f);
+                                                   PropertyLabel("Radius");
+                                                   ImGui::DragFloat("##Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
                                                });
 
     ::UHE::DrawComponents<SpotLightComponent>(
         "Spot Light", entity,
         [](SpotLightComponent& light)
         {
-            ImGui::ColorEdit3("Color", glm::value_ptr(light.Color));
-            ImGui::DragFloat("Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
-            ImGui::DragFloat("Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
+            PropertyLabel("Color");
+            ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
+            PropertyLabel("Intensity");
+            ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
+            PropertyLabel("Radius");
+            ImGui::DragFloat("##Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
             // The component stores radians (glTF KHR_lights_punctual parity); the
             // panel edits degrees like every other angle in the editor.
             float innerDeg = glm::degrees(light.InnerConeAngle);
             float outerDeg = glm::degrees(light.OuterConeAngle);
-            if (ImGui::DragFloat("Inner Cone (deg)", &innerDeg, 0.5f, 0.0f, 89.0f))
+            PropertyLabel("Inner Cone (deg)");
+            if (ImGui::DragFloat("##Inner Cone (deg)", &innerDeg, 0.5f, 0.0f, 89.0f))
                 light.InnerConeAngle = glm::radians(glm::clamp(innerDeg, 0.0f, outerDeg));
-            if (ImGui::DragFloat("Outer Cone (deg)", &outerDeg, 0.5f, 0.0f, 89.0f))
+            PropertyLabel("Outer Cone (deg)");
+            if (ImGui::DragFloat("##Outer Cone (deg)", &outerDeg, 0.5f, 0.0f, 89.0f))
                 light.OuterConeAngle = glm::radians(glm::max(outerDeg, glm::degrees(light.InnerConeAngle)));
-            ImGui::TextDisabled("Rotate the entity's Transform to aim the cone.");
+            PropertyNote("Rotate the entity's Transform to aim the cone.");
         });
 
     ::UHE::DrawComponents<AnimatorComponent>(
@@ -817,19 +1077,20 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                     auto& mc = ent.GetComponent<Model3DComponent>();
                     if (mc.IsLoaded && mc.ModelData)
                     {
-                        if (ImGui::Button("Initialize Animator"))
+                        PropertyLabel("Animator");
+                        if (ImGui::Button("Initialize Animator", ImVec2(-FLT_MIN, 0.0f)))
                         {
                             anim.Animator = CreateRef<RD3d::Animator>(mc.ModelData);
                         }
                     }
                     else
                     {
-                        ImGui::TextDisabled("Model not loaded yet.");
+                        PropertyNote("Model not loaded yet.");
                     }
                 }
                 else
                 {
-                    ImGui::TextDisabled("Requires a Model3DComponent on the entity.");
+                    PropertyNote("Requires a Model3DComponent on the entity.");
                 }
             }
 
@@ -840,9 +1101,10 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                 {
                     const auto& animations = model->GetAnimations();
 
-                    if (ImGui::BeginCombo("Animation", anim.CurrentAnimationName.empty()
-                                                           ? "None"
-                                                           : anim.CurrentAnimationName.c_str()))
+                    PropertyLabel("Animation");
+                    if (ImGui::BeginCombo("##Animation", anim.CurrentAnimationName.empty()
+                                                             ? "None"
+                                                             : anim.CurrentAnimationName.c_str()))
                     {
                         for (const auto& a : animations)
                         {
@@ -861,9 +1123,7 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                         ImGui::EndCombo();
                     }
 
-                    ImGui::Spacing();
-                    ImGui::Separator();
-                    ImGui::Text("Playback Controls");
+                    PropertyLabel("Playback");
                     if (ImGui::Button(anim.IsPlaying ? "Pause" : "Play"))
                     {
                         anim.IsPlaying = !anim.IsPlaying;
@@ -876,23 +1136,29 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                         anim.IsPlaying = true;
                     }
 
-                    ImGui::DragFloat("Playback Speed", &anim.PlaybackSpeed, 0.1f, 0.0f, 5.0f);
+                    PropertyLabel("Playback Speed");
+                    ImGui::DragFloat("##Playback Speed", &anim.PlaybackSpeed, 0.1f, 0.0f, 5.0f);
 
                     // Issue #41: loop mode, direction, blending and skin selection.
                     int loopMode = static_cast<int>(anim.LoopMode);
                     const char* loopNames[] = {"None", "Loop", "PingPong"};
-                    if (ImGui::Combo("Loop Mode", &loopMode, loopNames, 3))
+                    PropertyLabel("Loop Mode");
+                    if (ImGui::Combo("##Loop Mode", &loopMode, loopNames, 3))
                     {
                         anim.LoopMode = static_cast<RD3d::LoopMode>(loopMode);
                     }
-                    ImGui::Checkbox("Reverse", &anim.Reverse);
-                    ImGui::Checkbox("Root Motion", &anim.RootMotion);
-                    ImGui::DragFloat("Cross Fade", &anim.CrossFadeDuration, 0.05f, 0.05f, 5.0f, "%.2fs");
+                    PropertyLabel("Reverse");
+                    ImGui::Checkbox("##Reverse", &anim.Reverse);
+                    PropertyLabel("Root Motion");
+                    ImGui::Checkbox("##Root Motion", &anim.RootMotion);
+                    PropertyLabel("Cross Fade");
+                    ImGui::DragFloat("##Cross Fade", &anim.CrossFadeDuration, 0.05f, 0.05f, 5.0f, "%.2fs");
 
                     if (model->GetSkinCount() > 0)
                     {
                         int skin = anim.SkinIndex;
-                        if (ImGui::SliderInt("Skin", &skin, 0, static_cast<int>(model->GetSkinCount()) - 1))
+                        PropertyLabel("Skin");
+                        if (ImGui::SliderInt("##Skin", &skin, 0, static_cast<int>(model->GetSkinCount()) - 1))
                         {
                             anim.SkinIndex = skin;
                             anim.Animator->SetSkin(skin);
@@ -904,7 +1170,8 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                     if (duration > 0.0f)
                     {
                         float t = anim.Animator->GetCurrentTime();
-                        ImGui::SliderFloat("Timeline", &t, 0.0f, duration, "%.2fs");
+                        PropertyLabel("Timeline");
+                        ImGui::SliderFloat("##Timeline", &t, 0.0f, duration, "%.2fs");
                         if (ImGui::IsItemEdited())
                         {
                             anim.Animator->Seek(t);
@@ -913,7 +1180,7 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                 }
                 else
                 {
-                    ImGui::TextDisabled("Model has no animations.");
+                    PropertyNote("Model has no animations.");
                 }
             }
         });
@@ -922,29 +1189,41 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         "Audio Source", entity,
         [](AudioSourceComponent& audio)
         {
-            ImGui::InputText("Sound", &audio.SoundPath);
+            PropertyLabel("Sound");
+            ImGui::InputText("##Sound", &audio.SoundPath);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Project-relative path, e.g. Assets/Audio/engine.wav");
 
-            ImGui::DragFloat("Volume", &audio.Volume, 0.01f, 0.0f, 4.0f);
-            ImGui::DragFloat("Pitch", &audio.Pitch, 0.01f, 0.05f, 4.0f);
-            ImGui::Checkbox("Loop", &audio.Loop);
-            ImGui::Checkbox("Mute", &audio.Muted);
-            ImGui::Checkbox("Autoplay (Play mode)", &audio.Autoplay);
+            PropertyLabel("Volume");
+            ImGui::DragFloat("##Volume", &audio.Volume, 0.01f, 0.0f, 4.0f);
+            PropertyLabel("Pitch");
+            ImGui::DragFloat("##Pitch", &audio.Pitch, 0.01f, 0.05f, 4.0f);
+            PropertyLabel("Loop");
+            ImGui::Checkbox("##Loop", &audio.Loop);
+            PropertyLabel("Mute");
+            ImGui::Checkbox("##Mute", &audio.Muted);
+            PropertyLabel("Autoplay", "Starts playing when Play mode begins.");
+            ImGui::Checkbox("##Autoplay (Play mode)", &audio.Autoplay);
 
-            ImGui::Checkbox("Spatial 3D", &audio.Spatial);
+            PropertyLabel("Spatial 3D");
+            ImGui::Checkbox("##Spatial 3D", &audio.Spatial);
             if (audio.Spatial)
             {
-                ImGui::DragFloat("Min Distance", &audio.MinDistance, 0.05f, 0.0f, 10000.0f);
-                ImGui::DragFloat("Max Distance", &audio.MaxDistance, 0.5f, 0.0f, 100000.0f);
-                ImGui::DragFloat("Rolloff", &audio.Rolloff, 0.01f, 0.0f, 4.0f);
-                ImGui::TextDisabled("Position follows the entity transform.");
+                PropertyLabel("Min Distance");
+                ImGui::DragFloat("##Min Distance", &audio.MinDistance, 0.05f, 0.0f, 10000.0f);
+                PropertyLabel("Max Distance");
+                ImGui::DragFloat("##Max Distance", &audio.MaxDistance, 0.5f, 0.0f, 100000.0f);
+                PropertyLabel("Rolloff");
+                ImGui::DragFloat("##Rolloff", &audio.Rolloff, 0.01f, 0.0f, 4.0f);
+                PropertyNote("Position follows the entity transform.");
             }
             else
             {
-                ImGui::SliderFloat("Pan", &audio.Pan, -1.0f, 1.0f);
+                PropertyLabel("Pan");
+                ImGui::SliderFloat("##Pan", &audio.Pan, -1.0f, 1.0f);
             }
 
+            PropertyLabel("Preview");
             if (ImGui::Button("Play"))
             {
                 audio.PlayRequested = true;
