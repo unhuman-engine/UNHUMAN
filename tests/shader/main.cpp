@@ -426,6 +426,13 @@ int main(int argc, char** argv)
         check(corrupt != nullptr && !corrupt->FromArtifact, "an artifact that is not SPIR-V is recompiled");
         check(bothStagesValid(corrupt), "and the recompile replaces it with valid stages");
 
+        // Shipped: an exported game carries the artifacts and not the sources.
+        // A missing source must count as older than its artifacts, not newer.
+        std::filesystem::remove(source, ec);
+        const UHE::ShaderCache::Shader* shipped = freshLoad();
+        check(shipped != nullptr && shipped->FromArtifact && bothStagesValid(shipped),
+              "artifacts load without their source (a shipped build)");
+
         library.Clear();
         std::filesystem::remove_all(tempDir, ec);
     }
