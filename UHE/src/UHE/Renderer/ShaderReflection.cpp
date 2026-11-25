@@ -769,7 +769,8 @@ ShaderReflection ReflectSPIRV(const void* data, std::size_t size)
     {
         if (reader.Functions.count(candidate.Function) == 0)
         {
-            reflection.Error = "malformed SPIR-V: entry point '" + candidate.Name + "' has no function body (truncated)";
+            reflection.Error =
+                "malformed SPIR-V: entry point '" + candidate.Name + "' has no function body (truncated)";
             return reflection;
         }
     }
