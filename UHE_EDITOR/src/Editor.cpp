@@ -9,6 +9,7 @@
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 #include <string>
+#include <utility>
 #include <vector>
 #include "EditorTheme.h"
 #include "EditorUI.h"
@@ -25,6 +26,7 @@
 #include "UHE/RHI/RHITexture.h"
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Renderer3D/SceneRenderer.h"
 #include "UHE/Scripting/ScriptEngine.h"
 
 ImVec2 m_ViewportPos;
@@ -41,6 +43,9 @@ Editor::Editor()
 void Editor::OnAttach()
 {
     EditorTheme::LoadSelected(); // pick up the persisted theme before first frame
+    // Window mode, size and VSync before the first frame, so it opens as it was left.
+    m_DisplaySettings.Load();
+    m_DisplaySettings.ApplyAll(Application::Get().GetWindow());
 
     // Shader and script edits show up without a restart while the editor is open;
     // a game build leaves this off, since it ships no sources to watch.
@@ -147,6 +152,8 @@ void Editor::OnAttach()
 
 void Editor::OnDetach()
 {
+    m_DisplaySettings.CaptureWindowSize(Application::Get().GetWindow());
+    m_DisplaySettings.Save();
     UnregisterConsoleEntries();
 }
 
@@ -215,13 +222,16 @@ void Editor::UnregisterConsoleEntries()
 void Editor::OnUpdate(UHE::Timestep ts)
 {
     UHE_PROFILE_FUNCTION();
+    // Before this frame's UI: a window mode switch resizes the framebuffer.
+    m_DisplaySettings.ApplyPending(Application::Get().GetWindow());
     m_Notifications.Update(ts.GetSeconds());
     m_SecondsSinceTransformPush += ts.GetSeconds();
     m_CameraController.OnUpdate(ts);
-    // The scene targets follow the viewport panel: the frame graph creates
-    // them at this size, so a resize is a new size here and nothing else.
-    const u32 sceneWidth = std::clamp(static_cast<u32>(m_ViewPortSize.x), 1u, kMaxSceneSize);
-    const u32 sceneHeight = std::clamp(static_cast<u32>(m_ViewPortSize.y), 1u, kMaxSceneSize);
+    // The scene targets follow the viewport panel times the render scale: the
+    // frame graph creates them at this size, so a resize or a new scale is a
+    // new size here and nothing else. The panel still shows them at its size.
+    const u32 sceneWidth = m_DisplaySettings.ScaledSize(m_ViewPortSize.x, kMaxSceneSize);
+    const u32 sceneHeight = m_DisplaySettings.ScaledSize(m_ViewPortSize.y, kMaxSceneSize);
     if (m_ViewPortSize.x > 0.0f && m_ViewPortSize.y > 0.0f &&
         (sceneWidth != m_SceneWidth || sceneHeight != m_SceneHeight))
     {
@@ -319,42 +329,47 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
 {
     using namespace RHI;
     FrameGraph* graph = Renderer::GetDevice().GetFrameGraph();
-    if (graph == nullptr)
+    if (graph == nullptr || !m_ActiveScene)
         return;
 
     const u32 width = m_SceneWidth;
     const u32 height = m_SceneHeight;
     if (width == 0 || height == 0)
         return; // the viewport has not been laid out yet
+    m_SceneTime += ts.GetSeconds();
 
-    // All three targets are the graph's: it allocates them at this size and
-    // retires the old size after a resize. Depth lives only inside the pass.
-    struct SceneTargets
+    // Every target is the graph's: it allocates them at this size and retires
+    // the old size after a resize.
+    SceneRenderer::Desc desc;
+    desc.Width = width;
+    desc.Height = height;
+    desc.SceneData = m_ActiveScene.get();
+    desc.Runtime = runtime;
+    desc.Lit = m_ViewMode == Renderer3D::ViewMode::Lit;
+    desc.Time = m_SceneTime;
+    // Editing clears to a neutral grey, like Blender's and Godot's viewports,
+    // so the grid and dark objects read; the running game keeps its own black.
+    desc.ClearColor =
+        runtime ? std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f} : std::array<float, 4>{0.038f, 0.040f, 0.046f, 1.0f};
+    desc.ColorName = kSceneColor;
+    desc.EntityName = kSceneEntity;
+    desc.ResolveView = [this, runtime]()
     {
-        FGHandle<FGTexture> Color, Entity, Depth;
-    };
-    const SceneTargets& scene = graph->AddPass<SceneTargets>(
-        "Editor.Scene",
-        [&](FGBuilder& builder, SceneTargets& targets)
+        if (runtime)
         {
-            // Editing clears to a neutral grey, like Blender's and Godot's
-            // viewports, so the grid and dark objects read; the running game
-            // keeps its own black.
-            FGAttachment background;
-            background.ClearColor = runtime ? std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}
-                                            : std::array<float, 4>{0.038f, 0.040f, 0.046f, 1.0f};
-            targets.Color = builder.Write(builder.Create(kSceneColor, {width, height, TextureFormat::RGBA8_SRGB}),
-                                          FGWrite::RenderTarget, background);
-            // Entity IDs clear to -1: "no entity" under the cursor.
-            FGAttachment noEntity;
-            noEntity.ClearColor = {-1.0f, -1.0f, -1.0f, -1.0f};
-            targets.Entity = builder.Write(builder.Create(kSceneEntity, {width, height, TextureFormat::R32_SINT}),
-                                           FGWrite::RenderTarget, noEntity);
-            targets.Depth =
-                builder.Write(builder.Create("Editor.Scene.Depth", {width, height, TextureFormat::D24_UNORM_S8}),
-                              FGWrite::DepthTarget);
-        },
-        [this, ts, runtime](const SceneTargets&, FGContext& context) { RecordSceneGraphPass(context, ts, runtime); });
+            if (std::optional<SceneRenderView> view = m_ActiveScene->GetPrimaryCameraView())
+                return *view;
+        }
+        SceneRenderView view;
+        view.View = m_EditorCamera.GetViewMatrix();
+        view.Projection = m_EditorCamera.GetProjection();
+        view.Position = m_EditorCamera.GetPosition();
+        return view;
+    };
+    desc.DrawScene = [this, ts, runtime](FGContext& context) { RecordSceneGraphPass(context, ts, runtime); };
+    const SceneRenderer::Output scene = SceneRenderer::AddPasses(*graph, desc);
+    if (!scene.Color.IsValid())
+        return;
 
     // Read after the frame: the viewport panel samples the colour, and
     // picking copies one pixel out of the entity IDs.
@@ -366,10 +381,6 @@ void Editor::RecordSceneGraphPass(RHI::FGContext& context, Timestep ts, bool run
 {
     if (context.Width() == 0 || context.Height() == 0)
         return;
-
-    RHI::RHICommandBuffer& cmd = context.Cmd();
-    cmd.SetViewport(0.0f, 0.0f, static_cast<f32>(context.Width()), static_cast<f32>(context.Height()));
-    cmd.SetScissor(0, 0, context.Width(), context.Height());
 
     // The shading mode is the viewport's, not the scene's: set for this pass
     // only, so nothing else that renders models inherits it.
@@ -1409,6 +1420,11 @@ namespace
         ImGui::DockBuilderDockWindow("Scene Hierarchy", leftTop);
         ImGui::DockBuilderDockWindow("Settings", leftBottom);
         ImGui::DockBuilderDockWindow("Properties", inspector);
+        ImGui::DockBuilderDockWindow("Environment", inspector);
+        // A new tab bar selects its last tab; Properties is the one to see first.
+        // The ID is ImGuiWindow::TabId, GetID("#TAB") seeded with the window's ID.
+        if (ImGuiDockNode* inspectorNode = ImGui::DockBuilderGetNode(inspector))
+            inspectorNode->SelectedTabId = ImHashStr("#TAB", 0, ImHashStr("Properties"));
         ImGui::DockBuilderDockWindow("Viewport", centerTop);
         ImGui::DockBuilderDockWindow("Content Browser", bottomLeft);
         ImGui::DockBuilderDockWindow("Console", bottomRight);
@@ -1495,6 +1511,11 @@ void Editor::OnImGuiRender()
     if (m_ShowHierarchy || m_ShowInspector)
         m_SceneHireacyPanel.OnImGuiRender(m_ShowHierarchy, m_ShowInspector);
     m_SceneHireacyPanel.ApplyQueuedMutations(); // Issue #17: apply tree edits outside registry iteration
+
+    // Set every frame, like the Scripts panel: play, stop, new and open all replace the active scene.
+    m_EnvironmentPanel.SetContext(m_ActiveScene);
+    if (m_ShowEnvironment)
+        m_EnvironmentPanel.OnImGuiRender(m_ShowEnvironment);
 
     if (m_ShowContentBrowser)
         m_ContentBrowserPanel.OnImGuiRender();
@@ -1600,14 +1621,18 @@ void Editor::OnImGuiRender()
 
     if (mouseX >= 0 && mouseY >= 0 && mouseX < (int)viewportSize.x && mouseY < (int)viewportSize.y)
     {
+        // The entity IDs are the scene's size (panel times render scale) and
+        // the image is stretched over the panel: scale the cursor the same way.
+        const int pixelX = static_cast<int>(mx * static_cast<f32>(m_SceneWidth) / viewportSize.x);
+        const int pixelY = static_cast<int>(my * static_cast<f32>(m_SceneHeight) / viewportSize.y);
         RHI::TextureHandle entityIds = Renderer::GetDevice().GetExportedTexture(kSceneEntity);
-        if (m_FramesSinceResize > 1 && entityIds != nullptr && static_cast<u32>(mouseX) < m_SceneWidth &&
-            static_cast<u32>(mouseY) < m_SceneHeight)
+        if (m_FramesSinceResize > 1 && entityIds != nullptr && pixelX >= 0 && pixelY >= 0 &&
+            std::cmp_less(pixelX, m_SceneWidth) && std::cmp_less(pixelY, m_SceneHeight))
         {
             // Async: the blocking read waited on the GPU every hovered frame.
             // -1 until the first read lands, and where no entity was drawn.
             int pixelData = -1;
-            if (!Renderer::GetDevice().ReadPixelAsync(entityIds, mouseX, mouseY, &pixelData))
+            if (!Renderer::GetDevice().ReadPixelAsync(entityIds, pixelX, pixelY, &pixelData))
                 pixelData = -1;
             if (pixelData < 0)
             {
@@ -1869,6 +1894,7 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
 
     add("Toggle Hierarchy", "View", "", true, [this] { m_ShowHierarchy = !m_ShowHierarchy; });
     add("Toggle Inspector", "View", "", true, [this] { m_ShowInspector = !m_ShowInspector; });
+    add("Toggle Environment", "View", "", true, [this] { m_ShowEnvironment = !m_ShowEnvironment; });
     add("Toggle Content Browser", "View", "", true, [this] { m_ShowContentBrowser = !m_ShowContentBrowser; });
     add("Toggle Console", "View", "", true, [this] { m_ShowConsole = !m_ShowConsole; });
     add("Toggle Profiler", "View", "", true, [this] { m_ShowProfiler = !m_ShowProfiler; });
@@ -2015,6 +2041,13 @@ void Editor::DrawMainMenuBar()
             CreateEntityFromMenu("Point Light", 5);
         if (ImGui::MenuItem("Spot Light"))
             CreateEntityFromMenu("Spot Light", 6);
+        if (ImGui::MenuItem("Area Light"))
+            CreateEntityFromMenu("Area Light", 7);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Water"))
+            CreateEntityFromMenu("Water", 8);
+        if (ImGui::MenuItem("Wind"))
+            CreateEntityFromMenu("Wind", 9);
         ImGui::EndDisabled();
         ImGui::EndMenu();
     }
@@ -2023,6 +2056,7 @@ void Editor::DrawMainMenuBar()
     {
         EditorUI::ToggleMenuItem("Hierarchy", &m_ShowHierarchy);
         EditorUI::ToggleMenuItem("Inspector", &m_ShowInspector);
+        EditorUI::ToggleMenuItem("Environment", &m_ShowEnvironment);
         EditorUI::ToggleMenuItem("Content Browser", &m_ShowContentBrowser);
         EditorUI::ToggleMenuItem("Console", &m_ShowConsole);
         EditorUI::ToggleMenuItem("Profiler", &m_ShowProfiler);
@@ -2426,6 +2460,11 @@ void Editor::DrawPreferencesContent()
     if (ImGui::Button("Focus Selected (F)"))
         FocusSelectedEntity();
 
+    EditorUI::SectionHeader("Display");
+    m_DisplaySettings.Draw(Application::Get().GetWindow());
+    if (m_SceneWidth > 0 && m_SceneHeight > 0)
+        ImGui::TextDisabled("Viewport renders at %u x %u", m_SceneWidth, m_SceneHeight);
+
     EditorUI::SectionHeader("Appearance");
     const char* themeLabel = EditorTheme::GetName(EditorTheme::GetSelected());
     if (ImGui::BeginCombo("Theme", themeLabel))
@@ -2574,6 +2613,24 @@ void Editor::CreateEntityFromMenu(const char* name, int componentKind)
         case 4: entity.AddComponent<DirectionalLightComponent>(); break;
         case 5: entity.AddComponent<PointLightComponent>(); break;
         case 6: entity.AddComponent<SpotLightComponent>(); break;
+        case 7:
+        {
+            // The panel shines along local -Z; tilted to face down from 3 m it lights the ground as soon as it exists.
+            entity.AddComponent<AreaLightComponent>();
+            auto& transform = entity.GetComponent<TransformComponent>();
+            transform.Translation = glm::vec3(0.0f, 3.0f, 0.0f);
+            transform.Rotation.x = glm::radians(-90.0f);
+            break;
+        }
+        // Water stays at the origin, where CreateEntity puts it.
+        case 8:
+            entity.AddComponent<WaterComponent>();
+            break;
+        case 9:
+            // Raised off the ground so its viewport gizmo is not buried in the floor.
+            entity.AddComponent<WindComponent>();
+            entity.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, 2.0f, 0.0f);
+            break;
         default: break;
     }
     m_SceneHireacyPanel.SetSelectedEntity(entity);

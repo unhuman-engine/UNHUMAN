@@ -444,3 +444,4 @@ imgui.ini
 # NOTE: imgui.ini is tracked in git today, so the ignore line above is a no-op.
 # Decide: `git rm --cached imgui.ini` (untrack it) or drop the line. See docs/ROADMAP.md (M0).
 
+editor_display.ini

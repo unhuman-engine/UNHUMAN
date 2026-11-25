@@ -366,6 +366,22 @@ template <typename Component> static void DrawBodyTypeProperty(Component& compon
     }
 }
 
+/**
+ * @brief One Add Component entry, adding \p T to \p entity when clicked.
+ *
+ * Greyed out rather than hidden once the entity has \p T: adding a component
+ * twice trips entt's "Slot not available" assert and aborts the editor, and a
+ * disabled entry still shows the component exists.
+ */
+template <typename T> static void AddComponentMenuItem(Entity entity, const char* label)
+{
+    if (ImGui::MenuItem(label, nullptr, false, !entity.HasComponent<T>()))
+    {
+        entity.AddComponent<T>();
+        ImGui::CloseCurrentPopup();
+    }
+}
+
 /// @brief Width left for a path field once \p buttonsWidth of buttons share its line.
 static float PathFieldWidth(float buttonsWidth, int buttonCount)
 {
@@ -424,94 +440,52 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         EditorUI::SearchField("##AddComponentSearch", addFilter, sizeof(addFilter), "Search components...", 260.0f);
         ImGui::Separator();
 
-        if (match("Camera") && ImGui::MenuItem("Camera"))
-        {
-            m_SelectionContext.AddComponent<CameraComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Sprite Renderer") && ImGui::MenuItem("Sprite Renderer"))
-        {
-            m_SelectionContext.AddComponent<SpriteRendererComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Text Node") && ImGui::MenuItem("Text Node"))
-        {
-            m_SelectionContext.AddComponent<TextComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Sprite Animation") && ImGui::MenuItem("Sprite Animation"))
-        {
-            m_SelectionContext.AddComponent<SpriteAnimationComponent>();
-            ImGui::CloseCurrentPopup();
-        }
+        if (match("Camera"))
+            AddComponentMenuItem<CameraComponent>(m_SelectionContext, "Camera");
+        if (match("Sprite Renderer"))
+            AddComponentMenuItem<SpriteRendererComponent>(m_SelectionContext, "Sprite Renderer");
+        if (match("Text Node"))
+            AddComponentMenuItem<TextComponent>(m_SelectionContext, "Text Node");
+        if (match("Sprite Animation"))
+            AddComponentMenuItem<SpriteAnimationComponent>(m_SelectionContext, "Sprite Animation");
         ImGui::Separator();
-        if (match("Rigid Body 2D") && ImGui::MenuItem("Rigid Body 2D"))
-        {
-            m_SelectionContext.AddComponent<RigidBody2DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Box Collider 2D") && ImGui::MenuItem("Box Collider 2D"))
-        {
-            m_SelectionContext.AddComponent<BoxColliderComponent>();
-            ImGui::CloseCurrentPopup();
-        }
+        if (match("Rigid Body 2D"))
+            AddComponentMenuItem<RigidBody2DComponent>(m_SelectionContext, "Rigid Body 2D");
+        if (match("Box Collider 2D"))
+            AddComponentMenuItem<BoxColliderComponent>(m_SelectionContext, "Box Collider 2D");
         ImGui::Separator();
-        if (match("Model 3D") && ImGui::MenuItem("Model 3D"))
-        {
-            m_SelectionContext.AddComponent<Model3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Rigid Body 3D") && ImGui::MenuItem("Rigid Body 3D"))
-        {
-            m_SelectionContext.AddComponent<RigidBody3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Box Collider 3D") && ImGui::MenuItem("Box Collider 3D"))
-        {
-            m_SelectionContext.AddComponent<BoxCollider3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Sphere Collider 3D") && ImGui::MenuItem("Sphere Collider 3D"))
-        {
-            m_SelectionContext.AddComponent<SphereCollider3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Capsule Collider 3D") && ImGui::MenuItem("Capsule Collider 3D"))
-        {
-            m_SelectionContext.AddComponent<CapsuleCollider3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Animator 3D") && ImGui::MenuItem("Animator 3D"))
-        {
-            m_SelectionContext.AddComponent<AnimatorComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Audio Source") && ImGui::MenuItem("Audio Source"))
-        {
-            m_SelectionContext.AddComponent<AudioSourceComponent>();
-            ImGui::CloseCurrentPopup();
-        }
+        if (match("Model 3D"))
+            AddComponentMenuItem<Model3DComponent>(m_SelectionContext, "Model 3D");
+        if (match("Rigid Body 3D"))
+            AddComponentMenuItem<RigidBody3DComponent>(m_SelectionContext, "Rigid Body 3D");
+        if (match("Box Collider 3D"))
+            AddComponentMenuItem<BoxCollider3DComponent>(m_SelectionContext, "Box Collider 3D");
+        if (match("Sphere Collider 3D"))
+            AddComponentMenuItem<SphereCollider3DComponent>(m_SelectionContext, "Sphere Collider 3D");
+        if (match("Capsule Collider 3D"))
+            AddComponentMenuItem<CapsuleCollider3DComponent>(m_SelectionContext, "Capsule Collider 3D");
+        if (match("Animator 3D"))
+            AddComponentMenuItem<AnimatorComponent>(m_SelectionContext, "Animator 3D");
+        if (match("Audio Source"))
+            AddComponentMenuItem<AudioSourceComponent>(m_SelectionContext, "Audio Source");
+        // Foliage bends a model's vertices, so it is offered only where there is a model to bend.
+        if (m_SelectionContext.HasComponent<Model3DComponent>() && match("Foliage"))
+            AddComponentMenuItem<FoliageComponent>(m_SelectionContext, "Foliage");
         ImGui::Separator();
-        if (match("Directional Light") && ImGui::MenuItem("Directional Light"))
-        {
-            m_SelectionContext.AddComponent<DirectionalLightComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Point Light") && ImGui::MenuItem("Point Light"))
-        {
-            m_SelectionContext.AddComponent<PointLightComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Script") && ImGui::MenuItem("Script (Lua)"))
-        {
-            m_SelectionContext.AddComponent<ScriptComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Spot Light") && ImGui::MenuItem("Spot Light"))
-        {
-            m_SelectionContext.AddComponent<SpotLightComponent>();
-            ImGui::CloseCurrentPopup();
-        }
+        if (match("Directional Light"))
+            AddComponentMenuItem<DirectionalLightComponent>(m_SelectionContext, "Directional Light");
+        if (match("Point Light"))
+            AddComponentMenuItem<PointLightComponent>(m_SelectionContext, "Point Light");
+        if (match("Script"))
+            AddComponentMenuItem<ScriptComponent>(m_SelectionContext, "Script (Lua)");
+        if (match("Spot Light"))
+            AddComponentMenuItem<SpotLightComponent>(m_SelectionContext, "Spot Light");
+        if (match("Area Light"))
+            AddComponentMenuItem<AreaLightComponent>(m_SelectionContext, "Area Light");
+        if (match("Water"))
+            AddComponentMenuItem<WaterComponent>(m_SelectionContext, "Water");
+        if (match("Wind"))
+            AddComponentMenuItem<WindComponent>(m_SelectionContext, "Wind");
         ImGui::EndPopup();
     }
 
@@ -1028,7 +1002,26 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
             PropertyLabel("Intensity");
             ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
+            PropertyLabel("Cast Shadows", "The first directional light with this set casts the scene's shadows. "
+                                          "Tune them in Environment > Shadows.");
+            ImGui::Checkbox("##Cast Shadows", &light.CastShadows);
             PropertyNote("Rotate the entity's Transform to change light direction.");
+        });
+
+    ::UHE::DrawComponents<FoliageComponent>(
+        "Foliage", entity,
+        [entity](FoliageComponent& foliage)
+        {
+            static constexpr const char* kWindHint = "Sways in the scene's wind; see Environment > Wind";
+            PropertyLabel("Bend", kWindHint);
+            ImGui::SliderFloat("##Bend", &foliage.Bend, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("%s", kWindHint);
+            PropertyLabel("Height", "Model-space height where the bend reaches full strength; the base stays put.");
+            ImGui::DragFloat("##Height", &foliage.Height, 0.05f, 0.1f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            UHE::Entity owner = entity;
+            if (!owner.HasComponent<Model3DComponent>())
+                PropertyNote("Requires a 3D Model on the entity.");
         });
 
     ::UHE::DrawComponents<PointLightComponent>("Point Light", entity,
@@ -1064,6 +1057,77 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             if (ImGui::DragFloat("##Outer Cone (deg)", &outerDeg, 0.5f, 0.0f, 89.0f))
                 light.OuterConeAngle = glm::radians(glm::max(outerDeg, glm::degrees(light.InnerConeAngle)));
             PropertyNote("Rotate the entity's Transform to aim the cone.");
+        });
+
+    ::UHE::DrawComponents<AreaLightComponent>(
+        "Area Light", entity,
+        [](AreaLightComponent& light)
+        {
+            PropertyLabel("Color");
+            ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
+            PropertyLabel("Intensity");
+            ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            // A zero-area panel has no form factor, so the size stops short of 0.
+            PropertyLabel("Width", "Panel size along the entity's local X.");
+            ImGui::DragFloat("##Width", &light.Width, 0.05f, 0.01f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Height", "Panel size along the entity's local Y.");
+            ImGui::DragFloat("##Height", &light.Height, 0.05f, 0.01f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Range", "Distance at which the light fades out.");
+            ImGui::DragFloat("##Range", &light.Range, 0.1f, 0.1f, 200.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Two Sided", "Also light the side behind the panel.");
+            ImGui::Checkbox("##Two Sided", &light.TwoSided);
+            PropertyNote("Shines along the entity's local -Z; rotate the Transform to aim the panel.");
+        });
+
+    ::UHE::DrawComponents<WaterComponent>(
+        "Water", entity,
+        [](WaterComponent& water)
+        {
+            PropertyLabel("Size", "Extent on the entity's local X and Z, in metres.");
+            ImGui::DragFloat2("##Size", glm::value_ptr(water.Size), 0.1f, 0.1f, 10000.0f, "%.1f",
+                              ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Resolution", "Grid cells per side: vertex detail of the waves.");
+            ImGui::DragInt("##Resolution", &water.Resolution, 1.0f, 8, 512, "%d", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Shallow Color");
+            ImGui::ColorEdit3("##Shallow Color", glm::value_ptr(water.ShallowColor));
+            PropertyLabel("Deep Color");
+            ImGui::ColorEdit3("##Deep Color", glm::value_ptr(water.DeepColor));
+            PropertyLabel("Clarity", "Metres of water before the bottom fades into the deep colour.");
+            ImGui::DragFloat("##Clarity", &water.Clarity, 0.05f, 0.1f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Wave Height", "Amplitude of the largest wave, in metres.");
+            ImGui::DragFloat("##Wave Height", &water.WaveHeight, 0.01f, 0.0f, 3.0f, "%.2f",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Wave Length", "Wavelength of the largest wave, in metres.");
+            ImGui::DragFloat("##Wave Length", &water.WaveLength, 0.1f, 0.5f, 100.0f, "%.1f",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Wave Speed", "Multiplies the physical (deep water) wave speed.");
+            ImGui::DragFloat("##Wave Speed", &water.WaveSpeed, 0.01f, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Choppiness", "0 = rolling swell, 1 = sharp crests.");
+            ImGui::SliderFloat("##Choppiness", &water.Choppiness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Follow Wind", "Waves travel with the scene's wind; see Environment > Wind.");
+            ImGui::Checkbox("##Follow Wind", &water.FollowWind);
+            // The wind supplies the direction while followed, so the field is shown but not editable.
+            PropertyLabel("Direction (deg)", "Travel direction on the ground plane, used when not following the wind.");
+            ImGui::BeginDisabled(water.FollowWind);
+            ImGui::SliderFloat("##Direction (deg)", &water.Direction, 0.0f, 360.0f, "%.0f",
+                               ImGuiSliderFlags_AlwaysClamp);
+            ImGui::EndDisabled();
+            PropertyLabel("Foam", "Shoreline and crest foam.");
+            ImGui::SliderFloat("##Foam", &water.Foam, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        });
+
+    ::UHE::DrawComponents<WindComponent>(
+        "Wind", entity,
+        [](WindComponent& wind)
+        {
+            PropertyLabel("Strength", "Steady wind.");
+            ImGui::SliderFloat("##Strength", &wind.Strength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Gust Strength", "Extra wind that comes and goes.");
+            ImGui::SliderFloat("##Gust Strength", &wind.GustStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Gust Frequency", "Gusts per second.");
+            ImGui::SliderFloat("##Gust Frequency", &wind.GustFrequency, 0.0f, 2.0f, "%.2f",
+                               ImGuiSliderFlags_AlwaysClamp);
+            PropertyNote("Direction: the entity's forward axis (rotate it).");
         });
 
     ::UHE::DrawComponents<AnimatorComponent>(

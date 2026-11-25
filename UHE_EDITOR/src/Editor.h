@@ -4,10 +4,12 @@
 #include <string>
 #include <vector>
 #include "CommandPalette.h"
+#include "EditorDisplaySettings.h"
 #include "Notifications.h"
 #include "Panel/AnimationGraphPanel.h"
 #include "Panel/AudioPanel.h"
 #include "Panel/ContentBrowserPanel.h"
+#include "Panel/EnvironmentPanel.h"
 #include "Panel/ProfilerPanel.h"
 #include "Panel/ProjectLauncherPanel.h"
 #include "Panel/SceneHierachyPanel.h"
@@ -103,6 +105,8 @@ private:
     // The simulation runs in OnUpdate; the scene is drawn by a frame graph
     // pass, recorded before the ImGui pass that shows it.
     void DeclareSceneGraphPass(Timestep ts, bool runtime);
+    /// Seconds the viewport has rendered; animates wind and water.
+    float m_SceneTime = 0.0f;
     void RecordSceneGraphPass(UHE::RHI::FGContext& context, Timestep ts, bool runtime);
 
 private:
@@ -138,15 +142,18 @@ private:
     AnimationGraphPanel m_AnimationGraphPanel;
     AudioPanel m_AudioPanel;
     ContentBrowserPanel m_ContentBrowserPanel;
+    EnvironmentPanel m_EnvironmentPanel; ///< the active scene's RenderSettings, a tab beside Properties
     ProfilerPanel m_ProfilerPanel;
     ScriptsPanel m_ScriptsPanel;
     ProjectLauncherPanel m_ProjectLauncher;
     CommandPalette m_CommandPalette;
     NotificationCenter m_Notifications;
+    EditorDisplaySettings m_DisplaySettings;
     std::optional<ProjectInfo> m_Project;
     bool m_ShowLauncher = true;
-    // Scene targets: created by the frame graph at the viewport's size, and
-    // exported under these names for the viewport image and picking.
+    // Scene targets: created by the frame graph at the viewport's size times
+    // the render scale, and exported under these names for the viewport image
+    // and picking.
     static constexpr const char* kSceneColor = "Editor.Scene.Color";
     static constexpr const char* kSceneEntity = "Editor.Scene.Entity";
     static constexpr u32 kMaxSceneSize = 8192;
@@ -162,6 +169,7 @@ private:
 
     bool m_ShowHierarchy = true;
     bool m_ShowInspector = true;
+    bool m_ShowEnvironment = true;
     bool m_ShowContentBrowser = true;
     bool m_ShowConsole = true;
     bool m_ShowProfiler = true;
