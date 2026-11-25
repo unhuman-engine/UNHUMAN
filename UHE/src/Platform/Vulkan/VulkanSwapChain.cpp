@@ -13,10 +13,10 @@ void VulkanSwapChain::createSwapChain(vk::raii::Device& device, vk::raii::Physic
 
     // Logged once and on a change, not on every resize.
     const vk::PresentModeKHR previousMode = presentMode;
-    const bool firstCreate = swapChainImages.empty();
     presentMode = chooseSwapPresentMode(physicalDevice.getSurfacePresentModesKHR(*surface), vsync);
-    if (firstCreate || presentMode != previousMode)
+    if (!presentModeLogged || presentMode != previousMode)
         UHE_CORE_INFO("Swapchain present mode: {0} (vsync {1})", vk::to_string(presentMode), vsync ? "on" : "off");
+    presentModeLogged = true;
 
     // Transfer-source lets RequestFrameCapture copy a presented image back
     // (golden-image tests). Only asked for where the surface offers it.

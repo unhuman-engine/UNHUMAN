@@ -53,6 +53,8 @@ private:
     std::vector<vk::raii::ImageView> swapChainImageViews;
     bool supportsTransferSrc = false;
     vk::PresentModeKHR presentMode = vk::PresentModeKHR::eFifo;
+    /// The present mode has been logged; later recreations log only a change.
+    bool presentModeLogged = false;
     vk::raii::Sampler textureSampler = nullptr;
     vk::raii::ImageView textureImageView = nullptr;
 };
