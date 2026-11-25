@@ -2,12 +2,14 @@
 
 #include <box2d/types.h>
 #include <example/stb_image.h>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include "UHE/Core/SimulationClock.h"
 #include "UHE/Core/Timestep.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer/EditorCamera.h"
+#include "UHE/Renderer3D/RenderSettings.h"
 #include "UHE/Scene/Components.h"
 #include "entt.hpp"
 class b2World;
@@ -133,6 +135,36 @@ public:
 
     Entity GetPrimaryCameraEntity();
 
+    /// @brief How this scene is rendered (environment, shadows, SSAO, bloom, wind); saved with the scene.
+    [[nodiscard]] RenderSettings& GetRenderSettings() { return m_RenderSettings; }
+    [[nodiscard]] const RenderSettings& GetRenderSettings() const { return m_RenderSettings; }
+
+    /**
+     * @brief Builds this frame's world transforms once, for every pass that draws the scene.
+     *
+     * A frame that draws the scene in several passes (shadow cascades, a depth
+     * prepass, the colour pass) has to use the same transforms in all of them:
+     * a prepass and a colour pass that disagree leave holes. The first call of
+     * a frame builds the cache (blending physics bodies in play mode, as
+     * RenderRuntimeScene does); later calls and the next RenderEditorScene or
+     * RenderRuntimeScene reuse it, and that call ends the frame.
+     */
+    void PrepareRenderFrame(bool runtime);
+
+    /// @brief The primary camera's view from the current transforms; nullopt when there is none.
+    [[nodiscard]] std::optional<SceneRenderView> GetPrimaryCameraView();
+
+    /// @brief Submits every model with the current transforms, between Renderer3D::BeginDepthPass and EndDepthPass.
+    void RenderDepth();
+
+    /// @brief The wind this frame: the first WindComponent's, or the Environment's when there is none.
+    [[nodiscard]] WindSettings GetEffectiveWind();
+
+    /// @brief Whether any entity has a WaterComponent (the renderer adds its water pass only then).
+    [[nodiscard]] bool HasWater();
+    /// @brief Submits every water surface with the current transforms, between WaterRenderer::Begin and End.
+    void RenderWater();
+
     static Ref<Scene> Copy(Ref<Scene> other);
     entt::registry& GetRegistry() { return m_registry; }
 
@@ -196,6 +228,9 @@ private:
     void UpdateAudioSources(Timestep ts, bool runtime);
     void StopAudioSources();
 
+    /// Builds the world cache with physics bodies blended between their last two ticks.
+    void BuildRuntimeRenderCache();
+
     void RenderSprites(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
     void RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
     void RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
@@ -234,6 +269,10 @@ private:
     // transforms that override TransformComponent for that build only.
     std::unordered_map<entt::entity, glm::mat4> m_RenderLocalOverride;
 
+    RenderSettings m_RenderSettings;
+    /// PrepareRenderFrame built this frame's cache; the next Render*Scene uses it and clears this.
+    bool m_RenderFramePrepared = false;
+
     Ref<Texture2D> m_DirLightIcon;
     Ref<Texture2D> m_PointLightIcon;
 
@@ -258,6 +297,10 @@ template <> UHE_API void Scene::OnComponentAdded<Model3DComponent>(Entity entity
 template <> UHE_API void Scene::OnComponentAdded<DirectionalLightComponent>(Entity entity, DirectionalLightComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<PointLightComponent>(Entity entity, PointLightComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<SpotLightComponent>(Entity entity, SpotLightComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<FoliageComponent>(Entity entity, FoliageComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<WaterComponent>(Entity entity, WaterComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<AreaLightComponent>(Entity entity, AreaLightComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<WindComponent>(Entity entity, WindComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<AnimatorComponent>(Entity entity, AnimatorComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<ModelNodeComponent>(Entity entity, ModelNodeComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<RelationshipComponent>(Entity entity, RelationshipComponent& components);

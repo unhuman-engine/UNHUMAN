@@ -10,6 +10,7 @@
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Renderer3D/SceneRenderer.h"
 #include "UHE/Scripting/ScriptEngine.h"
 #include "input.h"
 
@@ -60,6 +61,7 @@ Application::~Application()
     Audio::AudioEngine::Shutdown();
     Physics::PhysicsSystem3D::Shutdown();
     PostProcess::Shutdown();
+    SceneRenderer::Shutdown();
     Renderer3D::Shutdown();
     Renderer2D::Shutdown();
     Renderer::Shutdown();

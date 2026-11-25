@@ -26,6 +26,15 @@ public:
     /// replaced.
     static void ReloadShaders();
 
+    /**
+     * @brief Colour format of the scene pass the next batches draw into.
+     *
+     * The pass is always that colour plus the R32_SINT entity IDs. RGBA8_SRGB
+     * (the default, and what Undefined selects) is an LDR target; the editor
+     * renders its scene into RGBA16F and tonemaps afterwards.
+     */
+    static void SetColorFormat(RHI::TextureFormat format);
+
     static void BeginScene(const Camera& camera, const glm::mat4& transform);
     static void BeginScene(const EditorCamera& camera);
     static void EndScene();

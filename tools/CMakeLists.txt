@@ -14,11 +14,14 @@ set(UHE_SHADER_DIR "${CMAKE_SOURCE_DIR}/UHE_EDITOR/assets/shaders")
 # the artifact -- it is just slower the first time.
 set(UHE_SHADER_SOURCES
     "${UHE_SHADER_DIR}/Basic3D.slang"
+    "${UHE_SHADER_DIR}/Bloom.slang"
     "${UHE_SHADER_DIR}/Grid.slang"
     "${UHE_SHADER_DIR}/ImGuiSrgb.slang"
+    "${UHE_SHADER_DIR}/SSAO.slang"
     "${UHE_SHADER_DIR}/Texture.slang"
     "${UHE_SHADER_DIR}/Text.slang"
     "${UHE_SHADER_DIR}/Tonemap.slang"
+    "${UHE_SHADER_DIR}/Water.slang"
 )
 
 set(UHE_SHADER_DEPENDS ${UHE_SHADER_SOURCES} "${UHE_SHADER_DIR}/variants.txt")

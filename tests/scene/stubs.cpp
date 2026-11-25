@@ -15,6 +15,7 @@
 #include "UHE/Renderer3D/LightSystem.h"
 #include "UHE/Renderer3D/LoadModel.h"
 #include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Renderer3D/WaterRenderer.h"
 
 namespace UHE
 {
@@ -67,6 +68,8 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh&, const glm::mat4&, int, const RD3d
                             const MaterialBinding&, int, int) {}
 void Renderer3D::DrawGrid() {}
 void Renderer3D::DrawGrid(const GridOptions&) {}
+void Renderer3D::SetFoliage(float, float) {}
+void WaterRenderer::Submit(const glm::mat4&, const WaterComponent&) {}
 bool Renderer3D::IsLightingEnabled() { return false; }
 void Renderer3D::SetLightingEnabled(bool) {}
 void Renderer3D::RestartMaterialRegion() {}

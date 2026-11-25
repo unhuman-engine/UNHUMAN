@@ -303,6 +303,17 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::Key << "DirectionalLightComponent" << YAML::BeginMap;
         out << YAML::Key << "Color" << YAML::Value << dlc.Color;
         out << YAML::Key << "Intensity" << YAML::Value << dlc.Intensity;
+        out << YAML::Key << "CastShadows" << YAML::Value << dlc.CastShadows;
+        out << YAML::EndMap;
+    }
+
+    // Foliage (sways in the scene's wind)
+    if (entity.HasComponent<FoliageComponent>())
+    {
+        auto& fc = entity.GetComponent<FoliageComponent>();
+        out << YAML::Key << "FoliageComponent" << YAML::BeginMap;
+        out << YAML::Key << "Bend" << YAML::Value << fc.Bend;
+        out << YAML::Key << "Height" << YAML::Value << fc.Height;
         out << YAML::EndMap;
     }
 
@@ -327,6 +338,51 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::Key << "Radius" << YAML::Value << slc.Radius;
         out << YAML::Key << "InnerConeAngle" << YAML::Value << slc.InnerConeAngle;
         out << YAML::Key << "OuterConeAngle" << YAML::Value << slc.OuterConeAngle;
+        out << YAML::EndMap;
+    }
+
+    // AreaLight (a rectangle on the local XY plane, shining along local -Z)
+    if (entity.HasComponent<AreaLightComponent>())
+    {
+        auto& alc = entity.GetComponent<AreaLightComponent>();
+        out << YAML::Key << "AreaLightComponent" << YAML::BeginMap;
+        out << YAML::Key << "Color" << YAML::Value << alc.Color;
+        out << YAML::Key << "Intensity" << YAML::Value << alc.Intensity;
+        out << YAML::Key << "Width" << YAML::Value << alc.Width;
+        out << YAML::Key << "Height" << YAML::Value << alc.Height;
+        out << YAML::Key << "Range" << YAML::Value << alc.Range;
+        out << YAML::Key << "TwoSided" << YAML::Value << alc.TwoSided;
+        out << YAML::EndMap;
+    }
+
+    // Water (direction in degrees; colours in sRGB)
+    if (entity.HasComponent<WaterComponent>())
+    {
+        auto& wc = entity.GetComponent<WaterComponent>();
+        out << YAML::Key << "WaterComponent" << YAML::BeginMap;
+        out << YAML::Key << "Size" << YAML::Value << wc.Size;
+        out << YAML::Key << "Resolution" << YAML::Value << wc.Resolution;
+        out << YAML::Key << "ShallowColor" << YAML::Value << wc.ShallowColor;
+        out << YAML::Key << "DeepColor" << YAML::Value << wc.DeepColor;
+        out << YAML::Key << "Clarity" << YAML::Value << wc.Clarity;
+        out << YAML::Key << "WaveHeight" << YAML::Value << wc.WaveHeight;
+        out << YAML::Key << "WaveLength" << YAML::Value << wc.WaveLength;
+        out << YAML::Key << "WaveSpeed" << YAML::Value << wc.WaveSpeed;
+        out << YAML::Key << "Choppiness" << YAML::Value << wc.Choppiness;
+        out << YAML::Key << "Direction" << YAML::Value << wc.Direction;
+        out << YAML::Key << "FollowWind" << YAML::Value << wc.FollowWind;
+        out << YAML::Key << "Foam" << YAML::Value << wc.Foam;
+        out << YAML::EndMap;
+    }
+
+    // Wind zone (its direction is the entity's local -Z, so only the strengths are stored)
+    if (entity.HasComponent<WindComponent>())
+    {
+        auto& wind = entity.GetComponent<WindComponent>();
+        out << YAML::Key << "WindComponent" << YAML::BeginMap;
+        out << YAML::Key << "Strength" << YAML::Value << wind.Strength;
+        out << YAML::Key << "GustStrength" << YAML::Value << wind.GustStrength;
+        out << YAML::Key << "GustFrequency" << YAML::Value << wind.GustFrequency;
         out << YAML::EndMap;
     }
 
@@ -356,6 +412,121 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
     }
 
     out << YAML::EndMap;
+}
+
+/// @brief Writes the scene's RenderSettings as the top-level "Environment" map, one sub-map per group.
+static void SerializeRenderSettings(YAML::Emitter& out, const RenderSettings& settings)
+{
+    out << YAML::Key << "Environment" << YAML::BeginMap;
+
+    const EnvironmentSettings& env = settings.Environment;
+    out << YAML::Key << "Environment" << YAML::BeginMap;
+    out << YAML::Key << "SkyColor" << YAML::Value << env.SkyColor;
+    out << YAML::Key << "GroundColor" << YAML::Value << env.GroundColor;
+    out << YAML::Key << "AmbientIntensity" << YAML::Value << env.AmbientIntensity;
+    out << YAML::Key << "Exposure" << YAML::Value << env.Exposure;
+    out << YAML::EndMap;
+
+    const ShadowSettings& shadows = settings.Shadows;
+    out << YAML::Key << "Shadows" << YAML::BeginMap;
+    out << YAML::Key << "Enabled" << YAML::Value << shadows.Enabled;
+    out << YAML::Key << "CascadeCount" << YAML::Value << shadows.CascadeCount;
+    out << YAML::Key << "Distance" << YAML::Value << shadows.Distance;
+    out << YAML::Key << "SplitLambda" << YAML::Value << shadows.SplitLambda;
+    out << YAML::Key << "Resolution" << YAML::Value << shadows.Resolution;
+    out << YAML::Key << "DepthBias" << YAML::Value << shadows.DepthBias;
+    out << YAML::Key << "NormalBias" << YAML::Value << shadows.NormalBias;
+    out << YAML::Key << "Softness" << YAML::Value << shadows.Softness;
+    out << YAML::Key << "ShowCascades" << YAML::Value << shadows.ShowCascades;
+    out << YAML::EndMap;
+
+    const SSAOSettings& ssao = settings.SSAO;
+    out << YAML::Key << "SSAO" << YAML::BeginMap;
+    out << YAML::Key << "Enabled" << YAML::Value << ssao.Enabled;
+    out << YAML::Key << "Radius" << YAML::Value << ssao.Radius;
+    out << YAML::Key << "Intensity" << YAML::Value << ssao.Intensity;
+    out << YAML::Key << "Bias" << YAML::Value << ssao.Bias;
+    out << YAML::EndMap;
+
+    const BloomSettings& bloom = settings.Bloom;
+    out << YAML::Key << "Bloom" << YAML::BeginMap;
+    out << YAML::Key << "Enabled" << YAML::Value << bloom.Enabled;
+    out << YAML::Key << "Intensity" << YAML::Value << bloom.Intensity;
+    out << YAML::Key << "FilterRadius" << YAML::Value << bloom.FilterRadius;
+    out << YAML::EndMap;
+
+    const WindSettings& wind = settings.Wind;
+    out << YAML::Key << "Wind" << YAML::BeginMap;
+    out << YAML::Key << "Direction" << YAML::Value << wind.Direction;
+    out << YAML::Key << "Strength" << YAML::Value << wind.Strength;
+    out << YAML::Key << "GustStrength" << YAML::Value << wind.GustStrength;
+    out << YAML::Key << "GustFrequency" << YAML::Value << wind.GustFrequency;
+    out << YAML::EndMap;
+
+    out << YAML::EndMap; // Environment
+}
+
+/**
+ * @brief Reads `node[key]` into `value`, keeping the current value when the key is missing or mistyped.
+ *
+ * The Environment block is newer than most scenes, and a scene that predates a
+ * field must load with that field's default rather than fail to load at all.
+ */
+template <typename T> static void ReadOptional(const YAML::Node& node, const char* key, T& value)
+{
+    if (!node)
+        return;
+    if (const YAML::Node field = node[key])
+        value = field.as<T>(value);
+}
+
+/// @brief Reads the "Environment" map into `settings`; any missing group or field keeps its default.
+static void DeserializeRenderSettings(const YAML::Node& node, RenderSettings& settings)
+{
+    if (!node || !node.IsMap())
+        return;
+
+    const YAML::Node envNode = node["Environment"];
+    EnvironmentSettings& env = settings.Environment;
+    ReadOptional(envNode, "SkyColor", env.SkyColor);
+    ReadOptional(envNode, "GroundColor", env.GroundColor);
+    ReadOptional(envNode, "AmbientIntensity", env.AmbientIntensity);
+    ReadOptional(envNode, "Exposure", env.Exposure);
+
+    const YAML::Node shadowNode = node["Shadows"];
+    ShadowSettings& shadows = settings.Shadows;
+    ReadOptional(shadowNode, "Enabled", shadows.Enabled);
+    ReadOptional(shadowNode, "CascadeCount", shadows.CascadeCount);
+    ReadOptional(shadowNode, "Distance", shadows.Distance);
+    ReadOptional(shadowNode, "SplitLambda", shadows.SplitLambda);
+    ReadOptional(shadowNode, "Resolution", shadows.Resolution);
+    ReadOptional(shadowNode, "DepthBias", shadows.DepthBias);
+    ReadOptional(shadowNode, "NormalBias", shadows.NormalBias);
+    ReadOptional(shadowNode, "Softness", shadows.Softness);
+    ReadOptional(shadowNode, "ShowCascades", shadows.ShowCascades);
+    // These two size GPU resources, so a hand-edited file must not take them out of range.
+    shadows.CascadeCount = std::clamp(shadows.CascadeCount, 1, 4);
+    shadows.Resolution = std::clamp(shadows.Resolution, 512, 4096);
+
+    const YAML::Node ssaoNode = node["SSAO"];
+    SSAOSettings& ssao = settings.SSAO;
+    ReadOptional(ssaoNode, "Enabled", ssao.Enabled);
+    ReadOptional(ssaoNode, "Radius", ssao.Radius);
+    ReadOptional(ssaoNode, "Intensity", ssao.Intensity);
+    ReadOptional(ssaoNode, "Bias", ssao.Bias);
+
+    const YAML::Node bloomNode = node["Bloom"];
+    BloomSettings& bloom = settings.Bloom;
+    ReadOptional(bloomNode, "Enabled", bloom.Enabled);
+    ReadOptional(bloomNode, "Intensity", bloom.Intensity);
+    ReadOptional(bloomNode, "FilterRadius", bloom.FilterRadius);
+
+    const YAML::Node windNode = node["Wind"];
+    WindSettings& wind = settings.Wind;
+    ReadOptional(windNode, "Direction", wind.Direction);
+    ReadOptional(windNode, "Strength", wind.Strength);
+    ReadOptional(windNode, "GustStrength", wind.GustStrength);
+    ReadOptional(windNode, "GustFrequency", wind.GustFrequency);
 }
 
 static void SerializeEntityRecursive(YAML::Emitter& out, Entity entity, std::unordered_set<u64>& written)
@@ -390,6 +561,7 @@ void SceneSerializer::Serialize(const std::string& filepath)
 
     out << YAML::BeginMap;
     out << YAML::Key << "Scene" << YAML::Value << "Untitled";
+    SerializeRenderSettings(out, m_Scene->GetRenderSettings());
     out << YAML::Key << "Entities" << YAML::BeginSeq;
 
     // Pass 1: hierarchy order — roots first, then each root's subtree.
@@ -443,6 +615,9 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
     YAML::Node data = YAML::Load(stream);
     if (!data["Scene"])
         return false;
+
+    // Before the entity list: a scene with no entities still has its environment.
+    DeserializeRenderSettings(data["Environment"], m_Scene->GetRenderSettings());
 
     auto entities = data["Entities"];
     if (!entities)
@@ -818,6 +993,16 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             auto& dlc = entity.AddComponent<DirectionalLightComponent>();
             dlc.Color = dlcNode["Color"].as<glm::vec3>();
             dlc.Intensity = dlcNode["Intensity"].as<float>();
+            dlc.CastShadows = dlcNode["CastShadows"] ? dlcNode["CastShadows"].as<bool>() : true;
+        }
+
+        // Foliage
+        auto foliageNode = entityNode["FoliageComponent"];
+        if (foliageNode)
+        {
+            auto& fc = entity.AddComponent<FoliageComponent>();
+            fc.Bend = foliageNode["Bend"] ? foliageNode["Bend"].as<float>() : 1.0f;
+            fc.Height = foliageNode["Height"] ? foliageNode["Height"].as<float>() : 2.0f;
         }
 
         // PointLight
@@ -840,6 +1025,47 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             slc.Radius = slcNode["Radius"].as<float>();
             slc.InnerConeAngle = slcNode["InnerConeAngle"].as<float>();
             slc.OuterConeAngle = slcNode["OuterConeAngle"].as<float>();
+        }
+
+        // AreaLight: every field optional, so a scene saved before a field existed keeps its default
+        if (auto alcNode = entityNode["AreaLightComponent"])
+        {
+            auto& alc = entity.AddComponent<AreaLightComponent>();
+            ReadOptional(alcNode, "Color", alc.Color);
+            ReadOptional(alcNode, "Intensity", alc.Intensity);
+            ReadOptional(alcNode, "Width", alc.Width);
+            ReadOptional(alcNode, "Height", alc.Height);
+            ReadOptional(alcNode, "Range", alc.Range);
+            ReadOptional(alcNode, "TwoSided", alc.TwoSided);
+        }
+
+        // Water: every field optional, as for the area light
+        if (auto waterNode = entityNode["WaterComponent"])
+        {
+            auto& wc = entity.AddComponent<WaterComponent>();
+            ReadOptional(waterNode, "Size", wc.Size);
+            ReadOptional(waterNode, "Resolution", wc.Resolution);
+            ReadOptional(waterNode, "ShallowColor", wc.ShallowColor);
+            ReadOptional(waterNode, "DeepColor", wc.DeepColor);
+            ReadOptional(waterNode, "Clarity", wc.Clarity);
+            ReadOptional(waterNode, "WaveHeight", wc.WaveHeight);
+            ReadOptional(waterNode, "WaveLength", wc.WaveLength);
+            ReadOptional(waterNode, "WaveSpeed", wc.WaveSpeed);
+            ReadOptional(waterNode, "Choppiness", wc.Choppiness);
+            ReadOptional(waterNode, "Direction", wc.Direction);
+            ReadOptional(waterNode, "FollowWind", wc.FollowWind);
+            ReadOptional(waterNode, "Foam", wc.Foam);
+            // The grid is Resolution^2 cells: a hand-edited 0 or 100000 must not reach the mesh builder.
+            wc.Resolution = std::clamp(wc.Resolution, 1, 512);
+        }
+
+        // Wind zone: every field optional, as for the area light
+        if (auto windNode = entityNode["WindComponent"])
+        {
+            auto& wind = entity.AddComponent<WindComponent>();
+            ReadOptional(windNode, "Strength", wind.Strength);
+            ReadOptional(windNode, "GustStrength", wind.GustStrength);
+            ReadOptional(windNode, "GustFrequency", wind.GustFrequency);
         }
 
         // Issue #17: glTF node entity marker

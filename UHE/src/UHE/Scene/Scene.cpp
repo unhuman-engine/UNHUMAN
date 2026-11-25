@@ -13,6 +13,7 @@
 #include "UHE/Renderer3D/AnimationStateMachine.h"
 #include "UHE/Renderer3D/LightSystem.h"
 #include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Renderer3D/WaterRenderer.h"
 #include "UHE/Scripting/ScriptEngine.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -96,6 +97,7 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
     Ref<Scene> newScene = CreateRef<Scene>();
     newScene->m_ViewportWidth = other->m_ViewportWidth;
     newScene->m_ViewportHeight = other->m_ViewportHeight;
+    newScene->m_RenderSettings = other->m_RenderSettings;
 
     auto& srcRegistry = other->m_registry;
     auto& dstRegistry = newScene->m_registry;
@@ -272,10 +274,17 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
         if (srcRegistry.all_of<DirectionalLightComponent>(srcEntity))
         {
             auto& src = srcRegistry.get<DirectionalLightComponent>(srcEntity);
-            auto& dst = newEntity.AddComponent<DirectionalLightComponent>();
-            dst.Color = src.Color;
-            dst.Intensity = src.Intensity;
+            newEntity.AddComponent<DirectionalLightComponent>() = src;
         }
+
+        if (srcRegistry.all_of<FoliageComponent>(srcEntity))
+            newEntity.AddComponent<FoliageComponent>() = srcRegistry.get<FoliageComponent>(srcEntity);
+        if (srcRegistry.all_of<WindComponent>(srcEntity))
+            newEntity.AddComponent<WindComponent>() = srcRegistry.get<WindComponent>(srcEntity);
+        if (srcRegistry.all_of<AreaLightComponent>(srcEntity))
+            newEntity.AddComponent<AreaLightComponent>() = srcRegistry.get<AreaLightComponent>(srcEntity);
+        if (srcRegistry.all_of<WaterComponent>(srcEntity))
+            newEntity.AddComponent<WaterComponent>() = srcRegistry.get<WaterComponent>(srcEntity);
 
         // Copy PointLightComponent
         if (srcRegistry.all_of<PointLightComponent>(srcEntity))
@@ -1100,7 +1109,10 @@ void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera)
     UHE_PROFILE_FUNCTION();
     // Called immediately before drawing (legacy path) or from the render-graph
     // scene pass, so UI edits made after OnUpdate are reflected this frame.
-    UpdateWorldTransformCache();
+    // Passes that drew the scene earlier this frame already built it.
+    if (!m_RenderFramePrepared)
+        UpdateWorldTransformCache();
+    m_RenderFramePrepared = false;
 
     Renderer2D::BeginScene(camera);
     RenderSprites(ts, m_WorldTransformCache);
@@ -1311,6 +1323,18 @@ void Scene::RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt
             GetWorldFromCache(worldTransforms, entity) * rotation * glm::scale(glm::mat4(1.0f), glm::vec3(0.5f));
         Renderer2D::DrawQuad(billTransform, m_PointLightIcon, 1.0f, glm::vec4(1.0f), (int)entity);
     }
+
+    // Area lights reuse the point-light icon. Only the world position is kept: an area light is
+    // nearly always rotated (it faces down by default), and its rotation would tilt the billboard
+    // away from the camera.
+    auto areaLightView = m_registry.view<TransformComponent, AreaLightComponent>();
+    for (auto entity : areaLightView)
+    {
+        const glm::vec3 position(GetWorldFromCache(worldTransforms, entity)[3]);
+        glm::mat4 billTransform =
+            glm::translate(glm::mat4(1.0f), position) * rotation * glm::scale(glm::mat4(1.0f), glm::vec3(0.5f));
+        Renderer2D::DrawQuad(billTransform, m_PointLightIcon, 1.0f, glm::vec4(1.0f), (int)entity);
+    }
 }
 
 void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms)
@@ -1348,6 +1372,10 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
             if (animComp.Animator)
                 animator = animComp.Animator.get();
         }
+        if (const auto* foliage = m_registry.try_get<FoliageComponent>(entity))
+            Renderer3D::SetFoliage(foliage->Bend, foliage->Height);
+        else
+            Renderer3D::SetFoliage(0.0f, 1.0f);
         Renderer3D::SubmitModel(*model.ModelData, GetWorldFromCache(worldTransforms, entity), (int)entity, animator);
     }
 
@@ -1411,6 +1439,10 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
                                                Renderer3D::PrepareMaterialBinding(*mc.ModelData)).first;
         }
 
+        if (const auto* foliage = m_registry.try_get<FoliageComponent>(static_cast<entt::entity>(modelEntity)))
+            Renderer3D::SetFoliage(foliage->Bend, foliage->Height);
+        else
+            Renderer3D::SetFoliage(0.0f, 1.0f);
         Renderer3D::SubmitMesh(meshes[meshIndex], GetWorldFromCache(worldTransforms, entity), (int)entity,
                                *mc.ModelData, materialIt->second, cacheIt->second.BufferIndex,
                                cacheIt->second.Offset);
@@ -1546,10 +1578,73 @@ void Scene::StepSimulation()
     m_InterpolateRender = false;
 }
 
-void Scene::RenderRuntimeScene(Timestep ts)
+void Scene::PrepareRenderFrame(bool runtime)
 {
-    UHE_PROFILE_FUNCTION();
+    if (m_RenderFramePrepared)
+        return;
+    if (runtime)
+        BuildRuntimeRenderCache();
+    else
+        UpdateWorldTransformCache();
+    m_RenderFramePrepared = true;
+}
 
+std::optional<SceneRenderView> Scene::GetPrimaryCameraView()
+{
+    auto view = m_registry.view<TransformComponent, CameraComponent>();
+    for (auto entity : view)
+    {
+        auto& camera = view.get<CameraComponent>(entity);
+        if (!camera.Primary)
+            continue;
+        const glm::mat4 transform = GetWorldFromCache(m_WorldTransformCache, entity);
+        SceneRenderView result;
+        result.View = glm::inverse(transform);
+        result.Projection = camera.Camera.GetProjection();
+        result.Position = glm::vec3(transform[3]);
+        return result;
+    }
+    return std::nullopt;
+}
+
+void Scene::RenderDepth()
+{
+    RenderModels(Timestep(0.0f), m_WorldTransformCache);
+}
+
+WindSettings Scene::GetEffectiveWind()
+{
+    WindSettings wind = m_RenderSettings.Wind;
+    auto view = m_registry.view<TransformComponent, WindComponent>();
+    for (auto entity : view)
+    {
+        const glm::mat4 world = GetWorldFromCache(m_WorldTransformCache, entity);
+        const glm::vec3 forward = -glm::vec3(world[2]);
+        const WindComponent& zone = view.get<WindComponent>(entity);
+        if (glm::length(glm::vec2(forward.x, forward.z)) > 1e-4f)
+            wind.Direction = glm::normalize(glm::vec2(forward.x, forward.z));
+        wind.Strength = zone.Strength;
+        wind.GustStrength = zone.GustStrength;
+        wind.GustFrequency = zone.GustFrequency;
+        break; // the first wind zone wins
+    }
+    return wind;
+}
+
+bool Scene::HasWater()
+{
+    return !m_registry.view<WaterComponent>().empty();
+}
+
+void Scene::RenderWater()
+{
+    auto view = m_registry.view<TransformComponent, WaterComponent>();
+    for (auto entity : view)
+        WaterRenderer::Submit(GetWorldFromCache(m_WorldTransformCache, entity), view.get<WaterComponent>(entity));
+}
+
+void Scene::BuildRuntimeRenderCache()
+{
     // Issue #49: blend physics-driven bodies from their pose before the last
     // tick to their current one. The blend only feeds this world-cache build;
     // TransformComponent keeps the simulated state.
@@ -1571,6 +1666,14 @@ void Scene::RenderRuntimeScene(Timestep ts)
     }
     UpdateWorldTransformCache();
     m_RenderLocalOverride.clear();
+}
+
+void Scene::RenderRuntimeScene(Timestep ts)
+{
+    UHE_PROFILE_FUNCTION();
+    if (!m_RenderFramePrepared)
+        BuildRuntimeRenderCache();
+    m_RenderFramePrepared = false;
 
     Camera* mainCamera = nullptr;
     glm::mat4 cameraTransform;
@@ -1836,6 +1939,10 @@ template <> void Scene::OnComponentAdded<Model3DComponent>(Entity entity, Model3
 template <> void Scene::OnComponentAdded<DirectionalLightComponent>(Entity entity, DirectionalLightComponent& component) {};
 template <> void Scene::OnComponentAdded<PointLightComponent>(Entity entity, PointLightComponent& component) {};
 template <> void Scene::OnComponentAdded<SpotLightComponent>(Entity entity, SpotLightComponent& component) {};
+template <> void Scene::OnComponentAdded<FoliageComponent>(Entity entity, FoliageComponent& component) {};
+template <> void Scene::OnComponentAdded<WaterComponent>(Entity entity, WaterComponent& component) {};
+template <> void Scene::OnComponentAdded<AreaLightComponent>(Entity entity, AreaLightComponent& component) {};
+template <> void Scene::OnComponentAdded<WindComponent>(Entity entity, WindComponent& component) {};
 template <> void Scene::OnComponentAdded<AnimatorComponent>(Entity entity, AnimatorComponent& component) {};
 template <> void Scene::OnComponentAdded<ModelNodeComponent>(Entity entity, ModelNodeComponent& component) {};
 template <> void Scene::OnComponentAdded<RelationshipComponent>(Entity entity, RelationshipComponent& component) {};

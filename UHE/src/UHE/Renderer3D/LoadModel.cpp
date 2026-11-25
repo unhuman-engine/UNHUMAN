@@ -723,12 +723,6 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             ext.TransmissionBlend = BlendApproach::OpaqueWithTransmission;
         }
     }
-
-    if (m_HasTransparentMaterials)
-    {
-        UHE_CORE_WARN("glTF uses alphaMode BLEND - transparent materials draw in submission order until a "
-                      "sorted transparent pass exists (roadmap M3 step 4)");
-    }
 }
 
 void Model::ParsePunctualLights(const fastgltf::Asset& asset)

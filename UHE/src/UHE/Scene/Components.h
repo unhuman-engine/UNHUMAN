@@ -253,6 +253,8 @@ struct UHE_API DirectionalLightComponent
 {
     glm::vec3 Color{1.0f, 1.0f, 1.0f};
     float Intensity = 1.0f;
+    /// The first directional light with this set casts the scene's cascaded shadows.
+    bool CastShadows = true;
 
     DirectionalLightComponent() = default;
     DirectionalLightComponent(const DirectionalLightComponent&) = default;
@@ -283,6 +285,85 @@ struct UHE_API SpotLightComponent
 
     SpotLightComponent() = default;
     SpotLightComponent(const SpotLightComponent&) = default;
+};
+
+/**
+ * @brief A rectangular light: a lit panel, window or screen, on the entity's local XY plane.
+ *
+ * It shines along the entity's local -Z, like the spot and directional
+ * lights. Diffuse light is the panel's exact form factor, so its size
+ * shows in how soft the light falls off; the highlight on glossy surfaces
+ * takes the panel's shape.
+ */
+struct UHE_API AreaLightComponent
+{
+    glm::vec3 Color{1.0f, 1.0f, 1.0f};
+    float Intensity = 4.0f;
+    float Width = 2.0f;    ///< along local X
+    float Height = 1.0f;   ///< along local Y
+    float Range = 15.0f;   ///< distance at which the light fades out
+    bool TwoSided = false; ///< also lights the side behind the panel
+
+    AreaLightComponent() = default;
+    AreaLightComponent(const AreaLightComponent&) = default;
+};
+
+/**
+ * @brief A wind zone: the scene's wind blows along this entity's forward axis (local -Z).
+ *
+ * While one exists it replaces the Environment's wind (RenderSettings::Wind),
+ * so the direction can be set by rotating it in the viewport. Bends foliage
+ * and drives water that follows the wind.
+ */
+struct UHE_API WindComponent
+{
+    float Strength = 0.5f;       ///< steady wind, 0..2
+    float GustStrength = 0.4f;   ///< extra wind that comes and goes, 0..2
+    float GustFrequency = 0.25f; ///< gusts per second
+
+    WindComponent() = default;
+    WindComponent(const WindComponent&) = default;
+};
+
+/**
+ * @brief Makes a model sway in the scene's wind (RenderSettings::Wind): grass, bushes, trees.
+ *
+ * The bend grows with height above the model's origin, so the base stays put.
+ */
+struct UHE_API FoliageComponent
+{
+    float Bend = 1.0f;   ///< 0 = rigid, 1 = full response to the wind
+    float Height = 2.0f; ///< model-space height where the bend reaches full strength
+
+    FoliageComponent() = default;
+    FoliageComponent(const FoliageComponent&) = default;
+};
+
+/**
+ * @brief A water surface: a square of animated waves centred on the entity, on its local XZ plane.
+ *
+ * Waves are Gerstner waves in world space, so neighbouring water entities
+ * line up. The surface refracts and tints what lies below it by depth (the
+ * deeper, the more of DeepColor), reflects the sky, and foams where it meets
+ * geometry. Drawn after the opaque scene in the lit view.
+ */
+struct UHE_API WaterComponent
+{
+    glm::vec2 Size{20.0f, 20.0f};                ///< extent on local X and Z
+    int Resolution = 128;                        ///< grid cells per side (vertex detail of the waves)
+    glm::vec3 ShallowColor{0.10f, 0.55f, 0.60f}; ///< tint of shallow water (sRGB)
+    glm::vec3 DeepColor{0.01f, 0.10f, 0.18f};    ///< colour of deep water (sRGB)
+    float Clarity = 3.0f;                        ///< metres of water before the bottom fades into DeepColor
+    float WaveHeight = 0.25f;                    ///< amplitude of the largest wave
+    float WaveLength = 8.0f;                     ///< wavelength of the largest wave, in metres
+    float WaveSpeed = 1.0f;                      ///< multiplies the physical (deep water) wave speed
+    float Choppiness = 0.6f;                     ///< 0 = rolling swell, 1 = sharp crests
+    float Direction = 0.0f;                      ///< degrees on the ground plane, used when not following the wind
+    bool FollowWind = true;                      ///< waves travel with the scene's wind (RenderSettings::Wind)
+    float Foam = 0.6f;                           ///< shoreline and crest foam, 0..1
+
+    WaterComponent() = default;
+    WaterComponent(const WaterComponent&) = default;
 };
 
 struct UHE_API BoxColliderComponent

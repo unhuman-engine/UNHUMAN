@@ -16,11 +16,16 @@ namespace UHE::RD3d
 // Direction_Pad is the spot's forward axis (normalized, pointing from the
 // light into the scene). Directional lights keep their direction in
 // PositionOrDirection and leave Direction_Pad unused.
+//
+// Area lights (type 3) are rectangles: z/w of Type_Radius_Pad hold the half
+// width and half height, Direction_Pad the side they light (w = 1 when they
+// light both sides), and AreaRight_Pad the rectangle's width axis.
 struct LightData {
-    glm::vec4 Type_Radius_Pad;     // x = type (0: Dir, 1: Point, 2: Spot), y = radius, z = cos(inner), w = cos(outer)
-    glm::vec4 PositionOrDirection; // position for point/spot, direction for directional
-    glm::vec4 Direction_Pad;       // spot forward axis; unused otherwise
+    glm::vec4 Type_Radius_Pad;     // x = type (0 dir, 1 point, 2 spot, 3 area), y = radius, zw = cones / half size
+    glm::vec4 PositionOrDirection; // position for point/spot/area, direction for directional
+    glm::vec4 Direction_Pad;       // spot/area forward axis; directional: w = 1 when it casts shadows
     glm::vec4 ColorIntensity;
+    glm::vec4 AreaRight_Pad{0.0f}; // area: the rectangle's width axis
 };
 
 class UHE_API LightSystem

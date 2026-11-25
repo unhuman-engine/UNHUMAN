@@ -35,9 +35,9 @@ struct Vertex
 // How a material's alpha is interpreted. glTF alphaMode.
 enum class AlphaMode : u32
 {
-    Opaque = 0,  // alpha ignored
-    Mask = 1,    // fragment discarded below alphaCutoff
-    Blend = 2,   // alpha blended (needs sorted transparent pass - not implemented)
+    Opaque = 0, // alpha ignored
+    Mask = 1,   // fragment discarded below alphaCutoff
+    Blend = 2,  // alpha blended: drawn after the opaque scene, back to front (Renderer3D::EndScene)
 };
 
 // KHR_texture_transform, already converted to the engine's UV convention.
@@ -297,10 +297,9 @@ public:
     const std::vector<Material>& GetMaterials() const { return m_LoadedMaterials; }
     const std::vector<Geometry>& GetGeometry() const { return m_Geometry; }
 
-    // True when any material in the file uses alphaMode BLEND. Transparent
-    // materials need a depth-sorted pass, which does not exist yet (roadmap M3
-    // step 4), so the renderer can warn instead of silently drawing them in
-    // submission order.
+    // True when any material in the file is see-through (alphaMode BLEND or
+    // transmission): those primitives are drawn in Renderer3D's sorted
+    // transparent pass rather than with the opaque ones.
     bool HasTransparentMaterials() const { return m_HasTransparentMaterials; }
 
     // True when the file declared an extension the loader does not implement, so

@@ -144,7 +144,7 @@ int main(int argc, char** argv)
                 check(input.Type == wanted.Type, std::string("attribute ") + std::to_string(i) + " (" + wanted.Name +
                                                      ") has the format the layout declares");
             }
-            check(reflection.PushConstantSize == 192, "the push constant block is 192 bytes, matching the host struct");
+            check(reflection.PushConstantSize == 208, "the push constant block is 208 bytes, matching the host struct");
         }
 
         if (fragmentIt != compiled.end())
@@ -153,7 +153,7 @@ int main(int argc, char** argv)
             check(reflection.Valid, "the fragment module reflects");
             check(reflection.Stage == UHE::RHI::ShaderStage::Fragment,
                   "the fragment module reports the fragment stage");
-            check(reflection.PushConstantSize == 192, "the fragment stage agrees on the push constant block");
+            check(reflection.PushConstantSize == 208, "the fragment stage agrees on the push constant block");
         }
     }
 
@@ -178,8 +178,8 @@ int main(int argc, char** argv)
     section("variants.txt");
     {
         const std::vector<UHE::ShaderVariant> variants = UHE::LoadShaderVariants(shaderPath);
-        check(variants.size() == 2, "the shader directory declares two variants");
-        if (variants.size() == 2)
+        check(variants.size() == 3, "the shader directory declares three variants");
+        if (variants.size() == 3)
         {
             check(variants[0].Name == "default", "the first variant is 'default'");
             check(variants[0].Defines.empty(), "'default' defines nothing");
@@ -187,6 +187,9 @@ int main(int argc, char** argv)
             check(variants[1].Defines.size() == 1 && variants[1].Defines[0].first == "UHE_NO_ENTITY_ID" &&
                       variants[1].Defines[0].second == "1",
                   "'no_entity_id' defines UHE_NO_ENTITY_ID=1");
+            check(variants[2].Name == "depth_only" && variants[2].Defines.size() == 1 &&
+                      variants[2].Defines[0].first == "UHE_DEPTH_ONLY",
+                  "'depth_only' defines UHE_DEPTH_ONLY (shadow maps and the depth prepass)");
         }
 
         // The variant without the entity-id output must be a different module:

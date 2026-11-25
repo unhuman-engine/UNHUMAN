@@ -63,10 +63,10 @@ struct PushConstants {
     int materialIndex;          // 172
     int useVertexColor;         // 176 - per-PRIMITIVE flag, not per-material
     int viewMode;               // 180 - Renderer3D::ViewMode (kViewMode* below)
-    // An int[2] ARRAY, not int2: std430 gives a vector its own alignment, while
-    // the array keeps the C++ struct (sizeof 192) and the SPIR-V layout equal.
-    int padding[2];             // 184
-};                              // 192 bytes
+    int frameDataIndex;         // 184 - FrameData buffer, -1 when the frame has none
+    int padding;                // 188
+    float4 foliage;             // 192 - x: wind weight (0 = rigid), y: bend height (model units)
+};                              // 208 bytes
 
 // Renderer3D::ViewMode: the editor viewport's shading modes.
 static const int kViewModeLit = 0;
@@ -78,10 +78,11 @@ static const int kViewModeWireframe = 4;
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc;
 
 struct LightData {
-    float4 type_radius_cones; // x = type (0 dir, 1 point, 2 spot), y = radius, z = cos(inner), w = cos(outer)
+    float4 type_radius_cones; // x = type (0 dir, 1 point, 2 spot, 3 area), y = radius, zw = cone cosines / half size
     float4 position_or_direction;
     float4 direction_pad;     // spot forward axis
     float4 color_intensity;
+    float4 area_right;        // area light: the rectangle's width axis
 };
 
 // ── MaterialGPU (layout contract: UHE/src/UHE/Renderer3D/MaterialGPU.h) ─────
@@ -144,6 +145,25 @@ static const int kFeatureDiffuseTransmission = 1 << 7;
 [[vk::binding(1, 0)]] Sampler2D u_Textures[10000];
 [[vk::binding(0, 0)]] StructuredBuffer<float4x4> u_BoneBuffers[10000];
 [[vk::binding(2, 0)]] StructuredBuffer<MaterialGPU> u_MaterialBuffers[10000];
+
+// ── FrameData (layout contract: Renderer3D::SceneFrameData) ────────────────
+// Per-frame constants shared by every draw: shadows, ambient, occlusion, wind.
+struct FrameData {
+    float4x4 cascadeViewProj[4];
+    float4 cascadeSplits;     // view distance where each cascade ends
+    float4 cascadeRects[4];   // atlas placement: xy offset, zw scale
+    float4 cascadeTexel;      // world size of one shadow texel, per cascade
+    float4 shadow;            // x: atlas texture (-1 none), y: light index, z: texel size (uv), w: cascade count
+    float4 shadowBias;        // x: toward the light, y: along the normal (texels), z: filter radius (texels), w: debug
+    float4 cameraForward;
+    float4 ambientSky;        // linear, scaled by the intensity
+    float4 ambientGround;
+    float4 screen;            // xy: 1 / target size, z: occlusion texture (-1 none), w: its strength
+    float4 wind;              // xy: steady wind on x/z, z: gust strength, w: time (s)
+    float4 flags;             // x: HDR target (no tonemap here), y: gust frequency
+    float4 sky;               // rgb: sky colour (linear), w: first directional light (-1 none)
+};
+[[vk::binding(0, 0)]] StructuredBuffer<FrameData> u_FrameBuffers[10000];
 
 struct FragmentOutput {
     [[vk::location(0)]] float4 Color : SV_Target0;
@@ -235,6 +255,168 @@ float3 IridescenceReflectance(float ior, float thicknessNm, float NdotV)
     return reflectance;
 }
 
+// ── wind ─────────────────────────────────────────────────────────────────────
+
+// How far wind pushes a vertex of a plant. The bend grows with the square of
+// the height above the model's origin, so the base stays planted; the plant's
+// position offsets its phase, so neighbours do not sway in lockstep. Gusts
+// travel across the world along the wind direction.
+float3 WindOffset(FrameData f, float3 worldPos, float3 origin, float localHeight)
+{
+    const float weight = pc.foliage.x;
+    const float height = pc.foliage.y;
+    const float t = f.wind.w;
+    const float2 steady = f.wind.xy;
+    const float2 direction = normalize(steady + float2(1e-5, 0.0));
+    const float phase = dot(origin.xz, float2(0.37, 0.23));
+
+    const float travel = dot(worldPos.xz, direction) * 0.12;
+    float gust = sin((t * f.flags.y - travel) * 6.2831853 + phase) * 0.5 + 0.5;
+    gust = gust * gust * f.wind.z;
+    const float sway = sin(t * 1.3 + phase) * 0.18 + sin(t * 2.9 + phase * 1.7) * 0.07;
+    const float2 push = steady * (1.0 + sway) + direction * gust;
+
+    const float h = saturate(localHeight / height);
+    const float bend = h * h * weight * height * 0.3;
+    const float flutter = sin(t * 8.0 + dot(worldPos, float3(2.1, 1.7, 2.9))) * 0.015 * h * weight * length(push);
+    // Lowered as it leans, so the plant bends instead of stretching.
+    return float3(push.x * bend, flutter - dot(push, push) * bend * 0.15, push.y * bend);
+}
+
+// ── shadows ──────────────────────────────────────────────────────────────────
+
+static const float2 kPoissonDisk[12] = {
+    float2(-0.326, -0.406), float2(-0.840, -0.074), float2(-0.696, 0.457), float2(-0.203, 0.621),
+    float2(0.962, -0.195),  float2(0.473, -0.480),  float2(0.519, 0.767),  float2(0.185, -0.893),
+    float2(0.507, 0.064),   float2(0.896, 0.412),   float2(-0.322, -0.933), float2(-0.792, -0.598)
+};
+
+// Which cascade a point at `viewDepth` falls in; -1 past the last one.
+int ShadowCascade(FrameData f, float viewDepth)
+{
+    const int count = int(f.shadow.w);
+    for (int i = 0; i < count; ++i)
+    {
+        if (viewDepth < f.cascadeSplits[i])
+            return i;
+    }
+    return -1;
+}
+
+// 1 where the shadow light reaches `worldPos`, 0 where something blocks it.
+// Twelve rotated Poisson taps soften the edge. Each tap reads the map up to
+// (filter radius + half a texel) away from the receiver, and on a surface the
+// light meets at an angle the stored depth changes by tan(angle) per texel
+// over that distance: the receiver moves toward the light by that much (the
+// slope term), plus a constant bias and a small push along its normal, so a
+// surface never shadows itself into stripes.
+float ShadowFactor(FrameData f, float3 worldPos, float3 normal, float3 toLight, float4 fragCoord, out int cascade)
+{
+    cascade = -1;
+    const int atlas = int(f.shadow.x);
+    if (atlas < 0)
+        return 1.0;
+    const float viewDepth = dot(worldPos - pc.cameraPos.xyz, f.cameraForward.xyz);
+    cascade = ShadowCascade(f, viewDepth);
+    if (cascade < 0)
+        return 1.0;
+
+    const float texel = f.cascadeTexel[cascade];
+    const float radius = max(f.shadowBias.z, 0.0);
+    const float NoL = saturate(dot(normal, toLight));
+    const float slope = min(sqrt(1.0 - NoL * NoL) / max(NoL, 1e-3), 5.0);
+    const float towardLight = f.shadowBias.x + (radius + 0.75) * slope;
+    const float alongNormal = f.shadowBias.y * (1.0 - 0.5 * NoL);
+    const float3 offsetPos = worldPos + normal * (alongNormal * texel) + toLight * (towardLight * texel);
+    const float4 clip = mul(f.cascadeViewProj[cascade], float4(offsetPos, 1.0));
+    const float3 ndc = clip.xyz / clip.w;
+    if (ndc.z >= 1.0)
+        return 1.0;
+    const float2 uv = ndc.xy * 0.5 + 0.5;
+    const float4 rect = f.cascadeRects[cascade];
+
+    Sampler2D map = u_Textures[NonUniformResourceIndex(atlas)];
+    uint width, height;
+    map.GetDimensions(width, height);
+    const float2 size = float2(width, height);
+    // Kept inside the cascade's own tile, so a wide filter never reads its neighbour.
+    const float2 tileMin = rect.xy * size + 0.5;
+    const float2 tileMax = (rect.xy + rect.zw) * size - 1.5;
+    const float2 centre = (rect.xy + uv * rect.zw) * size;
+
+    // Interleaved gradient noise rotates the disk per pixel: banding becomes fine grain.
+    const float noise = frac(52.9829189 * frac(dot(fragCoord.xy, float2(0.06711056, 0.00583715))));
+    const float angle = noise * 6.2831853;
+    const float2x2 rotation = float2x2(cos(angle), -sin(angle), sin(angle), cos(angle));
+
+    float lit = 0.0;
+    for (int i = 0; i < 12; ++i)
+    {
+        const float2 p = clamp(centre + mul(rotation, kPoissonDisk[i]) * radius, tileMin, tileMax);
+        const float stored = map.Load(int3(int2(p), 0)).r;
+        lit += (ndc.z <= stored) ? 1.0 : 0.0;
+    }
+    lit /= 12.0;
+
+    // The last cascade fades out instead of ending in a hard line.
+    const int count = int(f.shadow.w);
+    if (cascade == count - 1)
+    {
+        const float end = f.cascadeSplits[count - 1];
+        lit = lerp(lit, 1.0, saturate((viewDepth - end * 0.9) / (end * 0.1)));
+    }
+    return lit;
+}
+
+// ── area lights ──────────────────────────────────────────────────────────────
+
+// Form factor of a rectangle seen from `P` with normal `N` (0..1): Lambert's
+// exact sum over the polygon's edges of the angle each subtends, projected on
+// the normal. Corners go around the rectangle in either direction: the sum is
+// turned to face the light, so the winding and the side it is seen from do
+// not matter.
+float RectFormFactor(float3 P, float3 N, float3 corners[4], float3 centre)
+{
+    float3 sum = float3(0.0, 0.0, 0.0);
+    for (int i = 0; i < 4; ++i)
+    {
+        const float3 a = normalize(corners[i] - P);
+        const float3 b = normalize(corners[(i + 1) % 4] - P);
+        const float cosAngle = clamp(dot(a, b), -0.9999, 0.9999);
+        sum += acos(cosAngle) * normalize(cross(a, b));
+    }
+    if (dot(sum, centre - P) < 0.0)
+        sum = -sum;
+    // A rectangle partly below the surface's horizon is not clipped; clamping
+    // keeps that approximation from going negative.
+    return max(dot(sum, N), 0.0) / (2.0 * 3.14159265);
+}
+
+// Representative point (Karis 2013): the point of the rectangle closest to
+// the reflected view ray, which is where a mirror would see the light.
+float3 RectClosestPoint(float3 P, float3 R, float3 centre, float3 normal, float3 right, float3 up, float2 halfSize)
+{
+    const float denom = dot(R, normal);
+    float3 hit = P + R * (dot(centre - P, normal) / (abs(denom) > 1e-4 ? denom : 1e-4));
+    if (dot(hit - P, R) < 0.0)
+        hit = P - normal * dot(P - centre, normal); // the ray points away: use the foot of P on the plane
+    const float3 local = hit - centre;
+    const float x = clamp(dot(local, right), -halfSize.x, halfSize.x);
+    const float y = clamp(dot(local, up), -halfSize.y, halfSize.y);
+    return centre + right * x + up * y;
+}
+
+// Karis' analytic fit of the split-sum environment BRDF (Unreal, mobile).
+float3 EnvBRDFApprox(float3 F0, float roughness, float NoV)
+{
+    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+    const float4 r = roughness * c0 + c1;
+    const float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    const float2 AB = float2(-1.04, 1.04) * a004 + r.zw;
+    return F0 * AB.x + AB.y;
+}
+
 // ── stages ───────────────────────────────────────────────────────────────────
 
 [shader("vertex")]
@@ -259,8 +441,25 @@ VertexOutput vertexMain(VertexInput input) {
     }
 
     float4 worldPos = mul(pc.model, localPos);
+    if (pc.foliage.x > 0.0 && pc.frameDataIndex >= 0)
+    {
+        const FrameData f = u_FrameBuffers[pc.frameDataIndex][0];
+        const float3 origin = float3(pc.model[0][3], pc.model[1][3], pc.model[2][3]);
+        worldPos.xyz += WindOffset(f, worldPos.xyz, origin, localPos.y);
+    }
     output.v_WorldPos = worldPos.xyz;
-    output.v_Normal = normalize(mul((float3x3)pc.model, localNormal));
+    // Normals go through the inverse transpose of the model matrix, not the
+    // matrix itself: under a non-uniform scale (a cube stretched into a floor)
+    // the matrix tips them toward the stretched axes. The cofactor matrix is
+    // that inverse transpose up to a scale, which normalize removes, and it
+    // needs no inverse: its columns are cross products of the model's columns.
+    const float3x3 m3 = (float3x3)pc.model;
+    const float3 c0 = float3(m3[0][0], m3[1][0], m3[2][0]);
+    const float3 c1 = float3(m3[0][1], m3[1][1], m3[2][1]);
+    const float3 c2 = float3(m3[0][2], m3[1][2], m3[2][2]);
+    const float handedness = dot(c0, cross(c1, c2)) < 0.0 ? -1.0 : 1.0; // a mirrored model flips them
+    output.v_Normal = normalize((localNormal.x * cross(c1, c2) + localNormal.y * cross(c2, c0) +
+                                 localNormal.z * cross(c0, c1)) * handedness);
     output.v_TexCoord = input.a_TexCoord;
 
     // Tangent frame in world space. The bitangent's handedness comes from the
@@ -278,6 +477,25 @@ VertexOutput vertexMain(VertexInput input) {
     return output;
 }
 
+#ifdef UHE_DEPTH_ONLY
+// Shadow maps and the depth prepass: depth only, with the alpha cutout of
+// masked materials (leaves, fences) so their holes stay open.
+[shader("fragment")]
+void fragmentMain(VertexOutput input)
+{
+    MaterialGPU m = u_MaterialBuffers[pc.materialBufferIndex][pc.materialIndex];
+    if (m.flags.x == 1)
+    {
+        float alpha = m.baseColorFactor.a;
+        if (m.slots[0].index.x >= 0)
+            alpha *= SampleSlot(m, 0, input.v_TexCoord).a;
+        if (pc.useVertexColor == 1)
+            alpha *= input.v_Color.a;
+        if (alpha < m.alphaCutoff)
+            discard;
+    }
+}
+#else
 [shader("fragment")]
 FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFace) {
     FragmentOutput output;
@@ -502,6 +720,13 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
         float PI = 3.14159265359;
         float3 Lo = float3(0.0, 0.0, 0.0);
 
+        const bool hasFrame = pc.frameDataIndex >= 0;
+        FrameData frame;
+        if (hasFrame)
+            frame = u_FrameBuffers[pc.frameDataIndex][0];
+        const int shadowLight = hasFrame ? int(frame.shadow.y) : -1;
+        int cascade = -1;
+
         for (int i = 0; i < pc.numLights; ++i)
         {
             LightData light = u_LightBuffers[pc.lightBufferIndex][i];
@@ -512,6 +737,8 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
             float3 L;
             float attenuation = 1.0;
             float spotFactor = 1.0;
+            float areaDiffuse = -1.0; // area light: its form factor replaces N.L for diffuse
+            float areaSpecular = 1.0; // area light: energy normalization of the widened lobe
 
             if (type == 0)
             { // Directional
@@ -524,6 +751,38 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
                 L = normalize(L);
                 // Linear/quadratic window falloff (engine convention).
                 attenuation = clamp(1.0 - (distance * distance) / (radius * radius), 0.0, 1.0);
+                attenuation *= attenuation;
+            }
+            else if (type == 3)
+            { // Area: a rectangle (see RectFormFactor and RectClosestPoint)
+                const float3 centre = light.position_or_direction.xyz;
+                const float3 lightNormal = normalize(light.direction_pad.xyz);
+                const float3 right = normalize(light.area_right.xyz);
+                const float3 up = cross(right, lightNormal);
+                const float2 halfSize = light.type_radius_cones.zw;
+                const float side = dot(input.v_WorldPos - centre, lightNormal);
+                if (side <= 0.0 && light.direction_pad.w < 0.5)
+                    continue; // behind a one-sided panel
+
+                float3 corners[4] = { centre - right * halfSize.x - up * halfSize.y,
+                                      centre + right * halfSize.x - up * halfSize.y,
+                                      centre + right * halfSize.x + up * halfSize.y,
+                                      centre - right * halfSize.x + up * halfSize.y };
+                areaDiffuse = RectFormFactor(input.v_WorldPos, normal, corners, centre);
+
+                const float3 R = reflect(-V, normal);
+                const float3 closest = RectClosestPoint(input.v_WorldPos, R, centre, lightNormal, right, up, halfSize);
+                L = closest - input.v_WorldPos;
+                const float distance = max(length(L), 1e-3);
+                L /= distance;
+                // The lobe widens by the light's apparent size; the normalization
+                // keeps the widened lobe from adding energy (Karis 2013, eq. 14).
+                const float alpha = roughness * roughness;
+                const float apparent = saturate(alpha + sqrt(halfSize.x * halfSize.y) / (2.0 * distance));
+                areaSpecular = (alpha / apparent) * (alpha / apparent);
+
+                const float toCentre = length(centre - input.v_WorldPos);
+                attenuation = clamp(1.0 - (toCentre * toCentre) / (radius * radius), 0.0, 1.0);
                 attenuation *= attenuation;
             }
             else
@@ -547,12 +806,20 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
                 continue;
 
             float3 radiance = light.color_intensity.xyz * light.color_intensity.w * attenuation * spotFactor * PI;
+            if (i == shadowLight)
+            {
+                // The geometric normal, not the mapped one: the offset is about the surface itself.
+                float3 geometricNormal = normalize(input.v_Normal);
+                if (!isFrontFace)
+                    geometricNormal = -geometricNormal;
+                radiance *= ShadowFactor(frame, input.v_WorldPos, geometricNormal, L, input.location, cascade);
+            }
 
             float NoL = dot(normal, L);
             float ccNoL = dot(clearcoatNormal, L);
             float NoLdt = dot(-normal, L); // through-surface direction, for diffuse transmission
 
-            if (NoL <= 0.0 && ccNoL <= 0.0 && NoLdt <= 0.0)
+            if (NoL <= 0.0 && ccNoL <= 0.0 && NoLdt <= 0.0 && areaDiffuse <= 0.0)
                 continue;
 
             float3 H = normalize(V + L);
@@ -597,7 +864,8 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
 
             float3 diffuse = kD * baseColor.rgb / PI;
 
-            Lo += (diffuse + specular) * radiance * NoLc;
+            const float diffuseWeight = areaDiffuse >= 0.0 ? areaDiffuse : NoLc;
+            Lo += (diffuse * diffuseWeight + specular * NoLc * areaSpecular) * radiance;
 
             // ── sheen lobe ────────────────────────────────────────────────
             if (sheenLuminance > 0.0 && NoLc > 0.0)
@@ -631,17 +899,40 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
             }
         }
 
-        // Occlusion is a multiplier on the ambient/diffuse term only; glTF
-        // defines it as cavity shading, not as a shadow.
+        float materialAO = 1.0;
         if (m.slots[3].index.x >= 0)
-        {
-            float ao = SampleSlot(m, 3, input.v_TexCoord).r;
-            ao = lerp(1.0, ao, m.occlusionStrength);
-            Lo *= ao;
-        }
+            materialAO = lerp(1.0, SampleSlot(m, 3, input.v_TexCoord).r, m.occlusionStrength);
 
-        // Boost ambient a bit so dark sides are visible
-        float3 ambient = float3(0.08, 0.08, 0.08) * baseColor.rgb;
+        float3 ambient;
+        if (hasFrame)
+        {
+            // A sky and ground hemisphere: diffuse by the normal, specular by
+            // the reflection (blurred toward the normal as roughness grows),
+            // weighted by the environment BRDF so metals are not black.
+            // Occlusion (the material's and the screen-space one) darkens
+            // only this indirect light, as glTF defines it.
+            const float3 R = reflect(-V, normal);
+            const float3 specularDir = normalize(lerp(R, normal, roughness * roughness));
+            const float3 irradiance = lerp(frame.ambientGround.rgb, frame.ambientSky.rgb, normal.y * 0.5 + 0.5);
+            const float3 reflected = lerp(frame.ambientGround.rgb, frame.ambientSky.rgb, specularDir.y * 0.5 + 0.5);
+            const float3 specularWeight = EnvBRDFApprox(F0, roughness, saturate(NdotV));
+            const float3 diffuseWeight = (1.0 - specularWeight) * (1.0 - metallic) * (1.0 - transmission);
+            float occlusion = materialAO;
+            const int aoTexture = int(frame.screen.z);
+            if (aoTexture >= 0)
+            {
+                const float2 screenUV = input.location.xy * frame.screen.xy;
+                const float ssao = u_Textures[NonUniformResourceIndex(aoTexture)].SampleLevel(screenUV, 0.0).r;
+                occlusion *= lerp(1.0, ssao, frame.screen.w);
+            }
+            ambient = (diffuseWeight * baseColor.rgb * irradiance + specularWeight * reflected) * occlusion;
+        }
+        else
+        {
+            // No frame data: the flat ambient and the cavity term as before.
+            Lo *= materialAO;
+            ambient = float3(0.08, 0.08, 0.08) * baseColor.rgb;
+        }
         float3 litColor = ambient + Lo;
 
         // Emissive is additive and unlit. emissiveStrength multiplies both the
@@ -651,9 +942,18 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
             emissive *= SampleSlot(m, 4, input.v_TexCoord).rgb;
         litColor += emissive;
 
-        // Simple HDR tonemapping (Exposure-based instead of Reinhard for better contrast)
-        float exposure = 1.0;
-        litColor = float3(1.0, 1.0, 1.0) - exp(-litColor * exposure);
+        // An HDR target is tonemapped after the frame (with bloom first);
+        // anything else is mapped here.
+        if (!hasFrame || frame.flags.x < 0.5)
+            litColor = float3(1.0, 1.0, 1.0) - exp(-litColor);
+
+        // Debug: tint each shadow cascade (red, green, blue, yellow).
+        if (hasFrame && frame.shadowBias.w > 0.5 && cascade >= 0)
+        {
+            const float3 tints[4] = { float3(1.0, 0.35, 0.35), float3(0.35, 1.0, 0.35), float3(0.35, 0.5, 1.0),
+                                      float3(1.0, 1.0, 0.35) };
+            litColor *= tints[cascade];
+        }
 
         finalColor = litColor;
     }
@@ -674,3 +974,4 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
 
     return output;
 }
+#endif // UHE_DEPTH_ONLY

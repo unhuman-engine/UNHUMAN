@@ -77,6 +77,17 @@ here. Follow them; if a rule is wrong, change it here first.
   access, state and name matches, and rebinds handle generations. The topology
   hash counts a pass's reads instead of naming them; never key a cache on it.
   `UHE_RENDERGRAPH_NO_CACHE=1` compiles every frame, for an A/B.
+- **The 3D scene is drawn by `SceneRenderer`, in several passes.** Shadow
+  cascades, the depth prepass, the colour pass and water all draw the scene,
+  and they must agree on where everything is: a prepass and a colour pass that
+  disagree leave holes. `Scene::PrepareRenderFrame` builds the transforms once
+  per frame, the camera is resolved once when the first pass executes, and
+  the depth-only pipelines use the colour pass's own vertex shader.
+- **Per-frame shading data lives in `Renderer3D::SceneFrameData`, not in push
+  constants.** Basic3D's push constants are 208 of the 256 bytes a device must
+  support; shadows, ambient, occlusion and wind are one storage buffer read
+  through `frameDataIndex`. `Basic3D.slang` and `Water.slang` each declare its
+  layout, so a field added to the C++ struct is added to both.
 - **Every write is followed by a barrier.** Two passes rendering into one
   attachment in a row are separate rendering scopes; the compiler orders them
   even when the layout does not change, and attachment access includes the
