@@ -1407,7 +1407,7 @@ void Editor::ExportGame()
     if (report.Ok)
     {
         UHE_CORE_INFO("Exported '{0}': {1} files, {2} MB, run {3}", m_Project->Name, report.FilesCopied,
-                      report.BytesCopied / (1024 * 1024), report.Executable.string());
+                      report.BytesCopied / (std::uintmax_t{1024} * 1024), report.Executable.string());
         if (report.Warnings.empty())
             Notify(NotificationCenter::Kind::Success, "Game exported", report.Executable.string());
         else
@@ -2584,8 +2584,8 @@ void Editor::DrawPreferencesContent()
             ImGui::SetTooltip("Save the current scene inside the project first");
 
         ImGui::SameLine();
-        if (ImGui::Button("Close Project"))
-            CloseProject();
+        // Closed after the rest of the section: the rows below still read the project this frame.
+        const bool closeProject = ImGui::Button("Close Project");
 
         // The window an exported game opens (Project.uheproject, Window block).
         EditorUI::SectionHeader("Game Window");
@@ -2634,6 +2634,8 @@ void Editor::DrawPreferencesContent()
             if (!Project::Save(*m_Project, &error))
                 UHE_CORE_WARN("Could not save the project manifest: {0}", error);
         }
+        if (closeProject)
+            CloseProject();
     }
 
     EditorUI::SectionHeader("About");
