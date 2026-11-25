@@ -171,8 +171,8 @@ struct FGLoweredResource
     FGTexture::Desc Texture;
     FGBuffer::Desc Buffer;
     bool Imported = false;
-    bool Backbuffer = false; ///< the image this frame presents; the backend supplies it
-    bool Exported = false;   ///< created here and kept past the frame (FrameGraph::Export)
+    bool Backbuffer = false;       ///< the image this frame presents; the backend supplies it
+    bool Exported = false;         ///< created here and kept past the frame (FrameGraph::Export)
     bool ExportCopySource = false; ///< exported and copied from outside the graph
     TextureHandle ImportedTexture = nullptr;
     BufferHandle ImportedBuffer = nullptr;
