@@ -15,6 +15,7 @@ set(UHE_SHADER_DIR "${CMAKE_SOURCE_DIR}/UHE_EDITOR/assets/shaders")
 set(UHE_SHADER_SOURCES
     "${UHE_SHADER_DIR}/Basic3D.slang"
     "${UHE_SHADER_DIR}/Grid.slang"
+    "${UHE_SHADER_DIR}/ImGuiSrgb.slang"
     "${UHE_SHADER_DIR}/Texture.slang"
     "${UHE_SHADER_DIR}/Text.slang"
     "${UHE_SHADER_DIR}/Tonemap.slang"
