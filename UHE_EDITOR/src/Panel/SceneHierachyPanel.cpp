@@ -426,7 +426,9 @@ void SceneHierarchyPanel::DrawTree()
     // row's own target still wins a drop on that row: ImGui hands the payload
     // to the smallest target rect under the mouse.
     {
-        const ImRect bb = ImGui::GetCurrentWindow()->InnerRect;
+        // Through GetCurrentContext(): GImGui, which the inline helpers read, is
+        // not exported from the engine DLL on Windows.
+        const ImRect bb = ImGui::GetCurrentContext()->CurrentWindow->InnerRect;
         if (ImGui::BeginDragDropTargetCustom(bb, ImGui::GetID("HierarchyDropToRoot")))
         {
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))

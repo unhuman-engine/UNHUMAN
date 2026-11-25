@@ -161,7 +161,9 @@ static void DrawAxisField(int axis, float& component, float resetValue, float wi
     // The frame is drawn before the widgets exist, so its hover and active
     // state come from the mouse and the drag's ID rather than from the items.
     const ImGuiID dragId = ImGui::GetID("##value");
-    const bool active = ImGui::GetActiveID() == dragId;
+    // GetCurrentContext(), not GetActiveID(): that inline helper reads GImGui,
+    // which the engine DLL does not export on Windows.
+    const bool active = ImGui::GetCurrentContext()->ActiveId == dragId;
     const bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(min, max);
     const ImGuiCol frameCol = active ? ImGuiCol_FrameBgActive : (hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
     ImDrawList* draw = ImGui::GetWindowDrawList();

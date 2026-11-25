@@ -140,6 +140,10 @@ here. Follow them; if a rule is wrong, change it here first.
   that interface plus the backend implementation (see `GetSwapchainFormat`).
   Demo layers may reach the swapchain for its extent — that is the documented
   exception.
+- **Editor code reads ImGui internals through `ImGui::GetCurrentContext()`.**
+  The inline helpers in `imgui_internal.h` (`GetCurrentWindow`, `GetActiveID`,
+  ...) read the global `GImGui`, which the engine DLL does not export on
+  Windows: the editor compiled everywhere and failed to link on Windows only.
 - **Behaviour lives in `UHE/src/UHE`; apps compose layers.** `sandbox`,
   `UHEGAME` and `UHE_EDITOR` are composition roots, not engines.
 - **The engine and the editor share one scene format**: `.unhuman` YAML, with
