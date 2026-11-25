@@ -52,6 +52,8 @@ private:
     void NewScene(bool notify = true);
     void OpenScene();
     void SaveSceneAs();
+    /// @brief File > Export Game: writes the open project out as a standalone game (GameExporter).
+    void ExportGame();
     void OpenScene(const std::filesystem::path& path, bool notify = true);
 
     // Project lifecycle: the editor has no asset root until a project is open.

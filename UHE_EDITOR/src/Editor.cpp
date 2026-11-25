@@ -15,6 +15,7 @@
 #include "EditorUI.h"
 #include "ImGuizmo.h"
 #include "UHE/AssetsManager/AssetImport.h"
+#include "UHE/AssetsManager/GameExporter.h"
 #include "UHE/AssetsManager/Project.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Audio/AudioEngine.h"
@@ -1387,6 +1388,34 @@ void DrawConsolePanel()
     ImGui::End();
 }
 
+void Editor::ExportGame()
+{
+    if (!m_Project)
+        return;
+    const std::string folder = FileDialogs::SelectFolder("Export Game To", m_Project->RootPath.parent_path().string());
+    if (folder.empty())
+        return;
+
+    ExportOptions options;
+    options.OutputDir = folder;
+    // The runtime is built next to the editor, into the same folder.
+    options.RuntimeDir = std::filesystem::absolute(CommandLine::GetExecutable()).parent_path();
+    options.EngineAssets = FileSystem::Get().GetRootPath() / "assets";
+    const ExportReport report = GameExporter::Export(*m_Project, options);
+    if (report.Ok)
+    {
+        UHE_CORE_INFO("Exported '{0}': {1} files, {2} MB, run {3}", m_Project->Name, report.FilesCopied,
+                      report.BytesCopied / (1024 * 1024), report.Executable.string());
+        Notify(NotificationCenter::Kind::Success, "Game exported", report.Executable.string());
+    }
+    else
+    {
+        for (const std::string& error : report.Errors)
+            UHE_CORE_ERROR("Export: {0}", error);
+        Notify(NotificationCenter::Kind::Error, "Export failed", report.Errors.empty() ? "" : report.Errors.front());
+    }
+}
+
 void Editor::SaveSceneAs()
 {
     std::string filepath = FileDialogs::SaveFile("UHE Scene (*.unhuman)\0.unhuman\0", ProjectAssetPath().string());
@@ -1882,6 +1911,7 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
     add("New Scene", "File", "Ctrl+N", true, [this] { NewScene(); });
     add("Open Scene...", "File", "Ctrl+O", true, [this] { OpenScene(); });
     add("Save Scene As...", "File", "Ctrl+S", true, [this] { SaveSceneAs(); });
+    add("Export Game...", "File", "", m_Project.has_value(), [this] { ExportGame(); });
     add("Open Project...", "File", "", true,
         [this]
         {
@@ -1991,6 +2021,8 @@ void Editor::DrawMainMenuBar()
         }
         if (ImGui::MenuItem("Project Manager..."))
             CloseProject();
+        if (ImGui::MenuItem("Export Game...", nullptr, false, m_Project.has_value()))
+            ExportGame();
         ImGui::Separator();
         if (ImGui::MenuItem("Reload Shaders", "Ctrl+Shift+R"))
         {
