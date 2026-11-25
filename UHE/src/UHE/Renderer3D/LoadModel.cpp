@@ -144,18 +144,28 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
     auto gltfFile = fastgltf::MappedGltfFile::FromPath(modelPath);
     if (!gltfFile)
     {
-        UHE_CORE_ERROR("Failed to open/map glTF file: {0}", fastgltf::getErrorMessage(gltfFile.error()));
+        UHE_CORE_ERROR("glTF '{0}' could not be opened: {1}", modelPath.filename().string(),
+                       fastgltf::getErrorMessage(gltfFile.error()));
         return false;
     }
 
     auto assetResult = parser.loadGltf(gltfFile.get(), modelPath.parent_path(), gltfOption);
     if (assetResult.error() != fastgltf::Error::None)
     {
-        UHE_CORE_ERROR("Failed to parse glTF data: {0}", fastgltf::getErrorMessage(assetResult.error()));
+        UHE_CORE_ERROR("glTF '{0}' could not be parsed: {1}", modelPath.filename().string(),
+                       fastgltf::getErrorMessage(assetResult.error()));
         return false;
     }
 
     fastgltf::Asset asset = std::move(assetResult.get());
+
+    // Everything below iterates accessors and trusts their ranges; a file that
+    // points past its own data is refused here instead of read out of bounds.
+    if (std::string rangeError; !ValidateBufferRanges(asset, rangeError))
+    {
+        UHE_CORE_ERROR("glTF '{0}' is damaged: {1}", modelPath.filename().string(), rangeError);
+        return false;
+    }
 
     // Record extensions the file declares that this loader does not implement.
     // The parser is constructed with every extension enabled, so an unsupported

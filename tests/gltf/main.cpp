@@ -1522,6 +1522,28 @@ int main()
         check(!model.loadModel(dir.path() / "does_not_exist.gltf"), "missing file returns false");
     }
 
+    // ---------------------------------------------------------------------
+    section("a truncated buffer is refused, not read past its end");
+    {
+        // A .bin cut short (a broken download or copy): every view past the
+        // cut used to hand fastgltf an empty span that it indexed anyway, an
+        // abort in a checked build and a wild read in Release.
+        AssetSpec spec;
+        spec.meshCount = 2;
+        const fs::path path = writeAsset(dir, "truncated.gltf", spec);
+        const fs::path bin = dir.path() / "truncated.bin";
+        std::error_code ec;
+        fs::resize_file(bin, fs::file_size(bin) / 3, ec);
+        check(!ec, "the buffer is cut to a third");
+
+        UHE::RD3d::Model model;
+        check(!model.loadModel(path), "the damaged model is refused");
+        check(model.GetMesh().empty() && model.GetGeometry().empty(), "nothing of it is kept");
+
+        UHE::RD3d::Model intact;
+        check(intact.loadModel(writeAsset(dir, "intact.gltf", spec)), "the same model, whole, still loads");
+    }
+
     // =====================================================================
     // Materials. Every default here is one the spec defines and that is easy to
     // get wrong by habit - emissive being black rather than white is the one
