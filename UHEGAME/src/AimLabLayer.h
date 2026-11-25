@@ -6,11 +6,10 @@ namespace UHE::RHI
 class FGContext;
 }
 #include <UHE/Renderer/EditorCamera.h>
-#include <UHE/Renderer/Framebuffer.h>
 #include <UHE/Renderer3D/Animator.h>
 #include <UHE/Scene/Entity.h>
-#include <vector>
 #include <string>
+#include <vector>
 
 class AimLabLayer : public UHE::Layer
 {
@@ -30,7 +29,9 @@ private:
 
     UHE::Ref<UHE::Scene> m_ActiveScene;
     UHE::EditorCamera m_Camera;
-    UHE::Ref<UHE::Framebuffer> m_Framebuffer;
+    // Scene targets: created by the frame graph, exported for the UI and picking.
+    static constexpr const char* kSceneColor = "AimLab.Color";
+    static constexpr const char* kSceneEntity = "AimLab.Entity";
     u32 m_ViewportWidth = 0, m_ViewportHeight = 0;
 
     // ─── RenderGraph migration (M5 step 4): pending entity pickup ───

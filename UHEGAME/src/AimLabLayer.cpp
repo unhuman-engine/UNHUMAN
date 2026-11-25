@@ -7,6 +7,7 @@
 #include <UHE/RHI/FrameGraph/FrameGraph.h>
 #include <UHE/RHI/RHICommandBuffer.h>
 #include <UHE/RHI/RHIDevice.h>
+#include <UHE/RHI/RHITexture.h>
 #include <UHE/Renderer3D/LightSystem.h>
 #include <UHE/Renderer3D/Renderer3D.h>
 #include <UHE/Scene/Components.h>
@@ -104,14 +105,6 @@ void AimLabLayer::OnAttach()
     // Camera setup: orbit point at the wall, close distance
     m_Camera.SetDistance(5.0f);
 
-    // Framebuffer: RGBA8 (color) + RED_INTEGER (entity ID picking) + Depth
-    UHE::FramebufferSpecification fbSpec;
-    fbSpec.Attachments = {UHE::FramebufferTextureFormat::RGBA8, UHE::FramebufferTextureFormat::RED_INTEGER,
-                          UHE::FramebufferTextureFormat::Depth};
-    fbSpec.Width = 1920;
-    fbSpec.Height = 1080;
-    m_Framebuffer = UHE::Framebuffer::Create(fbSpec);
-
     // Capture mouse for FPS-style aiming
     UHE::Application::Get().GetWindow().SetCursorLocked(true);
     m_CursorLocked = true;
@@ -136,7 +129,6 @@ void AimLabLayer::OnUpdate(UHE::Timestep ts)
     {
         m_ViewportWidth = width;
         m_ViewportHeight = height;
-        m_Framebuffer->Resize(width, height);
         m_Camera.SetViewportSize(static_cast<f32>(width), static_cast<f32>(height));
         m_ActiveScene->OnViewportResize(width, height);
     }
@@ -200,7 +192,11 @@ void AimLabLayer::OnUpdate(UHE::Timestep ts)
     if (m_HasPendingPickup)
     {
         m_HasPendingPickup = false;
-        const i32 pixelData = m_Framebuffer->ReadPixel(1, m_PendingPickupX, m_PendingPickupY);
+        // The entity IDs last frame's scene pass left: the export keeps them.
+        i32 pixelData = -1;
+        UHE::RHI::RHIDevice& device = UHE::Renderer::GetDevice();
+        if (UHE::RHI::TextureHandle entityIds = device.GetExportedTexture(kSceneEntity))
+            device.ReadPixel(entityIds, m_PendingPickupX, m_PendingPickupY, &pixelData);
         if (pixelData >= 0)
         {
             for (auto& target : m_Targets)
@@ -323,39 +319,34 @@ void AimLabLayer::OnUpdate(UHE::Timestep ts)
     if (graph == nullptr)
         return;
 
-    const u32 fbWidth = m_Framebuffer->GetSpecification().Width;
-    const u32 fbHeight = m_Framebuffer->GetSpecification().Height;
+    if (width == 0 || height == 0)
+        return; // minimized
 
-    // Imported every frame: the framebuffer is recreated on resize and frame
-    // graph handles do not outlive their frame. Colour and entity are sampled
-    // afterwards (the viewport image, picking), so the frame leaves them ShaderRead.
-    const FGHandle<FGTexture> color =
-        graph->Import("AimLab.Color", {fbWidth, fbHeight, TextureFormat::RGBA8_SRGB},
-                      m_Framebuffer->GetColorAttachments()[0], FGState::Undefined, FGState::ShaderRead);
-    const FGHandle<FGTexture> entityTarget =
-        graph->Import("AimLab.Entity", {fbWidth, fbHeight, TextureFormat::R32_SINT},
-                      m_Framebuffer->GetColorAttachments()[1], FGState::Undefined, FGState::ShaderRead);
-    const FGHandle<FGTexture> depth =
-        graph->Import("AimLab.Depth", {fbWidth, fbHeight, TextureFormat::D24_UNORM_S8},
-                      m_Framebuffer->GetDepthAttachment(), FGState::Undefined, FGState::Undefined);
-
+    // The graph creates all three targets at the window's size. Colour and
+    // entity IDs are exported: the UI draws the colour full screen, and a shot
+    // reads one entity ID next frame.
     struct SceneTargets
     {
         FGHandle<FGTexture> Color, Entity, Depth;
     };
-    graph->AddPass<SceneTargets>(
+    const SceneTargets& scene = graph->AddPass<SceneTargets>(
         "AimLab.Scene",
         [&](FGBuilder& builder, SceneTargets& targets)
         {
             FGAttachment sky;
             sky.ClearColor = {0.1f, 0.1f, 0.15f, 1.0f};
-            targets.Color = builder.Write(color, FGWrite::RenderTarget, sky);
+            targets.Color = builder.Write(builder.Create(kSceneColor, {width, height, TextureFormat::RGBA8_SRGB}),
+                                          FGWrite::RenderTarget, sky);
             FGAttachment noEntity; // -1: no entity under the crosshair
             noEntity.ClearColor = {-1.0f, -1.0f, -1.0f, -1.0f};
-            targets.Entity = builder.Write(entityTarget, FGWrite::RenderTarget, noEntity);
-            targets.Depth = builder.Write(depth, FGWrite::DepthTarget);
+            targets.Entity = builder.Write(builder.Create(kSceneEntity, {width, height, TextureFormat::R32_SINT}),
+                                           FGWrite::RenderTarget, noEntity);
+            targets.Depth = builder.Write(builder.Create("AimLab.Depth", {width, height, TextureFormat::D24_UNORM_S8}),
+                                          FGWrite::DepthTarget);
         },
         [this](const SceneTargets&, FGContext& context) { RecordScenePass(context); });
+    graph->Export(scene.Color);
+    graph->Export(scene.Entity, {.FinalState = FGState::ShaderRead, .CopySource = true});
 }
 
 void AimLabLayer::RecordScenePass(UHE::RHI::FGContext& context)
@@ -393,10 +384,14 @@ void AimLabLayer::RespawnTarget(UHE::Entity target)
 void AimLabLayer::OnImGuiRender()
 {
     // === Blit framebuffer to full screen ===
-    void* texInfo = m_Framebuffer->GetColorAttachmentRendererID(0);
-    ImGui::GetBackgroundDrawList()->AddImage(
-        texInfo, ImVec2(0, 0), ImVec2(static_cast<f32>(m_ViewportWidth), static_cast<f32>(m_ViewportHeight)),
-        ImVec2(0, 1), ImVec2(1, 0));
+    // The texture this frame's scene pass renders.
+    if (UHE::RHI::TextureHandle color = UHE::Renderer::GetDevice().GetExportedTexture(kSceneColor))
+    {
+        void* texInfo = reinterpret_cast<UHE::RHI::RHITexture*>(color)->GetImGuiTextureID();
+        ImGui::GetBackgroundDrawList()->AddImage(
+            texInfo, ImVec2(0, 0), ImVec2(static_cast<f32>(m_ViewportWidth), static_cast<f32>(m_ViewportHeight)),
+            ImVec2(0, 1), ImVec2(1, 0));
+    }
 
     // === Crosshair fixed at screen center ===
     ImVec2 crosshairPos(static_cast<f32>(m_ViewportWidth) * 0.5f, static_cast<f32>(m_ViewportHeight) * 0.5f);
