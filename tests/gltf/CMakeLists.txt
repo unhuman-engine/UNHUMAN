@@ -22,6 +22,8 @@ set(GLTF_TEST_SOURCES
     # LoadModel.cpp resolves asset paths through the VFS mounts; VfsSystem.cpp is
     # GPU-free, so the harness compiles the real TU.
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/AssetsManager/VfsSystem.cpp
+    # The starter shapes a new project gets; loaded back through the real loader.
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/AssetsManager/PrimitiveGltf.cpp
 )
 
 # The loader reports failures through UHE::Log macros, which the test does not

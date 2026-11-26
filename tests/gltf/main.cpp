@@ -29,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "UHE/AssetsManager/PrimitiveGltf.h"
 #include "UHE/Core/Log.h"
 #include "UHE/Renderer3D/LightSystem.h"
 #include "UHE/Renderer3D/LoadModel.h"
@@ -1520,6 +1521,48 @@ int main()
     {
         UHE::RD3d::Model model;
         check(!model.loadModel(dir.path() / "does_not_exist.gltf"), "missing file returns false");
+    }
+
+    // ---------------------------------------------------------------------
+    section("starter shapes load with outward normals");
+    {
+        // What a new project's scene is built from: a ground plane and a cube,
+        // with normals (the engine's own cube.gltf has none and draws black).
+        struct Case
+        {
+            const char* file;
+            UHE::PrimitiveShape shape;
+            std::size_t vertices;
+            std::size_t indices;
+        };
+        for (const Case& c : {Case{"starter_plane.gltf", UHE::PrimitiveShape::Plane, 4, 6},
+                              Case{"starter_cube.gltf", UHE::PrimitiveShape::Cube, 24, 36}})
+        {
+            std::string error;
+            const fs::path path = dir.path() / c.file;
+            check(UHE::WritePrimitiveGltf(path, c.shape, {0.8f, 0.4f, 0.2f, 1.0f}, 0.6f, &error), "shape is written");
+            UHE::RD3d::Model model;
+            if (!model.loadModel(path) || model.GetGeometry().empty() || model.GetGeometry()[0].primitive.empty())
+            {
+                check(false, "shape loads");
+                continue;
+            }
+            const auto& prim = model.GetGeometry()[0].primitive[0];
+            check(prim.indices.size() == c.indices, "every triangle is there");
+            check(prim.vertices.size() == c.vertices, "one vertex per face corner");
+            bool outward = true;
+            for (const auto& v : prim.vertices)
+            {
+                // Each face's normal points the same way as its centre does from the origin.
+                const glm::vec3 n = v.normal;
+                outward &= std::fabs(glm::length(n) - 1.0f) < 1e-4f &&
+                           (c.shape == UHE::PrimitiveShape::Plane ? n.y > 0.99f : glm::dot(n, v.position) > 0.0f);
+            }
+            check(outward, "normals are unit length and face outwards");
+            check(!model.GetMaterials().empty() &&
+                      closeTo(glm::vec3(model.GetMaterials()[0].BaseColorFactor), glm::vec3(0.8f, 0.4f, 0.2f)),
+                  "the material carries the colour");
+        }
     }
 
     // ---------------------------------------------------------------------
