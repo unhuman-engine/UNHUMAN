@@ -166,6 +166,19 @@ void Editor::OnAttach()
     }
 
     RegisterConsoleEntries();
+
+    // -exec "<console line>[; <console line>...]": run console commands at start-up,
+    // for scripted runs (a capture of one buffer view, a fixed tick rate).
+    const std::string startup = CommandLine::GetValue("-exec");
+    size_t begin = 0;
+    while (begin < startup.size())
+    {
+        const size_t end = std::min(startup.find(';', begin), startup.size());
+        const std::string line = startup.substr(begin, end - begin);
+        if (line.find_first_not_of(' ') != std::string::npos)
+            UHE_CORE_INFO("-exec {0}: {1}", line, Console::Get().Execute(line));
+        begin = end + 1;
+    }
 }
 
 void Editor::OnDetach()
@@ -178,7 +191,8 @@ void Editor::OnDetach()
 namespace
 {
 /// @brief Every console entry the editor owns, so OnDetach removes exactly these.
-constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "scene.stats", "clear"};
+constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "view.buffer", "scene.stats",
+                                                 "clear"};
 } // namespace
 
 void Editor::RegisterConsoleEntries()
@@ -211,6 +225,22 @@ void Editor::RegisterConsoleEntries()
                                 char text[64];
                                 std::snprintf(text, sizeof(text), "sim.tickrate = %.0f Hz", 1.0 / clock.GetFixedStep());
                                 return text;
+                            });
+
+    console.RegisterCommand("view.buffer", "view.buffer [image|ao|depth|bloom]: what the lit viewport shows",
+                            [this](const std::vector<std::string>& args) -> std::string
+                            {
+                                static constexpr const char* kNames[] = {"image", "ao", "depth", "bloom"};
+                                if (!args.empty())
+                                {
+                                    const auto* found =
+                                        std::find_if(std::begin(kNames), std::end(kNames),
+                                                     [&](const char* name) { return args.front() == name; });
+                                    if (found == std::end(kNames))
+                                        return "expected image, ao, depth or bloom";
+                                    m_DebugBuffer = static_cast<int>(found - std::begin(kNames));
+                                }
+                                return std::string("view.buffer = ") + kNames[std::clamp(m_DebugBuffer, 0, 3)];
                             });
 
     console.RegisterCommand("scene.stats", "entity count and simulation tick of the active scene",
@@ -364,6 +394,7 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
     desc.SceneData = m_ActiveScene;
     desc.Runtime = runtime;
     desc.Lit = m_ViewMode == Renderer3D::ViewMode::Lit;
+    desc.DebugBuffer = m_DebugBuffer;
     desc.Time = m_SceneTime;
     // Editing clears to a neutral grey, like Blender's and Godot's viewports,
     // so the grid and dark objects read; the running game keeps its own black.
@@ -2462,6 +2493,16 @@ void Editor::DrawViewportCameraMenu()
         m_EditorCamera.SetSpeedMultiplier(speed);
     if (ImGui::MenuItem("Frame Selected", "F"))
         FocusSelectedEntity();
+    ImGui::SeparatorText("Buffer");
+    // What the lit view shows: the image, or one of the buffers it is made from.
+    static constexpr const char* kBuffers[] = {"Final Image", "Ambient Occlusion", "Depth", "Bloom"};
+    for (int i = 0; i < 4; ++i)
+    {
+        if (ImGui::MenuItem(kBuffers[i], nullptr, m_DebugBuffer == i))
+            m_DebugBuffer = i;
+    }
+    if (m_ViewMode != Renderer3D::ViewMode::Lit)
+        ImGui::TextDisabled("Buffers show in the Lit shading mode.");
     ImGui::SeparatorText("Window");
     if (ImGui::MenuItem("Fullscreen Viewport", "Ctrl+Shift+F", m_IsViewportFullScreen))
         m_IsViewportFullScreen = !m_IsViewportFullScreen;

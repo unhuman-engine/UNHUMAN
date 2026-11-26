@@ -100,6 +100,7 @@ private:
     bool m_ViewportPointerInside = false;
     bool m_UIMouseWasDown = false;
     bool m_ShowGameUI = true; ///< View > Overlays: draw the game UI over the viewport
+    int m_DebugBuffer = 0;    ///< View > Buffer: SceneRenderer::Desc::DebugBuffer (lit view only)
 
     // ---- editor ergonomics ----
     void Notify(NotificationCenter::Kind kind, std::string title, std::string message = {});

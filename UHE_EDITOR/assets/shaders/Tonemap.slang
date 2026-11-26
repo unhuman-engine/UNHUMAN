@@ -29,6 +29,10 @@ struct PushConstants
     float bloomIntensity; // share of the bloomed image in the result
     int flipY;            // 1: read the input upside down (a game drawing into the backbuffer)
     int fxaa;             // 1: anti-alias edges
+    int debugView;        // 0 the image; 1 ambient occlusion; 2 depth as distance; 3 bloom alone
+    int debugTexture;     // bindless slot of the buffer shown (1, 2)
+    float depthA;         // 2: clip.z = depthA * z + depthB, the projection's terms
+    float depthB;
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc;
@@ -107,9 +111,34 @@ float3 Fxaa(float2 uv, float3 centre)
     return (lumaWide < lumaMin || lumaWide > lumaMax) ? near : wide;
 }
 
+/// An intermediate buffer, for the editor's View > Buffer.
+float3 DebugBuffer(float2 uv)
+{
+    if (pc.debugView == 3)
+    {
+        if (pc.bloomTexture < 0)
+            return float3(0.0, 0.0, 0.0);
+        const float3 bloom = u_Textures[NonUniformResourceIndex(uint(pc.bloomTexture))].SampleLevel(uv, 0.0).rgb;
+        return ACESFilm(bloom * pc.exposure);
+    }
+    if (pc.debugTexture < 0)
+        return float3(1.0, 0.0, 1.0); // the buffer does not exist this frame (feature off)
+    const float value = u_Textures[NonUniformResourceIndex(uint(pc.debugTexture))].SampleLevel(uv, 0.0).r;
+    if (pc.debugView == 1)
+        return float3(value, value, value);
+    // Depth: metres from the camera, 0 white to 100 m black, the far plane as sky blue.
+    if (value >= 0.999999)
+        return float3(0.35, 0.45, 0.6);
+    const float metres = pc.depthB / (value + pc.depthA);
+    const float shade = 1.0 - saturate(metres / 100.0);
+    return float3(shade, shade, shade) * shade;
+}
+
 [shader("fragment")]
 float4 fragmentMain(VSOutput input) : SV_Target0
 {
+    if (pc.debugView != 0)
+        return float4(DebugBuffer(input.uv), 1.0);
     const float3 colour = Display(input.uv);
     return float4(pc.fxaa != 0 ? Fxaa(input.uv, colour) : colour, 1.0);
 }

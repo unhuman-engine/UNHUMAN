@@ -25,8 +25,12 @@ struct TonemapPushConstants
     f32 Exposure = 1.0f;
     i32 BloomTexture = -1; ///< bindless slot, or -1 for no bloom
     f32 BloomIntensity = 0.0f;
-    i32 FlipY = 0; ///< 1: sample the input upside down
-    i32 Fxaa = 0;  ///< 1: anti-alias edges in the same pass
+    i32 FlipY = 0;         ///< 1: sample the input upside down
+    i32 Fxaa = 0;          ///< 1: anti-alias edges in the same pass
+    i32 DebugView = 0;     ///< TonemapSettings::DebugView
+    i32 DebugTexture = -1; ///< bindless slot of the buffer shown
+    f32 DepthA = 0.0f;
+    f32 DepthB = 0.0f;
 };
 
 /// Must match `PushConstants` in Bloom.slang; checked against reflection.
@@ -304,6 +308,7 @@ RHI::FGHandle<RHI::FGTexture> TonemapInto(RHI::FrameGraph& graph, RHI::FGHandle<
     {
         FGHandle<FGTexture> Hdr;
         FGHandle<FGTexture> Bloom;
+        FGHandle<FGTexture> Debug;
         FGHandle<FGTexture> Output;
     };
     const TonemapData& data = graph.AddPass<TonemapData>(
@@ -313,6 +318,8 @@ RHI::FGHandle<RHI::FGTexture> TonemapInto(RHI::FrameGraph& graph, RHI::FGHandle<
             d.Hdr = builder.Read(hdr);
             if (bloom.IsValid())
                 d.Bloom = builder.Read(bloom);
+            if (settings.DebugTexture.IsValid())
+                d.Debug = builder.Read(settings.DebugTexture);
             // Every pixel is written, so the target's old contents are not loaded.
             FGAttachment overwrite;
             overwrite.Load = LoadOp::Clear;
@@ -342,6 +349,12 @@ RHI::FGHandle<RHI::FGTexture> TonemapInto(RHI::FrameGraph& graph, RHI::FGHandle<
             pc.BloomIntensity = settings.BloomIntensity;
             pc.FlipY = settings.FlipY ? 1 : 0;
             pc.Fxaa = settings.Fxaa ? 1 : 0;
+            pc.DebugView = static_cast<i32>(settings.Debug);
+            if (d.Debug.IsValid())
+                if (const TextureHandle debug = context.Get(d.Debug))
+                    pc.DebugTexture = static_cast<i32>(reinterpret_cast<RHITexture*>(debug)->GetTextureIndex());
+            pc.DepthA = settings.DepthA;
+            pc.DepthB = settings.DepthB;
             cmd.PushConstants(ShaderStage::AllGraphics, &pc, sizeof(pc), 0);
             cmd.Draw(3, 0);
         });

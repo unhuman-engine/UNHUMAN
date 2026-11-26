@@ -18,6 +18,20 @@ struct TonemapSettings
     bool FlipY = false;
     /// FXAA on the tonemapped result, in the same pass (each tap is tonemapped first).
     bool Fxaa = false;
+
+    /// Shows an intermediate buffer instead of the image (the editor's View > Buffer).
+    enum class DebugView : int
+    {
+        None = 0,
+        AmbientOcclusion = 1, ///< DebugTexture: the SSAO result, grey
+        Depth = 2,            ///< DebugTexture: the scene depth, as distance from the camera
+        Bloom = 3,            ///< the bloom chain alone, tonemapped
+    };
+    DebugView Debug = DebugView::None;
+    RHI::FGHandle<RHI::FGTexture> DebugTexture;
+    /// Depth: clip.z = A * z + B of the projection (P[2][2], P[3][2]), to turn depth into metres.
+    float DepthA = 0.0f;
+    float DepthB = 0.0f;
 };
 
 /**

@@ -582,6 +582,7 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
 
     FGHandle<FGTexture> hdr = scene.Color;
     FGHandle<FGTexture> entity = scene.Entity;
+    FGHandle<FGTexture> latestDepth = scene.Depth; ///< the newest version, for View > Buffer > Depth
 
     // ── Sky: behind everything, where the colour pass left the far plane ──
     if (SkyRenderer::Draws(settings.Sky))
@@ -713,6 +714,7 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
                 Renderer3D::SetColorTarget(TextureFormat::Undefined);
             });
         hdr = overlays.Color;
+        latestDepth = overlays.Depth;
     }
     output.Entity = entity;
 
@@ -724,6 +726,16 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
 
     tonemap.FlipY = desc.Target.IsValid() && desc.FlipTarget;
     tonemap.Fxaa = settings.AntiAliasing.FXAA;
+    tonemap.Debug = static_cast<TonemapSettings::DebugView>(std::clamp(desc.DebugBuffer, 0, 3));
+    if (tonemap.Debug == TonemapSettings::DebugView::AmbientOcclusion)
+        tonemap.DebugTexture = occlusion; // invalid with SSAO off: shown magenta
+    else if (tonemap.Debug == TonemapSettings::DebugView::Depth)
+    {
+        tonemap.DebugTexture = latestDepth;
+        const glm::mat4 projection = desc.ResolveView ? desc.ResolveView().Projection : glm::mat4(1.0f);
+        tonemap.DepthA = projection[2][2];
+        tonemap.DepthB = projection[3][2];
+    }
     if (desc.Target.IsValid())
         output.Color = PostProcess::AddTonemapPass(graph, hdr, desc.Target, desc.TargetFormat, tonemap, bloom);
     else

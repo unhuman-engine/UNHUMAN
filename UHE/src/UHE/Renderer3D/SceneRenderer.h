@@ -47,7 +47,10 @@ public:
         RHI::FGHandle<RHI::FGTexture> Target;
         RHI::TextureFormat TargetFormat = RHI::TextureFormat::Undefined;
         bool FlipTarget = false; ///< present upright in a backbuffer (TonemapSettings::FlipY)
-        std::string EntityName;  ///< the entity IDs (R32_SINT)
+        /// Lit view only: show an intermediate buffer instead of the image
+        /// (TonemapSettings::DebugView: 1 ambient occlusion, 2 depth, 3 bloom).
+        int DebugBuffer = 0;
+        std::string EntityName; ///< the entity IDs (R32_SINT)
         /// The camera, asked once when the first pass executes.
         std::function<SceneRenderView()> ResolveView;
         /// Records the colour pass's draws (scene, sprites, icons); viewport and scissor are set.
