@@ -11,9 +11,9 @@ namespace UHE {
 
 	void SceneCamera::SetOrthographic(f32 size, f32 nearClip, f32 farClip)
 	{
-		m_ProjectionType = ProjectionType::Perpective;
+        m_ProjectionType = ProjectionType::Orhtographic;
 
-		m_OrhtographicSize = size;
+        m_OrhtographicSize = size;
 		m_OrthographicNear = nearClip;
 		m_OthergraphicFar = farClip;
 		RecalculateProjection();
@@ -27,8 +27,12 @@ namespace UHE {
 
 	void SceneCamera::SetPerspective(f32 fov, f32 nearClip, f32 farClip)
 	{
-		m_PerspectiveFOV = fov; m_PerspectiveNear = nearClip; m_OthergraphicFar = farClip; RecalculateProjection();
-	}
+        m_ProjectionType = ProjectionType::Perpective;
+        m_PerspectiveFOV = fov;
+        m_PerspectiveNear = nearClip;
+        m_PerspectiveFar = farClip;
+        RecalculateProjection();
+    }
 	// Fix: Ensure m_Projection is of type glm::mat4 (or compatible with glm::ortho return type)
     // If not, update its declaration in SceneCamera.h to:
     // glm::mat4 m_Projection;

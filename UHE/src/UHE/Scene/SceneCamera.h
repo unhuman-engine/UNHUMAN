@@ -30,9 +30,9 @@ public:
         RecalculateProjection();
     }
     f32 GetOrthographicNearClip() const { return m_OrthographicNear; }
-    f32 SetOrthoGraphicNearClip(f32 nearClip)
+    void SetOrthoGraphicNearClip(f32 nearClip)
     {
-        return m_OrthographicNear = nearClip;
+        m_OrthographicNear = nearClip;
         RecalculateProjection();
     }
     f32 GetOrthographicFarClip() const { return m_OthergraphicFar; }
@@ -45,7 +45,9 @@ public:
 
     f32 GetProjectionFOV() const { return m_PerspectiveFOV; }
     f32 GetProjectionNear() const { return m_PerspectiveNear; }
-    f32 GetProjectionFar() const { return m_OthergraphicFar; }
+    /// @brief The perspective far plane (it used to return the orthographic one,
+    ///        so every saved scene stored a perspective far plane of 1 m).
+    f32 GetProjectionFar() const { return m_PerspectiveFar; }
 
     void SetPerspectiveFOV(f32 fov)
     {

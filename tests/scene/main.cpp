@@ -377,12 +377,34 @@ static void TestFixedStepDeterminism()
     stepped->OnRuntimeStop();
 }
 
+// The scene camera's clip planes, as the serializer and the inspector read them.
+static void TestSceneCameraClipPlanes()
+{
+    SceneCamera camera;
+    camera.SetViewportSize(1600, 900);
+    camera.SetPerspective(glm::radians(50.0f), 0.1f, 500.0f);
+    camera.SetOrthographic(10.0f, -1.0f, 1.0f);
+    camera.SetProjectionType(SceneCamera::ProjectionType::Perpective);
+    // GetProjectionFar returned the orthographic far plane (1), which every
+    // saved scene then loaded as its perspective far plane.
+    CHECK(camera.GetProjectionFar() == 500.0f, "perspective far plane is its own, not the orthographic one");
+    CHECK(camera.GetProjectionNear() == 0.1f, "perspective near plane round-trips");
+    CHECK(camera.GetOrthographicFarClip() == 1.0f, "orthographic far plane is unchanged");
+
+    camera.SetProjectionType(SceneCamera::ProjectionType::Orhtographic);
+    const glm::mat4 before = camera.GetProjection();
+    camera.SetOrthoGraphicNearClip(-5.0f);
+    CHECK(camera.GetOrthographicNearClip() == -5.0f, "orthographic near plane is set");
+    CHECK(camera.GetProjection() != before, "changing the orthographic near plane updates the projection");
+}
+
 int main()
 {
     Scene::GetEditorOverlays().LightIcons = false; // no texture loading in headless tests
     Physics::PhysicsSystem3D::Init();   // Jolt global registration (Factory/RegisterTypes)
 
     TestCreationAndIndex();
+    TestSceneCameraClipPlanes();
     TestHierarchy();
     TestRecursiveDestroy();
     TestScriptLifetime();
