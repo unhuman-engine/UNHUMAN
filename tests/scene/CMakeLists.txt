@@ -38,6 +38,7 @@ add_executable(scene_test
     # The scene step drives animation graphs; both are pure logic (the
     # Animator they act on is stubbed in tests/scene/stubs.cpp).
     ${SCENE_SRC_DIR}/Animation/AnimationGraph.cpp
+    ${SCENE_SRC_DIR}/Animation/Sequence.cpp
     ${SCENE_SRC_DIR}/Renderer3D/AnimationStateMachine.cpp
 )
 

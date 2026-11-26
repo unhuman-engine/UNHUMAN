@@ -601,6 +601,88 @@ static void TestTerrain()
 }
 
 // --- game UI: layout, clicks and sliders ---
+/// The sequencer's timeline logic: sampling, keys, playback and events.
+static void TestSequence()
+{
+    std::cout << "TestSequence\n";
+    SequenceTrack track;
+    CHECK(Sequence::Sample(track, 1.0f, glm::vec3(7.0f)) == glm::vec3(7.0f), "no keys: the fallback");
+    Sequence::SetKey(track, 2.0f, glm::vec3(10.0f), SequenceInterp::Linear);
+    Sequence::SetKey(track, 0.0f, glm::vec3(0.0f), SequenceInterp::Linear);
+    CHECK(track.Keys.size() == 2 && track.Keys[0].Time == 0.0f, "keys stay sorted on insert");
+    CHECK(Sequence::SetKey(track, 2.0002f, glm::vec3(20.0f)) == 1 && track.Keys.size() == 2 &&
+              track.Keys[1].Value == glm::vec3(20.0f),
+          "a key at the same time is replaced, not duplicated");
+    CHECK(std::abs(Sequence::Sample(track, 1.0f, {}).x - 10.0f) < 1e-5f, "linear halfway");
+    CHECK(Sequence::Sample(track, -1.0f, {}).x == 0.0f && Sequence::Sample(track, 9.0f, {}).x == 20.0f,
+          "held before the first key and after the last");
+    track.Keys[0].Interp = SequenceInterp::Step;
+    CHECK(Sequence::Sample(track, 1.9f, {}).x == 0.0f, "step holds until the next key");
+
+    // Smooth passes through every key and has no corner at a middle key.
+    SequenceTrack smooth;
+    Sequence::SetKey(smooth, 0.0f, glm::vec3(0.0f));
+    Sequence::SetKey(smooth, 1.0f, glm::vec3(1.0f));
+    Sequence::SetKey(smooth, 2.0f, glm::vec3(0.0f));
+    CHECK(std::abs(Sequence::Sample(smooth, 1.0f, {}).x - 1.0f) < 1e-5f, "smooth passes through its keys");
+    const float before = Sequence::Sample(smooth, 0.999f, {}).x;
+    const float after = Sequence::Sample(smooth, 1.001f, {}).x;
+    CHECK(std::abs(before - after) < 1e-3f, "smooth: no corner at the middle key");
+    CHECK(Sequence::Sample(smooth, 0.5f, {}).x > 0.5f, "smooth bulges towards the peak, unlike linear");
+
+    // Playback: once through, then stopped at the end.
+    Sequence sequence;
+    sequence.Duration = 2.0f;
+    SequenceTrack events;
+    events.Property = SequenceProperty::Event;
+    for (const auto& [t, name] : {std::pair{0.0f, "start"}, {0.5f, "half"}, {1.5f, "late"}, {2.0f, "end"}})
+    {
+        SequenceKey key;
+        key.Time = t;
+        key.Event = name;
+        events.Keys.push_back(key);
+    }
+    sequence.Tracks.push_back(events);
+    float time = 0.0f;
+    bool playing = true;
+    std::vector<std::string> fired;
+    sequence.Advance(time, playing, 0.6f, &fired);
+    CHECK(fired == std::vector<std::string>({"start", "half"}), "a key at 0 fires when playback starts there");
+    fired.clear();
+    sequence.Advance(time, playing, 5.0f, &fired);
+    CHECK(fired == std::vector<std::string>({"late", "end"}) && !playing && time == 2.0f,
+          "once through: stops at the end after the last events");
+
+    // Looping: a step across the end fires the events on both sides, in order.
+    sequence.Loop = true;
+    time = 1.4f;
+    playing = true;
+    fired.clear();
+    sequence.Advance(time, playing, 1.2f, &fired);
+    CHECK(fired == std::vector<std::string>({"late", "end", "start", "half"}) && playing &&
+              std::abs(time - 0.6f) < 1e-5f,
+          "a loop wraps and fires across the wrap in order");
+    fired.clear();
+    sequence.Advance(time, playing, -1.0f, &fired);
+    CHECK(fired.empty() && std::abs(time - 1.6f) < 1e-5f, "reverse playback wraps back without events");
+
+    // In a scene: tracks move their targets by UUID; a missing target is skipped.
+    auto scene = CreateRef<Scene>();
+    Entity door = scene->CreateEntity("Door");
+    SequenceTrack slide;
+    slide.Target = door.GetUUID();
+    Sequence::SetKey(slide, 0.0f, glm::vec3(0.0f), SequenceInterp::Linear);
+    Sequence::SetKey(slide, 1.0f, glm::vec3(0.0f, 3.0f, 0.0f), SequenceInterp::Linear);
+    SequenceTrack ghost = slide;
+    ghost.Target = 12345;
+    Sequence opening;
+    opening.Duration = 1.0f;
+    opening.Tracks = {slide, ghost};
+    scene->ApplySequence(opening, 0.5f);
+    CHECK(std::abs(door.GetComponent<TransformComponent>().Translation.y - 1.5f) < 1e-5f,
+          "ApplySequence moves the target");
+}
+
 static void TestUI()
 {
     std::cout << "[ui]\n";
@@ -747,6 +829,7 @@ int main()
     TestTerrain();
     TestStaleEntityHandles();
     TestUI();
+    TestSequence();
     TestHierarchy();
     TestRecursiveDestroy();
     TestScriptLifetime();

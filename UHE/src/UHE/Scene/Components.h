@@ -4,6 +4,7 @@
 #include "SceneCamera.h"
 #include "UHE/Animation/Animation2D/SpriteAnimation.h"
 #include "UHE/Animation/AnimationGraph.h"
+#include "UHE/Animation/Sequence.h"
 #include "UHE/Core/Core.h"
 #include "UHE/Core/Timestep.h"
 #include "UHE/Core/UUID.h"
@@ -414,6 +415,28 @@ struct UHE_API TerrainComponent
 
     TerrainComponent() = default;
     TerrainComponent(const TerrainComponent&) = default;
+};
+
+/**
+ * @brief A timeline on an entity: tracks that move other entities and fire events (UHE/Animation/Sequence.h).
+ *
+ * In Play it starts at 0 when PlayOnStart is set and advances with the frame,
+ * like animation. Event keys call `OnSequenceEvent(self, name)` on this
+ * entity's script; a script drives it with PlaySequence, PauseSequence,
+ * StopSequence and SetSequenceTime. Edited in the editor's Sequencer panel.
+ */
+struct UHE_API SequencerComponent
+{
+    Sequence Data;
+    bool PlayOnStart = true;
+    float Speed = 1.0f; ///< playback rate; negative plays backwards (no events)
+
+    // Playback state; not saved.
+    float Time = 0.0f;
+    bool Playing = false;
+
+    SequencerComponent() = default;
+    SequencerComponent(const SequencerComponent&) = default;
 };
 
 // ── Game UI ────────────────────────────────────────────────────────────────

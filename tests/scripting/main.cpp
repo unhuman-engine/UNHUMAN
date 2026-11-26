@@ -327,6 +327,85 @@ end
         check(engine.ErroredInstanceCount() == 0, "nothing errored");
     }
 
+    section("sequencer");
+    {
+        // A door that a sequence opens, with events the script answers.
+        const std::string script = WriteScript("sequence.lua", R"(
+function OnCreate(self)
+    self.heard = ""
+end
+
+function OnSequenceEvent(self, name)
+    self.heard = self.heard .. name .. ";"
+    if name == "opened" then
+        Find("Label"):SetText(self.heard .. string.format("%.1f", self:GetSequenceTime()))
+        self:PauseSequence()
+    end
+end
+)");
+        const std::string path = (g_ScriptDir / "sequence.unhuman").string();
+        {
+            Ref<Scene> source = CreateRef<Scene>();
+            Entity door = source->CreateEntity("Door");
+            Entity director = SpawnScripted(*source, "Director", script);
+            source->CreateEntity("Label").AddComponent<UITextComponent>();
+            auto& sequencer = director.AddComponent<SequencerComponent>();
+            sequencer.Data.Duration = 2.0f;
+            SequenceTrack slide;
+            slide.Target = door.GetUUID();
+            Sequence::SetKey(slide, 0.0f, glm::vec3(0.0f), SequenceInterp::Linear);
+            Sequence::SetKey(slide, 1.0f, glm::vec3(0.0f, 3.0f, 0.0f), SequenceInterp::Linear);
+            sequencer.Data.Tracks.push_back(slide);
+            SequenceTrack events;
+            events.Property = SequenceProperty::Event;
+            for (const auto& [t, name] : {std::pair{0.25f, "moving"}, {1.0f, "opened"}})
+            {
+                SequenceKey key;
+                key.Time = t;
+                key.Event = name;
+                events.Keys.push_back(key);
+            }
+            sequencer.Data.Tracks.push_back(events);
+            SceneSerializer(source).Serialize(path);
+        }
+
+        Ref<Scene> loaded = CreateRef<Scene>();
+        check(SceneSerializer(loaded).Deserialize(path), "a scene with a sequence loads");
+        Entity door;
+        Entity director;
+        Entity label;
+        for (auto handle : loaded->GetRegistry().view<TagComponent>())
+        {
+            const std::string& tag = loaded->GetRegistry().get<TagComponent>(handle).Tag;
+            Entity entity{handle, loaded.get()};
+            if (tag == "Door")
+                door = entity;
+            else if (tag == "Director")
+                director = entity;
+            else if (tag == "Label")
+                label = entity;
+        }
+        auto* sequencer = director.TryGetComponent<SequencerComponent>();
+        check(sequencer != nullptr && sequencer->Data.Tracks.size() == 2 &&
+                  sequencer->Data.Tracks[0].Target == door.GetUUID() && sequencer->Data.Tracks[1].Keys.size() == 2 &&
+                  sequencer->Data.Tracks[1].Keys[1].Event == "opened",
+              "tracks, targets, keys and events survive save and load");
+
+        // 1/8 s steps add up exactly, so the playhead lands on the key at 1 s.
+        Start(*loaded);
+        Step(*loaded, 0.125f, 1); // OnCreate
+        Step(*loaded, 0.125f, 3);
+        const float y = door.GetComponent<TransformComponent>().Translation.y;
+        check(std::abs(y - 1.5f) < 1e-4f, "playing from Play start moves the door along its track");
+        Step(*loaded, 0.125f, 10);
+        check(label.GetComponent<UITextComponent>().Text == "moving;opened;1.0",
+              "OnSequenceEvent heard both events in order, and the script read the time");
+        check(sequencer->Time == 1.0f && !sequencer->Playing, "PauseSequence from the event stopped it there");
+        // StopSequence rewinds and poses the start; PlaySequence plays again.
+        ScriptEngine::Get().OnSceneStop(*loaded);
+        check(engine.ErroredInstanceCount() == 0, "nothing errored");
+    }
+
     section("camera far plane across save and load");
     {
         // A camera whose two far planes are equal on purpose keeps them after

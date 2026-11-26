@@ -76,6 +76,7 @@ Scene::Scene() : m_InstanceId(g_NextSceneId++)
     m_registry.storage<ModelNodeComponent>();
     m_registry.storage<RelationshipComponent>();
     m_registry.storage<TerrainComponent>();
+    m_registry.storage<SequencerComponent>();
 }
 
 Scene::~Scene()
@@ -314,6 +315,8 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
         // The built mesh and heights are shared, not rebuilt: they are immutable once built.
         if (srcRegistry.all_of<TerrainComponent>(srcEntity))
             newEntity.AddComponent<TerrainComponent>() = srcRegistry.get<TerrainComponent>(srcEntity);
+        if (srcRegistry.all_of<SequencerComponent>(srcEntity))
+            newEntity.AddComponent<SequencerComponent>() = srcRegistry.get<SequencerComponent>(srcEntity);
         if (srcRegistry.all_of<UIRectComponent>(srcEntity))
             newEntity.AddComponent<UIRectComponent>() = srcRegistry.get<UIRectComponent>(srcEntity);
         if (srcRegistry.all_of<UIImageComponent>(srcEntity))
@@ -558,6 +561,56 @@ void Scene::DestroyEntity(Entity entity)
 }
 
 // --- Issue #17: hierarchy helpers ---
+
+void Scene::ApplySequence(const Sequence& sequence, float time)
+{
+    for (const SequenceTrack& track : sequence.Tracks)
+    {
+        if (track.Muted || track.Property == SequenceProperty::Event || track.Keys.empty())
+            continue;
+        Entity target = GetEntityWithUUID(track.Target);
+        auto* transform = target.TryGetComponent<TransformComponent>();
+        if (transform == nullptr)
+            continue;
+        switch (track.Property)
+        {
+            case SequenceProperty::Position:
+                transform->Translation = Sequence::Sample(track, time, transform->Translation);
+                break;
+            case SequenceProperty::Rotation:
+                transform->Rotation = Sequence::Sample(track, time, transform->Rotation);
+                break;
+            case SequenceProperty::Scale:
+                transform->Scale = Sequence::Sample(track, time, transform->Scale);
+                break;
+            case SequenceProperty::Event:
+                break;
+        }
+    }
+}
+
+void Scene::StepSequences(Timestep ts)
+{
+    UHE_PROFILE_FUNCTION();
+    std::vector<std::pair<entt::entity, std::vector<std::string>>> fired;
+    auto view = m_registry.view<SequencerComponent>();
+    for (auto entity : view)
+    {
+        SequencerComponent& sequencer = view.get<SequencerComponent>(entity);
+        if (!sequencer.Playing)
+            continue;
+        std::vector<std::string> events;
+        sequencer.Data.Advance(sequencer.Time, sequencer.Playing, ts.GetSeconds() * sequencer.Speed, &events);
+        ApplySequence(sequencer.Data, sequencer.Time);
+        if (!events.empty())
+            fired.emplace_back(entity, std::move(events));
+    }
+    for (auto& [entity, events] : fired)
+    {
+        for (const std::string& name : events)
+            ScriptEngine::Get().OnSequenceEvent(*this, static_cast<u32>(entity), name);
+    }
+}
 
 Entity Scene::GetEntityWithUUID(u64 uuid)
 {
@@ -1564,6 +1617,7 @@ void Scene::OnUpdateRuntimeSimulation(Timestep frame)
     // Presentation runs on the render delta: animation playback and audio
     // follow wall-clock time, and neither feeds back into the simulation.
     StepAnimators(frame);
+    StepSequences(frame);
     UpdateAudioSources(frame, true);
 
     // Issue #17: world transforms are refreshed in RenderRuntimeScene so the
@@ -1817,6 +1871,17 @@ void Scene::OnRuntimeStart()
             audio.RuntimeAutoStarted = false;
             audio.PlayRequested = false;
             audio.StopRequested = false;
+        });
+
+    // Sequences start before the bodies are made, so a kinematic body starts where its track puts it.
+    m_registry.view<SequencerComponent>().each(
+        [this](entt::entity, SequencerComponent& sequencer)
+        {
+            sequencer.Data.SortKeys();
+            sequencer.Time = 0.0f;
+            sequencer.Playing = sequencer.PlayOnStart;
+            if (sequencer.Playing)
+                ApplySequence(sequencer.Data, 0.0f);
         });
 
     // 1. Define and Create the World
@@ -2149,6 +2214,7 @@ template <> void Scene::OnComponentAdded<SpotLightComponent>(Entity entity, Spot
 template <> void Scene::OnComponentAdded<FoliageComponent>(Entity entity, FoliageComponent& component) {};
 template <> void Scene::OnComponentAdded<WaterComponent>(Entity entity, WaterComponent& component) {};
 template <> void Scene::OnComponentAdded<TerrainComponent>(Entity entity, TerrainComponent& component) {};
+template <> void Scene::OnComponentAdded<SequencerComponent>(Entity entity, SequencerComponent& component) {};
 template <> void Scene::OnComponentAdded<UIRectComponent>(Entity entity, UIRectComponent& component) {};
 template <> void Scene::OnComponentAdded<UIImageComponent>(Entity entity, UIImageComponent& component) {};
 template <> void Scene::OnComponentAdded<UITextComponent>(Entity entity, UITextComponent& component) {};

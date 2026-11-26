@@ -460,6 +460,45 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::EndMap;
     }
 
+    // Sequencer: tracks name their targets by UUID; each key is one flow map.
+    if (entity.HasComponent<SequencerComponent>())
+    {
+        auto& sc = entity.GetComponent<SequencerComponent>();
+        out << YAML::Key << "SequencerComponent" << YAML::BeginMap;
+        out << YAML::Key << "Duration" << YAML::Value << sc.Data.Duration;
+        out << YAML::Key << "Loop" << YAML::Value << sc.Data.Loop;
+        out << YAML::Key << "PlayOnStart" << YAML::Value << sc.PlayOnStart;
+        out << YAML::Key << "Speed" << YAML::Value << sc.Speed;
+        out << YAML::Key << "Tracks" << YAML::Value << YAML::BeginSeq;
+        for (const SequenceTrack& track : sc.Data.Tracks)
+        {
+            out << YAML::BeginMap;
+            out << YAML::Key << "Target" << YAML::Value << track.Target;
+            out << YAML::Key << "Property" << YAML::Value << SequencePropertyName(track.Property);
+            out << YAML::Key << "Muted" << YAML::Value << track.Muted;
+            out << YAML::Key << "Keys" << YAML::Value << YAML::BeginSeq;
+            for (const SequenceKey& key : track.Keys)
+            {
+                out << YAML::Flow << YAML::BeginMap;
+                out << YAML::Key << "Time" << YAML::Value << key.Time;
+                if (track.Property == SequenceProperty::Event)
+                {
+                    out << YAML::Key << "Event" << YAML::Value << key.Event;
+                }
+                else
+                {
+                    out << YAML::Key << "Value" << YAML::Value << key.Value;
+                    out << YAML::Key << "Interp" << YAML::Value << SequenceInterpName(key.Interp);
+                }
+                out << YAML::EndMap;
+            }
+            out << YAML::EndSeq;
+            out << YAML::EndMap;
+        }
+        out << YAML::EndSeq;
+        out << YAML::EndMap;
+    }
+
     // Wind zone (its direction is the entity's local -Z, so only the strengths are stored)
     if (entity.HasComponent<WindComponent>())
     {
@@ -1308,6 +1347,49 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             ReadOptional(terrainNode, "Collider", tc.Collider);
             // Resolution^2 quads are built: a hand-edited value must not reach the builder unclamped.
             tc.Resolution = std::clamp(tc.Resolution, 8, 1024);
+        }
+
+        // Sequencer: every field optional; an unknown property name drops its track, not the scene
+        if (auto sequencerNode = entityNode["SequencerComponent"])
+        {
+            auto& sc = entity.AddComponent<SequencerComponent>();
+            ReadOptional(sequencerNode, "Duration", sc.Data.Duration);
+            ReadOptional(sequencerNode, "Loop", sc.Data.Loop);
+            ReadOptional(sequencerNode, "PlayOnStart", sc.PlayOnStart);
+            ReadOptional(sequencerNode, "Speed", sc.Speed);
+            sc.Data.Duration = std::max(sc.Data.Duration, 0.01f);
+            if (const YAML::Node tracks = sequencerNode["Tracks"]; tracks && tracks.IsSequence())
+            {
+                for (const YAML::Node& trackNode : tracks)
+                {
+                    SequenceTrack track;
+                    ReadOptional(trackNode, "Target", track.Target);
+                    std::string property = "Position";
+                    ReadOptional(trackNode, "Property", property);
+                    if (!SequencePropertyFromName(property, track.Property))
+                    {
+                        UHE_CORE_WARN("Scene: a sequence track has an unknown property '{0}'; dropped", property);
+                        continue;
+                    }
+                    ReadOptional(trackNode, "Muted", track.Muted);
+                    if (const YAML::Node keys = trackNode["Keys"]; keys && keys.IsSequence())
+                    {
+                        for (const YAML::Node& keyNode : keys)
+                        {
+                            SequenceKey key;
+                            ReadOptional(keyNode, "Time", key.Time);
+                            ReadOptional(keyNode, "Value", key.Value);
+                            ReadOptional(keyNode, "Event", key.Event);
+                            std::string interp = "Smooth";
+                            ReadOptional(keyNode, "Interp", interp);
+                            SequenceInterpFromName(interp, key.Interp);
+                            track.Keys.push_back(std::move(key));
+                        }
+                    }
+                    sc.Data.Tracks.push_back(std::move(track));
+                }
+            }
+            sc.Data.SortKeys();
         }
 
         // Wind zone: every field optional, as for the area light

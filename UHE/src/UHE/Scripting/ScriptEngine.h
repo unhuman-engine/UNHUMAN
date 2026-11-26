@@ -74,6 +74,11 @@ public:
     /// disabled like any hook. \p entityId is an `entt::entity` as an integer.
     void OnUIClick(Scene& scene, u32 entityId);
 
+    /// Calls `OnSequenceEvent(self, name)` on the script of the entity whose
+    /// SequencerComponent passed an event key (Scene::StepSequences). Skipped
+    /// and failing the same way as OnUIClick.
+    void OnSequenceEvent(Scene& scene, u32 entityId, const std::string& name);
+
     /// Calls `OnDestroy` on every instance belonging to \p scene and forgets it.
     void OnSceneStop(Scene& scene);
 

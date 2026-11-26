@@ -37,6 +37,8 @@ struct BoxCollider3DComponent;
 struct SphereCollider3DComponent;
 struct CapsuleCollider3DComponent;
 struct TerrainComponent;
+struct SequencerComponent;
+struct Sequence;
 struct UIRectComponent;
 struct UIImageComponent;
 struct UITextComponent;
@@ -64,6 +66,14 @@ public:
     Entity CreateChildEntity(Entity parent, const std::string& name = std::string());
 
     void DestroyEntity(Entity entity);
+
+    /**
+     * @brief Sets every unmuted track's target to its value at \p time.
+     *
+     * Used by playback in Play and by the editor's Sequencer preview. A track
+     * whose target does not exist (deleted, or in another scene) is skipped.
+     */
+    void ApplySequence(const Sequence& sequence, float time);
 
     // Issue #17: hierarchy helpers operating on RelationshipComponent.
     Entity GetEntityWithUUID(u64 uuid);
@@ -259,6 +269,10 @@ private:
     // by the editor and runtime update paths so both see identical behaviour.
     void StepAnimators(Timestep ts);
 
+    /// Advances every playing SequencerComponent, applies it and fires its
+    /// events into the entity's script (after the loop: a script may change the registry).
+    void StepSequences(Timestep ts);
+
     // Starts/stops AudioSourceComponents and mirrors their options to the live
     // voice. Editor mode only honours explicit Play buttons; runtime also runs
     // Autoplay sources.
@@ -349,6 +363,7 @@ template <> UHE_API void Scene::OnComponentAdded<BoxCollider3DComponent>(Entity 
 template <> UHE_API void Scene::OnComponentAdded<SphereCollider3DComponent>(Entity entity, SphereCollider3DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<CapsuleCollider3DComponent>(Entity entity, CapsuleCollider3DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<TerrainComponent>(Entity entity, TerrainComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<SequencerComponent>(Entity entity, SequencerComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<UIRectComponent>(Entity entity, UIRectComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<UIImageComponent>(Entity entity, UIImageComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<UITextComponent>(Entity entity, UITextComponent& components);

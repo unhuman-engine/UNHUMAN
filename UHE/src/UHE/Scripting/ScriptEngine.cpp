@@ -64,7 +64,8 @@ struct ScriptEngine::Impl
         sol::protected_function OnCreate;
         sol::protected_function OnUpdate;
         sol::protected_function OnDestroy;
-        sol::protected_function OnClick; ///< game UI: the entity's button was clicked
+        sol::protected_function OnClick;         ///< game UI: the entity's button was clicked
+        sol::protected_function OnSequenceEvent; ///< the entity's sequence passed an event key
         bool Started = false;
         bool Errored = false;
         /// Released while a hook was running: stopped, invisible to every query,
@@ -484,6 +485,7 @@ bool LoadInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instan
     instance.OnUpdate = HookOf(impl, env, "OnUpdate");
     instance.OnDestroy = HookOf(impl, env, "OnDestroy");
     instance.OnClick = HookOf(impl, env, "OnClick");
+    instance.OnSequenceEvent = HookOf(impl, env, "OnSequenceEvent");
     instance.ResolvedPath = resolved;
     instance.SourceTime = ModificationTime(resolved);
     return true;
@@ -854,6 +856,71 @@ void BindApi(ScriptEngine::Impl& impl)
                                                 clicks = entity.GetComponent<UIButtonComponent>().Clicks;
                                         });
                              return clicks;
+                         });
+
+    // ── sequencer ───────────────────────────────────────────────────────────
+    // Playback of the entity's own SequencerComponent; nothing on an entity without one.
+    const auto withSequencer = [withEntity](sol::table self, auto&& action)
+    {
+        withEntity(self,
+                   [&](Entity entity)
+                   {
+                       if (auto* sequencer = entity.TryGetComponent<SequencerComponent>())
+                           action(entity, *sequencer);
+                   });
+    };
+    methods.set_function("PlaySequence",
+                         [withSequencer](sol::table self)
+                         {
+                             withSequencer(self,
+                                           [](Entity, SequencerComponent& sequencer)
+                                           {
+                                               // Played to its end: start over, as a player's play button does.
+                                               if (!sequencer.Data.Loop && sequencer.Time >= sequencer.Data.Duration)
+                                                   sequencer.Time = 0.0f;
+                                               sequencer.Playing = true;
+                                           });
+                         });
+    methods.set_function(
+        "PauseSequence", [withSequencer](sol::table self)
+        { withSequencer(self, [](Entity, SequencerComponent& sequencer) { sequencer.Playing = false; }); });
+    methods.set_function("StopSequence",
+                         [withSequencer, &impl](sol::table self)
+                         {
+                             withSequencer(self,
+                                           [&](Entity, SequencerComponent& sequencer)
+                                           {
+                                               sequencer.Playing = false;
+                                               sequencer.Time = 0.0f;
+                                               if (impl.ActiveScene != nullptr)
+                                                   impl.ActiveScene->ApplySequence(sequencer.Data, 0.0f);
+                                           });
+                         });
+    methods.set_function("SetSequenceTime",
+                         [withSequencer, &impl](sol::table self, float time)
+                         {
+                             withSequencer(self,
+                                           [&](Entity, SequencerComponent& sequencer)
+                                           {
+                                               sequencer.Time = std::clamp(time, 0.0f, sequencer.Data.Duration);
+                                               if (impl.ActiveScene != nullptr)
+                                                   impl.ActiveScene->ApplySequence(sequencer.Data, sequencer.Time);
+                                           });
+                         });
+    methods.set_function("GetSequenceTime",
+                         [withSequencer](sol::table self)
+                         {
+                             float time = 0.0f;
+                             withSequencer(self, [&](Entity, SequencerComponent& sequencer) { time = sequencer.Time; });
+                             return time;
+                         });
+    methods.set_function("IsSequencePlaying",
+                         [withSequencer](sol::table self)
+                         {
+                             bool playing = false;
+                             withSequencer(self,
+                                           [&](Entity, SequencerComponent& sequencer) { playing = sequencer.Playing; });
+                             return playing;
                          });
 
     methods.set_function("Translate",
@@ -1498,6 +1565,30 @@ void ScriptEngine::OnUIClick(Scene& scene, u32 entityId)
     sol::protected_function_result result = instance.OnClick(instance.Self);
     if (!result.valid())
         MarkErrored(*m_Impl, instance, ReportFailure(*m_Impl, DescribeEntity(scene, handle) + " OnClick", result));
+}
+
+void ScriptEngine::OnSequenceEvent(Scene& scene, u32 entityId, const std::string& name)
+{
+    if (!m_Impl->Initialized)
+        return;
+    const auto handle = static_cast<entt::entity>(entityId);
+    auto* component =
+        scene.GetRegistry().valid(handle) ? scene.GetRegistry().try_get<ScriptComponent>(handle) : nullptr;
+    if (component == nullptr || !component->Enabled)
+        return;
+    const auto it = m_Impl->Instances.find(component->RuntimeIndex);
+    if (it == m_Impl->Instances.end())
+        return;
+    Impl::Instance& instance = it->second;
+    if (instance.Dead || instance.Errored || !instance.Started || instance.Scene_ != &scene ||
+        !instance.OnSequenceEvent.valid())
+        return;
+    m_Impl->ActiveScene = &scene;
+    HookScope scope(*m_Impl);
+    sol::protected_function_result result = instance.OnSequenceEvent(instance.Self, name);
+    if (!result.valid())
+        MarkErrored(*m_Impl, instance,
+                    ReportFailure(*m_Impl, DescribeEntity(scene, handle) + " OnSequenceEvent", result));
 }
 
 void ScriptEngine::OnSceneStop(Scene& scene)
