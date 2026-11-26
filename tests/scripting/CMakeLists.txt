@@ -30,6 +30,7 @@ add_executable(scripting_test
     ${SCENE_SRC_DIR}/Core/SimulationClock.cpp
     ${SCENE_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${SCENE_SRC_DIR}/Physics/PhysicsSystem3D.cpp
+    ${SCENE_SRC_DIR}/Physics/Joints3D.cpp
     ${SCENE_SRC_DIR}/Math/Math.cpp
     ${SCENE_SRC_DIR}/Debug/TracySetup.cpp
     ${SCENE_SRC_DIR}/Animation/Animation2D/SpriteAnimation.cpp

@@ -10,6 +10,7 @@
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Audio/AudioEngine.h"
 #include "UHE/Core/UUID.h"
+#include "UHE/Physics/Joints3D.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer2D/SubTexture2D.h"
 #include "UHE/Renderer3D/AnimationStateMachine.h"
@@ -77,6 +78,7 @@ Scene::Scene() : m_InstanceId(g_NextSceneId++)
     m_registry.storage<RelationshipComponent>();
     m_registry.storage<TerrainComponent>();
     m_registry.storage<SequencerComponent>();
+    m_registry.storage<Joint3DComponent>();
 }
 
 Scene::~Scene()
@@ -125,6 +127,7 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
     newScene->m_ViewportWidth = other->m_ViewportWidth;
     newScene->m_ViewportHeight = other->m_ViewportHeight;
     newScene->m_RenderSettings = other->m_RenderSettings;
+    newScene->m_PhysicsSettings = other->m_PhysicsSettings;
 
     auto& srcRegistry = other->m_registry;
     auto& dstRegistry = newScene->m_registry;
@@ -317,6 +320,12 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
             newEntity.AddComponent<TerrainComponent>() = srcRegistry.get<TerrainComponent>(srcEntity);
         if (srcRegistry.all_of<SequencerComponent>(srcEntity))
             newEntity.AddComponent<SequencerComponent>() = srcRegistry.get<SequencerComponent>(srcEntity);
+        if (srcRegistry.all_of<Joint3DComponent>(srcEntity))
+        {
+            Joint3DComponent& joint = newEntity.AddComponent<Joint3DComponent>();
+            joint = srcRegistry.get<Joint3DComponent>(srcEntity);
+            joint.RuntimeConstraint = nullptr; // the copy builds its own in Play
+        }
         if (srcRegistry.all_of<UIRectComponent>(srcEntity))
             newEntity.AddComponent<UIRectComponent>() = srcRegistry.get<UIRectComponent>(srcEntity);
         if (srcRegistry.all_of<UIImageComponent>(srcEntity))
@@ -527,7 +536,9 @@ void Scene::DestroyEntity(Entity entity)
         }
 
         // Physics bodies go with their entity: left behind, an invisible
-        // collider would stay in the world until Play stops.
+        // collider would stay in the world until Play stops. Its joints first:
+        // a constraint must not outlive a body it holds.
+        Physics::DestroyJointsOf(*this, e);
         if (JPH::BodyInterface* bodies = m_PhysicsSystem3D.GetBodyInterface())
         {
             const auto removeBody = [bodies](uint32_t& id)
@@ -1688,6 +1699,7 @@ void Scene::StepSimulation()
 
     // 3D Physics Jolt
     m_PhysicsSystem3D.Update(dt);
+    Physics::UpdateSensors(*this, dt.GetSeconds());
     if (JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface())
     {
         auto view3d = m_registry.view<TransformComponent, RigidBody3DComponent>();
@@ -1939,6 +1951,11 @@ void Scene::OnRuntimeStart()
     }
 
     // --- 3D Physics (Jolt) ---
+    // The scene's physics settings, before the world exists.
+    m_PhysicsSystem3D.SetGravity(m_PhysicsSettings.Gravity);
+    m_PhysicsSystem3D.SetCollisionSteps(m_PhysicsSettings.CollisionSteps);
+    if (m_PhysicsSettings.TickRate > 0.0f)
+        m_SimulationClock.SetFixedStep(1.0 / static_cast<double>(m_PhysicsSettings.TickRate));
     m_PhysicsSystem3D.InitializeScene();
     JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface();
     // A scene started without a frame before it (the game runtime) has not built its terrains yet.
@@ -2017,6 +2034,8 @@ void Scene::OnRuntimeStart()
                 bodySettings.mMassPropertiesOverride.mMass = rb3d.Mass;
             }
 
+            // The entity rides on the body, so a ray hit (a range sensor) names it.
+            bodySettings.mUserData = static_cast<JPH::uint64>(static_cast<u32>(entity));
             JPH::Body* body = bodyInterface->CreateBody(bodySettings);
             if (body)
             {
@@ -2025,6 +2044,9 @@ void Scene::OnRuntimeStart()
             }
         }
     }
+
+    // Joints last: they join bodies that now exist.
+    Physics::CreateJoints(*this);
 }
 
 void Scene::UpdateUI(glm::vec2 screenSize, const UI::Pointer& pointer)
@@ -2140,6 +2162,7 @@ void Scene::CreateTerrainBodies()
         JPH::BodyCreationSettings body(shape.Get(), JPH::Vec3(translation.x, translation.y, translation.z),
                                        JPH::Quat(q.x, q.y, q.z, q.w), JPH::EMotionType::Static, 0);
         body.mFriction = 0.8f;
+        body.mUserData = static_cast<JPH::uint64>(static_cast<u32>(entity));
         terrain.RuntimeBodyID =
             bodyInterface->CreateAndAddBody(body, JPH::EActivation::DontActivate).GetIndexAndSequenceNumber();
     }
@@ -2162,7 +2185,8 @@ void Scene::OnRuntimeStop()
         m_PhysicsWorldId = b2_nullWorldId;
     }
 
-    // 3D Physics
+    // 3D Physics: the joints hold references to their bodies; released first.
+    Physics::DestroyAllJoints(*this);
     m_PhysicsSystem3D.ShutdownScene();
 
     StopAudioSources();
@@ -2215,6 +2239,7 @@ template <> void Scene::OnComponentAdded<FoliageComponent>(Entity entity, Foliag
 template <> void Scene::OnComponentAdded<WaterComponent>(Entity entity, WaterComponent& component) {};
 template <> void Scene::OnComponentAdded<TerrainComponent>(Entity entity, TerrainComponent& component) {};
 template <> void Scene::OnComponentAdded<SequencerComponent>(Entity entity, SequencerComponent& component) {};
+template <> void Scene::OnComponentAdded<Joint3DComponent>(Entity entity, Joint3DComponent& component) {};
 template <> void Scene::OnComponentAdded<UIRectComponent>(Entity entity, UIRectComponent& component) {};
 template <> void Scene::OnComponentAdded<UIImageComponent>(Entity entity, UIImageComponent& component) {};
 template <> void Scene::OnComponentAdded<UITextComponent>(Entity entity, UITextComponent& component) {};

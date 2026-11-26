@@ -37,6 +37,13 @@ public:
     [[nodiscard]] bool IsSceneInitialized() const { return m_PhysicsSystem != nullptr; }
     void Update(Timestep ts);
 
+    /// @brief Collision sub-steps per Update (1..8): stiff joint chains and fast bodies want more.
+    void SetCollisionSteps(int steps) { m_CollisionSteps = steps < 1 ? 1 : (steps > 8 ? 8 : steps); }
+    [[nodiscard]] int GetCollisionSteps() const { return m_CollisionSteps; }
+    /// @brief World gravity, m/s^2; applied to the running world and kept for the next one.
+    void SetGravity(const glm::vec3& gravity);
+    [[nodiscard]] const glm::vec3& GetGravity() const { return m_Gravity; }
+
     // Getters for internal Jolt classes
     JPH::PhysicsSystem* GetJoltPhysicsSystem() { return m_PhysicsSystem; }
     JPH::BodyInterface* GetBodyInterface();
@@ -49,6 +56,9 @@ private:
     JPH::PhysicsSystem* m_PhysicsSystem = nullptr;
     JPH::TempAllocatorImpl* m_TempAllocator = nullptr;
     JPH::JobSystemThreadPool* m_JobSystem = nullptr; ///< @brief The shared pool, borrowed.
+
+    int m_CollisionSteps = 1;
+    glm::vec3 m_Gravity{0.0f, -9.81f, 0.0f};
 
     void* m_BPLayerInterface = nullptr;
     void* m_BroadPhaseLayerFilter = nullptr;

@@ -14,6 +14,7 @@
 #include <iostream>
 #include "UHE/Core/SimulationClock.h"
 #include "UHE/Math/Math.h"
+#include "UHE/Physics/Joints3D.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer/EditorCamera.h"
 #include "UHE/Scene/Components.h"
@@ -601,6 +602,208 @@ static void TestTerrain()
 }
 
 // --- game UI: layout, clicks and sliders ---
+/// Joints, motors and sensors for robot simulation (issue #69), checked against physics.
+static Entity MakeBody(Ref<Scene>& scene, const char* name, glm::vec3 at, float radius, bool dynamic = true)
+{
+    Entity e = scene->CreateEntity(name);
+    e.GetComponent<TransformComponent>().Translation = at;
+    auto& rb = e.AddComponent<RigidBody3DComponent>();
+    rb.Type = dynamic ? RigidBody3DComponent::BodyType::Dynamic : RigidBody3DComponent::BodyType::Static;
+    rb.Mass = 1.0f;
+    rb.LinearDamping = 0.0f;
+    rb.AngularDamping = 0.0f;
+    e.AddComponent<SphereCollider3DComponent>().Radius = radius;
+    return e;
+}
+
+static void TestRobotJoints()
+{
+    std::cout << "TestRobotJoints\n";
+    constexpr float kRate = 240.0f;
+
+    // A pendulum: a small ball on a 1 m hinge to the world, released at 0.2 rad.
+    // Small-angle period 2*pi*sqrt(L/g) = 2.006 s; the encoder must see it.
+    const auto runPendulum = [&](std::vector<float>* angles) -> glm::vec3
+    {
+        auto scene = CreateRef<Scene>();
+        scene->GetPhysicsSettings().TickRate = kRate;
+        const float theta = 0.2f;
+        Entity bob = MakeBody(scene, "Bob", {std::sin(theta), -std::cos(theta), 0.0f}, 0.02f);
+        auto& hinge = bob.AddComponent<Joint3DComponent>();
+        hinge.Type = Joint3DComponent::JointType::Hinge;
+        hinge.Anchor = -bob.GetComponent<TransformComponent>().Translation; // the world origin, in the bob's space
+        hinge.Axis = {0.0f, 0.0f, 1.0f};
+        scene->OnRuntimeStart();
+        for (int i = 0; i < static_cast<int>(kRate * 6.0f); ++i)
+        {
+            scene->StepSimulation();
+            if (angles != nullptr)
+                angles->push_back(bob.GetComponent<Joint3DComponent>().RuntimePosition);
+        }
+        const glm::vec3 end = bob.GetComponent<TransformComponent>().Translation;
+        scene->OnRuntimeStop();
+        return end;
+    };
+    std::vector<float> angles;
+    const glm::vec3 endA = runPendulum(&angles);
+    // The encoder reads from the pose at Play start (0 at 0.2 rad off vertical),
+    // so the swing is around -0.2: count crossings of its mean.
+    float mean = 0.0f;
+    for (const float a : angles)
+        mean += a / static_cast<float>(angles.size());
+    std::vector<int> crossings; // ticks where the angle crosses its mean
+    for (std::size_t i = 1; i < angles.size(); ++i)
+        if ((angles[i - 1] < mean) != (angles[i] < mean))
+            crossings.push_back(static_cast<int>(i));
+    const float period = crossings.size() >= 5 ? static_cast<float>(crossings[4] - crossings[0]) / 2.0f / kRate
+                                               : 0.0f; // four half periods
+    const float expected = 2.0f * 3.14159265f * std::sqrt(1.0f / 9.81f);
+    std::cout << "  pendulum period " << period << " s, expected " << expected << " s\n";
+    CHECK(std::abs(period - expected) < 0.02f * expected, "a hinged pendulum swings with T = 2 pi sqrt(L/g) (2%)");
+    float amplitude = 0.0f;
+    for (std::size_t i = angles.size() - static_cast<std::size_t>(kRate * 2.0f); i < angles.size(); ++i)
+        amplitude = std::max(amplitude, std::abs(angles[i] - mean));
+    CHECK(std::abs(mean + 0.2f) < 0.01f && amplitude > 0.18f && amplitude < 0.22f,
+          "no damping: it still swings 0.2 rad either side of vertical after 6 s");
+
+    const glm::vec3 endB = runPendulum(nullptr);
+    CHECK(endA == endB, "two runs end bit-for-bit at the same place (deterministic)");
+
+    // A wheel on a vertical axle: a velocity motor spins it up to 3 rad/s.
+    {
+        auto scene = CreateRef<Scene>();
+        scene->GetPhysicsSettings().TickRate = kRate;
+        scene->GetPhysicsSettings().Gravity = {0.0f, 0.0f, 0.0f};
+        Entity wheel = MakeBody(scene, "Wheel", {0.0f, 0.0f, 0.0f}, 0.3f);
+        auto& axle = wheel.AddComponent<Joint3DComponent>();
+        axle.Type = Joint3DComponent::JointType::Hinge;
+        axle.Axis = {0.0f, 1.0f, 0.0f};
+        axle.Motor = Joint3DComponent::MotorMode::Velocity;
+        axle.MotorTarget = 3.0f;
+        axle.MotorMaxForce = 50.0f;
+        scene->OnRuntimeStart();
+        for (int i = 0; i < static_cast<int>(kRate); ++i)
+            scene->StepSimulation();
+        const float speed = wheel.GetComponent<Joint3DComponent>().RuntimeVelocity;
+        std::cout << "  wheel speed " << speed << " rad/s\n";
+        CHECK(std::abs(speed - 3.0f) < 0.05f, "a velocity motor holds its target speed (encoder rate)");
+
+        scene->OnRuntimeStop();
+    }
+    // Limits: a hinge limited to +-0.5 rad, driven hard past it, stays at the stop.
+    {
+        auto scene = CreateRef<Scene>();
+        scene->GetPhysicsSettings().TickRate = kRate;
+        scene->GetPhysicsSettings().Gravity = {0.0f, 0.0f, 0.0f};
+        Entity arm = MakeBody(scene, "Arm", {0.0f, 0.0f, 0.0f}, 0.1f);
+        auto& joint = arm.AddComponent<Joint3DComponent>();
+        joint.Type = Joint3DComponent::JointType::Hinge;
+        joint.Axis = {0.0f, 0.0f, 1.0f};
+        joint.LimitsEnabled = true;
+        joint.LimitMin = -0.5f;
+        joint.LimitMax = 0.5f;
+        joint.Motor = Joint3DComponent::MotorMode::Velocity;
+        joint.MotorTarget = 5.0f;
+        joint.MotorMaxForce = 20.0f;
+        scene->OnRuntimeStart();
+        float highest = 0.0f;
+        for (int i = 0; i < static_cast<int>(kRate); ++i)
+        {
+            scene->StepSimulation();
+            highest = std::max(highest, arm.GetComponent<Joint3DComponent>().RuntimePosition);
+        }
+        CHECK(highest < 0.52f && highest > 0.45f, "a hinge limit stops a motor driving past it");
+        // Re-targeted at run time, as a script would: position mode back to -0.3 rad.
+        joint.Motor = Joint3DComponent::MotorMode::Position;
+        joint.MotorTarget = -0.3f;
+        Physics::ApplyMotor(*scene, joint);
+        for (int i = 0; i < static_cast<int>(kRate * 3.0f); ++i)
+            scene->StepSimulation();
+        const float angle = arm.GetComponent<Joint3DComponent>().RuntimePosition;
+        std::cout << "  arm angle " << angle << " rad\n";
+        CHECK(std::abs(angle + 0.3f) < 0.01f, "a position motor reaches a new target set while running");
+        scene->OnRuntimeStop();
+    }
+
+    // A slider: a carriage driven along x to 0.5 m by a position motor.
+    {
+        auto scene = CreateRef<Scene>();
+        scene->GetPhysicsSettings().TickRate = kRate;
+        Entity carriage = MakeBody(scene, "Carriage", {0.0f, 1.0f, 0.0f}, 0.1f);
+        auto& rail = carriage.AddComponent<Joint3DComponent>();
+        rail.Type = Joint3DComponent::JointType::Slider;
+        rail.Axis = {1.0f, 0.0f, 0.0f};
+        rail.Motor = Joint3DComponent::MotorMode::Position;
+        rail.MotorTarget = 0.5f;
+        rail.MotorMaxForce = 200.0f;
+        scene->OnRuntimeStart();
+        for (int i = 0; i < static_cast<int>(kRate * 3.0f); ++i)
+            scene->StepSimulation();
+        const glm::vec3 at = carriage.GetComponent<TransformComponent>().Translation;
+        std::cout << "  carriage at x " << at.x << ", y " << at.y << "\n";
+        CHECK(std::abs(at.x - 0.5f) < 0.01f && std::abs(at.y - 1.0f) < 0.01f,
+              "a slider moves only along its axis, to the motor's target, against gravity");
+        scene->OnRuntimeStop();
+    }
+
+    // Two links hinged together while overlapping do not push each other apart,
+    // and destroying one mid-run removes the joint cleanly.
+    {
+        auto scene = CreateRef<Scene>();
+        scene->GetPhysicsSettings().TickRate = kRate;
+        scene->GetPhysicsSettings().Gravity = {0.0f, 0.0f, 0.0f};
+        Entity base = MakeBody(scene, "Base", {0.0f, 0.0f, 0.0f}, 0.5f, false);
+        Entity link = MakeBody(scene, "Link", {0.3f, 0.0f, 0.0f}, 0.5f);
+        auto& elbow = link.AddComponent<Joint3DComponent>();
+        elbow.Type = Joint3DComponent::JointType::Ball;
+        elbow.ConnectedEntity = base.GetUUID();
+        elbow.Anchor = {-0.3f, 0.0f, 0.0f};
+        scene->OnRuntimeStart();
+        for (int i = 0; i < static_cast<int>(kRate); ++i)
+            scene->StepSimulation();
+        const glm::vec3 at = link.GetComponent<TransformComponent>().Translation;
+        CHECK(glm::length(at - glm::vec3(0.3f, 0.0f, 0.0f)) < 0.01f,
+              "jointed bodies do not collide with each other (overlapping links stay put)");
+        scene->DestroyEntity(base);
+        for (int i = 0; i < 10; ++i)
+            scene->StepSimulation();
+        CHECK(link.GetComponent<Joint3DComponent>().RuntimeConstraint == nullptr,
+              "destroying a jointed body removes its joint");
+        scene->OnRuntimeStop();
+    }
+
+    // Sensors: an IMU at rest reads gravity, a falling one reads free fall; a
+    // ray finds the floor and names it.
+    {
+        auto scene = CreateRef<Scene>();
+        scene->GetPhysicsSettings().TickRate = kRate;
+        Entity floor = scene->CreateEntity("Floor");
+        floor.GetComponent<TransformComponent>().Translation = {0.0f, -0.5f, 0.0f};
+        floor.AddComponent<RigidBody3DComponent>(); // static
+        floor.AddComponent<BoxCollider3DComponent>().HalfExtent = {10.0f, 0.5f, 10.0f};
+        Entity drone = MakeBody(scene, "Drone", {0.0f, 5.0f, 0.0f}, 0.2f);
+        scene->OnRuntimeStart();
+        for (int i = 0; i < 24; ++i)
+            scene->StepSimulation();
+        const glm::vec3 falling = drone.GetComponent<RigidBody3DComponent>().RuntimeLinearAcceleration;
+        CHECK(std::abs(falling.y + 9.81f) < 0.05f, "a falling body's IMU reads -9.81 m/s^2");
+        const auto hit =
+            Physics::CastRay(*scene, drone.GetComponent<TransformComponent>().Translation, {0.0f, -1.0f, 0.0f}, 50.0f,
+                             static_cast<u32>(static_cast<entt::entity>(drone)));
+        const float height = drone.GetComponent<TransformComponent>().Translation.y;
+        CHECK(hit.has_value() && std::abs(hit->Distance - height) < 0.01f &&
+                  hit->Entity == static_cast<u32>(static_cast<entt::entity>(floor)) && hit->Normal.y > 0.99f,
+              "a downward ray finds the floor at the drone's height and names it");
+        CHECK(!Physics::CastRay(*scene, {3.0f, 5.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, 50.0f).has_value(),
+              "a ray into the empty sky hits nothing");
+        for (int i = 0; i < static_cast<int>(kRate * 3.0f); ++i)
+            scene->StepSimulation();
+        const glm::vec3 resting = drone.GetComponent<RigidBody3DComponent>().RuntimeLinearAcceleration;
+        CHECK(glm::length(resting) < 0.05f, "at rest on the floor its acceleration is zero");
+        scene->OnRuntimeStop();
+    }
+}
+
 /// The sequencer's timeline logic: sampling, keys, playback and events.
 static void TestSequence()
 {
@@ -830,6 +1033,7 @@ int main()
     TestStaleEntityHandles();
     TestUI();
     TestSequence();
+    TestRobotJoints();
     TestHierarchy();
     TestRecursiveDestroy();
     TestScriptLifetime();

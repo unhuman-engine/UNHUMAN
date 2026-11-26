@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Scene/Components.h"
@@ -403,6 +404,75 @@ end
         check(sequencer->Time == 1.0f && !sequencer->Playing, "PauseSequence from the event stopped it there");
         // StopSequence rewinds and poses the start; PlaySequence plays again.
         ScriptEngine::Get().OnSceneStop(*loaded);
+        check(engine.ErroredInstanceCount() == 0, "nothing errored");
+    }
+
+    section("robot joints and sensors from a script");
+    {
+        // A wheel on a hinge above a floor: the controller spins it with a
+        // velocity motor, reads its encoder and IMU, and ranges the floor.
+        const std::string script = WriteScript("robot.lua", R"(
+function OnCreate(self)
+    self.ticks = 0
+end
+
+function OnUpdate(self, dt)
+    self.ticks = self.ticks + 1
+    if self.ticks == 1 then
+        self:SetJointMotor("velocity", 2.0, 30.0)
+    end
+    if self.ticks == 240 then
+        local accel, gyro = self:GetIMU()
+        local range, hit = self:Raycast(0, -1, 0, 20)
+        Find("Report"):SetText(string.format("%.2f %.2f %.2f %.2f %s", self:GetJointVelocity(), gyro.y, accel.y,
+                                             range or -1, hit and hit:GetName() or "none"))
+    end
+end
+)");
+        const std::string path = (g_ScriptDir / "robot.unhuman").string();
+        {
+            Ref<Scene> source = CreateRef<Scene>();
+            source->GetPhysicsSettings().TickRate = 240.0f;
+            source->GetPhysicsSettings().CollisionSteps = 2;
+            Entity floor = source->CreateEntity("Floor");
+            floor.GetComponent<TransformComponent>().Translation = {0.0f, -0.5f, 0.0f};
+            floor.AddComponent<RigidBody3DComponent>();
+            floor.AddComponent<BoxCollider3DComponent>().HalfExtent = {5.0f, 0.5f, 5.0f};
+            Entity wheel = SpawnScripted(*source, "Wheel", script);
+            wheel.GetComponent<TransformComponent>().Translation = {0.0f, 3.0f, 0.0f};
+            auto& rb = wheel.AddComponent<RigidBody3DComponent>();
+            rb.Type = RigidBody3DComponent::BodyType::Dynamic;
+            rb.AngularDamping = 0.0f;
+            wheel.AddComponent<SphereCollider3DComponent>().Radius = 0.25f;
+            auto& axle = wheel.AddComponent<Joint3DComponent>();
+            axle.Type = Joint3DComponent::JointType::Hinge;
+            axle.Axis = {0.0f, 1.0f, 0.0f};
+            source->CreateEntity("Report").AddComponent<UITextComponent>();
+            SceneSerializer(source).Serialize(path);
+        }
+        Ref<Scene> loaded = CreateRef<Scene>();
+        check(SceneSerializer(loaded).Deserialize(path), "a robot scene loads");
+        check(loaded->GetPhysicsSettings().TickRate == 240.0f && loaded->GetPhysicsSettings().CollisionSteps == 2,
+              "the scene's physics settings survive save and load");
+        Entity report;
+        for (auto handle : loaded->GetRegistry().view<TagComponent>())
+            if (loaded->GetRegistry().get<TagComponent>(handle).Tag == "Report")
+                report = Entity{handle, loaded.get()};
+        Start(*loaded);
+        Step(*loaded, 1.0f / 240.0f, 241);
+        const std::string text = report.GetComponent<UITextComponent>().Text;
+        std::cout << "  controller reported: " << text << "\n";
+        float speed = 0, gyroY = 0, accelY = 0, range = 0;
+        std::string hit;
+        std::istringstream fields(text);
+        const bool parsed = static_cast<bool>(fields >> speed >> gyroY >> accelY >> range >> hit);
+        check(parsed && std::abs(speed - 2.0f) < 0.05f && std::abs(gyroY - 2.0f) < 0.05f,
+              "SetJointMotor spun the wheel to 2 rad/s; the encoder and the gyro both read it");
+        check(parsed && std::abs(accelY - 9.81f) < 0.05f, "the IMU on a body held still reads +9.81 m/s^2 up");
+        check(parsed && std::abs(range - 3.0f) < 0.01f && hit == "Floor",
+              "Raycast down from the wheel ranges the floor at 3 m and names it");
+        ScriptEngine::Get().OnSceneStop(*loaded);
+        loaded->OnRuntimeStop();
         check(engine.ErroredInstanceCount() == 0, "nothing errored");
     }
 

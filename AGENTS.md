@@ -125,6 +125,19 @@ here. Follow them; if a rule is wrong, change it here first.
   `keepTextureSources = true`; `uhe_export` links stubs that abort on any
   texture or buffer creation, so a change that makes cooking upload fails there.
 
+## Physics for robots
+
+- **Joints are built from the poses at Play start.** `Physics::CreateJoints`
+  runs after the bodies exist; `Joint3DComponent::Anchor`/`Axis` are in the
+  entity's space and encoders read from that starting pose. A joint is torn
+  down before either body (`DestroyJointsOf` in `DestroyEntity`,
+  `DestroyAllJoints` in `OnRuntimeStop`): a constraint must not outlive a body.
+- **Sensors read the last simulation tick, never the render cache.** Encoders
+  and IMUs update in `Physics::UpdateSensors` after each step; a script ray
+  walks the transform tree now (`GetWorldSpaceTransformMatrix`) because the
+  render cache is a frame behind. That keeps a run reproducible tick for tick,
+  which `tests/scene` checks bit-for-bit.
+
 ## Scripting is a consumer of the engine
 
 - **The VM is main-thread only and never touched from a job.** A Lua state is not

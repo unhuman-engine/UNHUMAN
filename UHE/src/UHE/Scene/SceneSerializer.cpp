@@ -460,6 +460,29 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::EndMap;
     }
 
+    // Joint: the other body by UUID (0: the world)
+    if (entity.HasComponent<Joint3DComponent>())
+    {
+        const auto& joint = entity.GetComponent<Joint3DComponent>();
+        static constexpr const char* kTypes[] = {"Fixed", "Hinge", "Slider", "Ball"};
+        static constexpr const char* kMotors[] = {"Off", "Velocity", "Position"};
+        out << YAML::Key << "Joint3DComponent" << YAML::BeginMap;
+        out << YAML::Key << "Type" << YAML::Value << kTypes[static_cast<int>(joint.Type)];
+        out << YAML::Key << "ConnectedEntity" << YAML::Value << joint.ConnectedEntity;
+        out << YAML::Key << "Anchor" << YAML::Value << joint.Anchor;
+        out << YAML::Key << "Axis" << YAML::Value << joint.Axis;
+        out << YAML::Key << "LimitsEnabled" << YAML::Value << joint.LimitsEnabled;
+        out << YAML::Key << "LimitMin" << YAML::Value << joint.LimitMin;
+        out << YAML::Key << "LimitMax" << YAML::Value << joint.LimitMax;
+        out << YAML::Key << "Friction" << YAML::Value << joint.Friction;
+        out << YAML::Key << "Motor" << YAML::Value << kMotors[static_cast<int>(joint.Motor)];
+        out << YAML::Key << "MotorTarget" << YAML::Value << joint.MotorTarget;
+        out << YAML::Key << "MotorMaxForce" << YAML::Value << joint.MotorMaxForce;
+        out << YAML::Key << "MotorFrequency" << YAML::Value << joint.MotorFrequency;
+        out << YAML::Key << "MotorDamping" << YAML::Value << joint.MotorDamping;
+        out << YAML::EndMap;
+    }
+
     // Sequencer: tracks name their targets by UUID; each key is one flow map.
     if (entity.HasComponent<SequencerComponent>())
     {
@@ -760,6 +783,14 @@ void SceneSerializer::Serialize(const std::string& filepath)
     // orthographic one there; those files are repaired on load).
     out << YAML::Key << "SceneFormat" << YAML::Value << 2;
     SerializeRenderSettings(out, m_Scene->GetRenderSettings());
+    {
+        const PhysicsSettings& physics = m_Scene->GetPhysicsSettings();
+        out << YAML::Key << "Physics" << YAML::BeginMap;
+        out << YAML::Key << "TickRate" << YAML::Value << physics.TickRate;
+        out << YAML::Key << "CollisionSteps" << YAML::Value << physics.CollisionSteps;
+        out << YAML::Key << "Gravity" << YAML::Value << physics.Gravity;
+        out << YAML::EndMap;
+    }
     out << YAML::Key << "Entities" << YAML::BeginSeq;
 
     // Pass 1: hierarchy order — roots first, then each root's subtree.
@@ -817,6 +848,15 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
 
     // Before the entity list: a scene with no entities still has its environment.
     DeserializeRenderSettings(data["Environment"], m_Scene->GetRenderSettings());
+    if (const YAML::Node physicsNode = data["Physics"])
+    {
+        PhysicsSettings& physics = m_Scene->GetPhysicsSettings();
+        ReadOptional(physicsNode, "TickRate", physics.TickRate);
+        ReadOptional(physicsNode, "CollisionSteps", physics.CollisionSteps);
+        ReadOptional(physicsNode, "Gravity", physics.Gravity);
+        physics.TickRate = std::clamp(physics.TickRate, 0.0f, 10000.0f);
+        physics.CollisionSteps = std::clamp(physics.CollisionSteps, 1, 8);
+    }
 
     auto entities = data["Entities"];
     if (!entities)
@@ -1347,6 +1387,35 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             ReadOptional(terrainNode, "Collider", tc.Collider);
             // Resolution^2 quads are built: a hand-edited value must not reach the builder unclamped.
             tc.Resolution = std::clamp(tc.Resolution, 8, 1024);
+        }
+
+        // Joint: every field optional; an unknown type or motor name keeps the default
+        if (auto jointNode = entityNode["Joint3DComponent"])
+        {
+            auto& joint = entity.AddComponent<Joint3DComponent>();
+            std::string type = "Hinge";
+            std::string motor = "Off";
+            ReadOptional(jointNode, "Type", type);
+            ReadOptional(jointNode, "Motor", motor);
+            static constexpr const char* kTypes[] = {"Fixed", "Hinge", "Slider", "Ball"};
+            static constexpr const char* kMotors[] = {"Off", "Velocity", "Position"};
+            for (int i = 0; i < 4; ++i)
+                if (type == kTypes[i])
+                    joint.Type = static_cast<Joint3DComponent::JointType>(i);
+            for (int i = 0; i < 3; ++i)
+                if (motor == kMotors[i])
+                    joint.Motor = static_cast<Joint3DComponent::MotorMode>(i);
+            ReadOptional(jointNode, "ConnectedEntity", joint.ConnectedEntity);
+            ReadOptional(jointNode, "Anchor", joint.Anchor);
+            ReadOptional(jointNode, "Axis", joint.Axis);
+            ReadOptional(jointNode, "LimitsEnabled", joint.LimitsEnabled);
+            ReadOptional(jointNode, "LimitMin", joint.LimitMin);
+            ReadOptional(jointNode, "LimitMax", joint.LimitMax);
+            ReadOptional(jointNode, "Friction", joint.Friction);
+            ReadOptional(jointNode, "MotorTarget", joint.MotorTarget);
+            ReadOptional(jointNode, "MotorMaxForce", joint.MotorMaxForce);
+            ReadOptional(jointNode, "MotorFrequency", joint.MotorFrequency);
+            ReadOptional(jointNode, "MotorDamping", joint.MotorDamping);
         }
 
         // Sequencer: every field optional; an unknown property name drops its track, not the scene

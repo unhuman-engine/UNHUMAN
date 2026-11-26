@@ -210,6 +210,7 @@ void PhysicsSystem3D::InitializeScene()
                           *static_cast<BPLayerInterfaceImpl*>(m_BPLayerInterface),
                           *static_cast<ObjectVsBroadPhaseLayerFilterImpl*>(m_BroadPhaseLayerFilter),
                           *static_cast<ObjectLayerPairFilterImpl*>(m_ObjectLayerPairFilter));
+    m_PhysicsSystem->SetGravity(JPH::Vec3(m_Gravity.x, m_Gravity.y, m_Gravity.z));
 }
 
 void PhysicsSystem3D::ShutdownScene()
@@ -235,8 +236,14 @@ void PhysicsSystem3D::Update(Timestep ts)
     {
         return;
     }
-    const int cCollisionSteps = 1;
-    m_PhysicsSystem->Update(ts, cCollisionSteps, m_TempAllocator, m_JobSystem);
+    m_PhysicsSystem->Update(ts, m_CollisionSteps, m_TempAllocator, m_JobSystem);
+}
+
+void PhysicsSystem3D::SetGravity(const glm::vec3& gravity)
+{
+    m_Gravity = gravity;
+    if (m_PhysicsSystem != nullptr)
+        m_PhysicsSystem->SetGravity(JPH::Vec3(gravity.x, gravity.y, gravity.z));
 }
 
 JPH::BodyInterface* PhysicsSystem3D::GetBodyInterface()

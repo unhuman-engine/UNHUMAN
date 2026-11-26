@@ -571,8 +571,66 @@ struct UHE_API RigidBody3DComponent
     // We store the JPH::BodyID as a uint32_t to avoid including Jolt headers everywhere
     uint32_t RuntimeBodyID = 0xFFFFFFFF; // JPH::BodyID::cInvalidBodyID
 
+    // IMU state, per simulation tick (Physics::UpdateSensors); not saved.
+    glm::vec3 RuntimeLinearAcceleration{0.0f}; ///< world space, m/s^2
+    glm::vec3 RuntimePreviousVelocity{0.0f};
+    bool RuntimeHasPreviousVelocity = false;
+
     RigidBody3DComponent() = default;
     RigidBody3DComponent(const RigidBody3DComponent&) = default;
+};
+
+/**
+ * @brief A joint between this entity's rigid body and another's, or the world.
+ *
+ * Built when Play starts, from the poses then (Physics::CreateJoints): the
+ * anchor and axis are in this entity's space. Hinges and sliders take limits,
+ * friction and a motor that scripts drive (SetJointMotor) and read back like
+ * an encoder (GetJointPosition, GetJointVelocity). Angles are radians,
+ * distances metres, torques N·m, forces N.
+ */
+struct UHE_API Joint3DComponent
+{
+    enum class JointType
+    {
+        Fixed = 0, ///< welds the two bodies together
+        Hinge,     ///< revolute: rotation about Axis
+        Slider,    ///< prismatic: translation along Axis
+        Ball,      ///< spherical: rotation about Anchor
+    };
+    enum class MotorMode
+    {
+        Off = 0,
+        Velocity, ///< drives the joint at MotorTarget rad/s or m/s
+        Position, ///< springs the joint to MotorTarget rad or m
+    };
+
+    JointType Type = JointType::Hinge;
+    u64 ConnectedEntity = 0; ///< UUID of the other body's entity; 0 attaches to the world
+    glm::vec3 Anchor{0.0f};  ///< joint point, this entity's space
+    glm::vec3 Axis{0.0f, 1.0f, 0.0f};
+
+    bool LimitsEnabled = false;
+    float LimitMin = -1.0f; ///< hinge: radians in [-pi, 0]; slider: metres
+    float LimitMax = 1.0f;  ///< hinge: radians in [0, pi]; slider: metres
+    float Friction = 0.0f;  ///< hinge: N·m, slider: N, resisting any motion
+
+    MotorMode Motor = MotorMode::Off;
+    float MotorTarget = 0.0f;
+    float MotorMaxForce = 100.0f; ///< torque (hinge) or force (slider) the motor may apply
+    float MotorFrequency = 4.0f;  ///< position mode: spring stiffness as a frequency, Hz
+    float MotorDamping = 1.0f;    ///< position mode: 1 = critically damped
+
+    // Built in Play; not saved.
+    void* RuntimeConstraint = nullptr; ///< JPH::TwoBodyConstraint, one reference held
+    /// Encoder: angle or offset, per tick, from the pose when Play started
+    /// (like an incremental encoder zeroed at power-on).
+    float RuntimePosition = 0.0f;
+    float RuntimeVelocity = 0.0f; ///< encoder rate, per tick
+    bool RuntimeHasPosition = false;
+
+    Joint3DComponent() = default;
+    Joint3DComponent(const Joint3DComponent&) = default;
 };
 
 struct UHE_API BoxCollider3DComponent

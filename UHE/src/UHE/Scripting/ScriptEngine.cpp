@@ -3,6 +3,7 @@
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/Log.h"
 #include "UHE/Core/input.h"
+#include "UHE/Physics/Joints3D.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer3D/AnimationStateMachine.h"
 #include "UHE/Scene/Components.h"
@@ -1130,6 +1131,108 @@ void BindApi(ScriptEngine::Impl& impl)
                              }
                              bodies->ActivateBody(bodyId);
                              bodies->AddForce(bodyId, ToJolt(glm::vec3(x, y, z)));
+                         });
+
+    // ── joints and sensors (robot simulation, issue #69) ────────────────────
+    // A joint is driven and read through the entity that carries it; the
+    // sensors read what the last simulation tick measured.
+    methods.set_function("SetJointMotor",
+                         [&impl](sol::table self, const std::string& mode, float target, sol::optional<float> maxForce)
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return false;
+                             auto* joint = scene->GetRegistry().try_get<Joint3DComponent>(handle);
+                             if (joint == nullptr)
+                                 return false;
+                             if (mode == "off")
+                                 joint->Motor = Joint3DComponent::MotorMode::Off;
+                             else if (mode == "velocity")
+                                 joint->Motor = Joint3DComponent::MotorMode::Velocity;
+                             else if (mode == "position")
+                                 joint->Motor = Joint3DComponent::MotorMode::Position;
+                             else
+                                 return false;
+                             joint->MotorTarget = target;
+                             if (maxForce)
+                                 joint->MotorMaxForce = *maxForce;
+                             Physics::ApplyMotor(*scene, *joint);
+                             return true;
+                         });
+    const auto jointReading = [&impl](sol::table self, bool velocity) -> sol::optional<float>
+    {
+        Scene* scene = nullptr;
+        entt::entity handle = entt::null;
+        if (!ResolveEntity(impl, self, scene, handle))
+            return sol::nullopt;
+        const auto* joint = scene->GetRegistry().try_get<Joint3DComponent>(handle);
+        if (joint == nullptr || joint->RuntimeConstraint == nullptr)
+            return sol::nullopt;
+        return velocity ? joint->RuntimeVelocity : joint->RuntimePosition;
+    };
+    methods.set_function("GetJointPosition", [jointReading](sol::table self) { return jointReading(self, false); });
+    methods.set_function("GetJointVelocity", [jointReading](sol::table self) { return jointReading(self, true); });
+    methods.set_function("GetAcceleration",
+                         [&impl](sol::table self) -> sol::object
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return sol::nil;
+                             const auto* rb = scene->GetRegistry().try_get<RigidBody3DComponent>(handle);
+                             if (rb == nullptr || rb->RuntimeBodyID == 0xFFFFFFFF)
+                                 return sol::nil;
+                             return sol::make_object(self.lua_state(), ToVec3(rb->RuntimeLinearAcceleration));
+                         });
+    // An IMU in the body's frame: the accelerometer reads specific force
+    // (acceleration minus gravity: +9.81 up at rest), the gyro angular velocity.
+    methods.set_function("GetIMU",
+                         [&impl](sol::table self) -> std::tuple<sol::object, sol::object>
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return {sol::nil, sol::nil};
+                             JPH::BodyID bodyId;
+                             JPH::BodyInterface* bodies = BodyInterfaceOf(*scene, handle, bodyId);
+                             const auto* rb = scene->GetRegistry().try_get<RigidBody3DComponent>(handle);
+                             if (bodies == nullptr || rb == nullptr)
+                                 return {sol::nil, sol::nil};
+                             const JPH::Quat rotation = bodies->GetRotation(bodyId);
+                             const glm::quat toBody = glm::inverse(
+                                 glm::quat(rotation.GetW(), rotation.GetX(), rotation.GetY(), rotation.GetZ()));
+                             const glm::vec3 specific =
+                                 toBody * (rb->RuntimeLinearAcceleration - scene->GetPhysicsSettings().Gravity);
+                             const glm::vec3 gyro = toBody * ToGlm(bodies->GetAngularVelocity(bodyId));
+                             return {sol::make_object(self.lua_state(), ToVec3(specific)),
+                                     sol::make_object(self.lua_state(), ToVec3(gyro))};
+                         });
+    // A range sensor: a ray from the entity along a direction in its own
+    // frame (it turns with the robot), past its own body.
+    methods.set_function("Raycast",
+                         [&impl](sol::table self, float dx, float dy, float dz,
+                                 float maxDistance) -> std::tuple<sol::object, sol::object>
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return {sol::nil, sol::nil};
+                             Entity entity{handle, scene};
+                             // Walked now, not the render cache: the pose this tick, not the last frame drawn.
+                             const glm::mat4 world = scene->GetWorldSpaceTransformMatrix(entity);
+                             const glm::vec3 origin(world[3]);
+                             const glm::vec3 direction = glm::mat3(world) * glm::vec3(dx, dy, dz);
+                             const auto hit =
+                                 Physics::CastRay(*scene, origin, direction, maxDistance, static_cast<u32>(handle));
+                             if (!hit)
+                                 return {sol::nil, sol::nil};
+                             const auto hitEntity = static_cast<entt::entity>(hit->Entity);
+                             sol::object other =
+                                 scene->GetRegistry().valid(hitEntity)
+                                     ? sol::make_object(self.lua_state(), MakeEntityTable(impl, *scene, hitEntity))
+                                     : sol::object(sol::nil);
+                             return {sol::make_object(self.lua_state(), hit->Distance), other};
                          });
 
     // ── animation graph parameters ─────────────────────────────────────────

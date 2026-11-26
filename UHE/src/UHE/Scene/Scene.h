@@ -38,6 +38,15 @@ struct SphereCollider3DComponent;
 struct CapsuleCollider3DComponent;
 struct TerrainComponent;
 struct SequencerComponent;
+struct Joint3DComponent;
+
+/// @brief A scene's simulation settings: what a robot scene tunes (issue #69).
+struct PhysicsSettings
+{
+    float TickRate = 0.0f;  ///< simulation ticks per second; 0 keeps the engine's (120 Hz)
+    int CollisionSteps = 1; ///< Jolt sub-steps per tick, 1..8: stiff joint chains want more
+    glm::vec3 Gravity{0.0f, -9.81f, 0.0f};
+};
 struct Sequence;
 struct UIRectComponent;
 struct UIImageComponent;
@@ -165,6 +174,8 @@ public:
     Entity GetPrimaryCameraEntity();
 
     /// @brief How this scene is rendered (environment, shadows, SSAO, bloom, wind); saved with the scene.
+    [[nodiscard]] PhysicsSettings& GetPhysicsSettings() { return m_PhysicsSettings; }
+    [[nodiscard]] const PhysicsSettings& GetPhysicsSettings() const { return m_PhysicsSettings; }
     [[nodiscard]] RenderSettings& GetRenderSettings() { return m_RenderSettings; }
     [[nodiscard]] const RenderSettings& GetRenderSettings() const { return m_RenderSettings; }
 
@@ -310,6 +321,7 @@ private:
 
     b2WorldId m_PhysicsWorldId = b2_nullWorldId;
     Physics::PhysicsSystem3D m_PhysicsSystem3D;
+    PhysicsSettings m_PhysicsSettings;
 
     // Issue #49: simulated time, decoupled from the render delta.
     SimulationClock m_SimulationClock;
@@ -364,6 +376,7 @@ template <> UHE_API void Scene::OnComponentAdded<SphereCollider3DComponent>(Enti
 template <> UHE_API void Scene::OnComponentAdded<CapsuleCollider3DComponent>(Entity entity, CapsuleCollider3DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<TerrainComponent>(Entity entity, TerrainComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<SequencerComponent>(Entity entity, SequencerComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<Joint3DComponent>(Entity entity, Joint3DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<UIRectComponent>(Entity entity, UIRectComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<UIImageComponent>(Entity entity, UIImageComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<UITextComponent>(Entity entity, UITextComponent& components);
