@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <regex>
 #include <set>
@@ -428,11 +429,39 @@ std::vector<std::string> GameExporter::MissingShaderArtifacts(const fs::path& en
 {
     // A game ships no shader sources and cannot compile: each .slang needs at
     // least one compiled stage beside it (<stem>.<stage>.<variant>.spv, ShaderArtifactPath).
+    // A folder with a shaders.manifest (written by uhe_shaderc) needs that only
+    // for the sources it lists: the rest are libraries and work in progress.
     std::vector<std::string> missing;
     std::error_code ec;
+    std::map<fs::path, std::set<std::string>> manifests; // folder -> sources it lists
     for (fs::recursive_directory_iterator it(engineAssets, ec), end; it != end && !ec; it.increment(ec))
     {
-        if (!it->is_regular_file(ec) || Lower(it->path().extension().string()) != ".slang")
+        if (!it->is_regular_file(ec) || it->path().filename() != kShaderManifestName)
+            continue;
+        std::set<std::string>& listed = manifests[it->path().parent_path()];
+        std::ifstream in(it->path());
+        for (std::string line; std::getline(in, line);)
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            if (!line.empty())
+                listed.insert(line);
+        }
+    }
+    const auto required = [&](const fs::path& source)
+    {
+        for (const auto& [folder, listed] : manifests)
+        {
+            const fs::path relative = source.lexically_relative(folder);
+            if (!relative.empty() && *relative.begin() != "..")
+                return listed.count(relative.generic_string()) > 0;
+        }
+        return true; // no manifest covers it: every source counts
+    };
+    ec.clear();
+    for (fs::recursive_directory_iterator it(engineAssets, ec), end; it != end && !ec; it.increment(ec))
+    {
+        if (!it->is_regular_file(ec) || Lower(it->path().extension().string()) != ".slang" || !required(it->path()))
             continue;
         const std::string prefix = it->path().stem().string() + ".";
         bool compiled = false;

@@ -437,6 +437,7 @@ projects/*/Assets/*
 # each .slang at build time (and hot reload rewrites them), so they are outputs,
 # not sources. The two Texture.*.spv committed before this were hand-built.
 UHE_EDITOR/assets/shaders/*.spv
+UHE_EDITOR/assets/shaders/shaders.manifest
 
 imgui.ini
 .worktrees/

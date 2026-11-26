@@ -396,6 +396,24 @@ int main()
         options.EngineAssets = engine;
         options.OutputDir = sandbox / "out";
 
+        // Shader artifacts: without a manifest every source needs one; with
+        // uhe_shaderc's manifest only the sources it lists do.
+        {
+            const fs::path shaders = sandbox / "shader_check" / "shaders";
+            WriteFile(shaders / "lit.slang", "shader");
+            WriteFile(shaders / "lit.fragment.default.spv", "spirv");
+            WriteFile(shaders / "wip" / "draft.slang", "unfinished");
+            const auto missing = GameExporter::MissingShaderArtifacts(shaders.parent_path());
+            Check(missing.size() == 1 && missing[0] == "shaders/wip/draft.slang",
+                  "export: without a manifest, every source needs an artifact");
+            WriteFile(shaders / GameExporter::kShaderManifestName, "lit.slang\n");
+            Check(GameExporter::MissingShaderArtifacts(shaders.parent_path()).empty(),
+                  "export: a source the manifest does not list is not required");
+            WriteFile(shaders / GameExporter::kShaderManifestName, "lit.slang\nwip/draft.slang\n");
+            Check(GameExporter::MissingShaderArtifacts(shaders.parent_path()).size() == 1,
+                  "export: a listed source without an artifact is still missing");
+        }
+
         ExportReport report = GameExporter::Export(pond, options);
         Check(!report.Ok, "export: refused without a start scene");
 

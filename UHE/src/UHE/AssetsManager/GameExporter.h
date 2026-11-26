@@ -91,6 +91,8 @@ public:
     [[nodiscard]] static std::string ExecutableName(const std::string& projectName);
 
     static constexpr const char* kMarkerName = ".uhe-export";
+    /// Written by uhe_shaderc next to the sources it compiles (tools/shaderc/main.cpp).
+    static constexpr const char* kShaderManifestName = "shaders.manifest";
 };
 
 } // namespace UHE

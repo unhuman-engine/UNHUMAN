@@ -14,6 +14,11 @@
 // with no engine entry point -- `PBRBasic.slang` is a BRDF library, and asking it
 // for `vertexMain` is a question with no answer, not a broken shader.
 //
+// It also writes `<dir>/shaders.manifest`: the sources it was asked for, one
+// path relative to `<dir>` per line. The game exporter requires artifacts for
+// exactly those (GameExporter::MissingShaderArtifacts), so a work-in-progress
+// file outside UHE_SHADER_SOURCES does not block an export.
+//
 // Up to date is decided by mtime, so a build that changed nothing compiles
 // nothing; `--force` recompiles regardless. Exits non-zero when a source fails to
 // compile, which fails the build rather than the first frame.
@@ -21,9 +26,13 @@
 // It links the same `SlangCompiler` the engine's hot-reload path uses, so the
 // artifact and a runtime compile cannot disagree about a session setting.
 
+#include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <vector>
 #include "UHE/Renderer/ShaderCache.h"
 #include "UHE/Renderer/SlangCompiler.h"
 
@@ -166,6 +175,39 @@ int main(int argc, char** argv)
             }
             std::cout << "\n";
             ++compiled;
+        }
+    }
+
+    // The manifest, rewritten only when the list changed (its time is not a build input).
+    std::vector<std::string> listed;
+    for (const std::filesystem::path& source : sources)
+    {
+        const std::filesystem::path relative =
+            std::filesystem::weakly_canonical(source, ec)
+                .lexically_relative(std::filesystem::weakly_canonical(shaderDir, ec));
+        if (!relative.empty() && *relative.begin() != "..")
+            listed.push_back(relative.generic_string());
+    }
+    std::sort(listed.begin(), listed.end());
+    std::string manifest;
+    for (const std::string& line : listed)
+        manifest += line + "\n";
+    const std::filesystem::path manifestPath = shaderDir / "shaders.manifest";
+    std::string existing;
+    if (std::ifstream in(manifestPath); in)
+    {
+        std::ostringstream text;
+        text << in.rdbuf();
+        existing = text.str();
+    }
+    if (existing != manifest)
+    {
+        std::ofstream out(manifestPath, std::ios::binary | std::ios::trunc);
+        out << manifest;
+        if (!out)
+        {
+            std::cerr << "uhe_shaderc: could not write '" << manifestPath.string() << "'\n";
+            ++failed;
         }
     }
 
