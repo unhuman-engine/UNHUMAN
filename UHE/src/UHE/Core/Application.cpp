@@ -4,6 +4,7 @@
 #include <stb_image_write.h>
 #include "UHE/Audio/AudioEngine.h"
 #include "UHE/Core/Log.h"
+#include "UHE/Debug/RenderDoc.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer/PostProcess.h"
 #include "UHE/Renderer/Renderer.h"
@@ -28,6 +29,8 @@ Application::Application(const std::string& name, const WindowProps& window)
 {
     UHE_PROFILE_FUNCTION();
     UHE_CORE_ASSERT(!s_instance, "Application already exists!");
+    // Before any Vulkan object exists: RenderDoc hooks instance creation.
+    RenderDoc::Init();
     // Before any layer exists: ImGui reads it to skip its .ini, so a
     // captured frame never depends on a layout saved on this machine.
     m_Capture = CaptureSettings::FromEnvironment();
@@ -129,8 +132,10 @@ void Application::Run()
     // simulation time.
     m_LastFrameTime = glfwGetTime();
 
+    u64 frameIndex = 0;
     while (m_Running)
     {
+        RenderDoc::OnFrame(++frameIndex);
         // Input first: a frame updates on the input that arrived before it,
         // then simulates, then renders. Polling after End() made every frame
         // act on the previous frame's input.

@@ -22,6 +22,7 @@
 #include "UHE/Audio/AudioEngine.h"
 #include "UHE/Core/CommandLine.h"
 #include "UHE/Core/Console.h"
+#include "UHE/Debug/RenderDoc.h"
 #include "UHE/Math/Math.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHICommandBuffer.h"
@@ -191,7 +192,7 @@ void Editor::OnDetach()
 namespace
 {
 /// @brief Every console entry the editor owns, so OnDetach removes exactly these.
-constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "view.shading",
+constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "gpu.capture", "view.shading",
                                                  "view.buffer",   "scene.stats",  "clear"};
 } // namespace
 
@@ -225,6 +226,15 @@ void Editor::RegisterConsoleEntries()
                                 char text[64];
                                 std::snprintf(text, sizeof(text), "sim.tickrate = %.0f Hz", 1.0 / clock.GetFixedStep());
                                 return text;
+                            });
+
+    console.RegisterCommand("gpu.capture", "gpu.capture: capture the next frame with RenderDoc (start with -renderdoc)",
+                            [](const std::vector<std::string>&) -> std::string
+                            {
+                                if (!RenderDoc::Available())
+                                    return "RenderDoc is not attached; start with -renderdoc";
+                                RenderDoc::TriggerCapture();
+                                return "capturing the next frame";
                             });
 
     console.RegisterCommand(
@@ -2519,6 +2529,21 @@ void Editor::DrawViewportCameraMenu()
     }
     if (m_ViewMode != Renderer3D::ViewMode::Lit)
         ImGui::TextDisabled("Buffers show in the Lit shading mode.");
+    ImGui::SeparatorText("GPU Capture");
+    if (RenderDoc::Available())
+    {
+        if (ImGui::MenuItem("Capture Frame (RenderDoc)"))
+            RenderDoc::TriggerCapture();
+        ImGui::BeginDisabled(RenderDoc::CaptureCount() == 0);
+        if (ImGui::MenuItem("Open Last Capture"))
+            RenderDoc::LaunchReplayUI();
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("%u captures", RenderDoc::CaptureCount());
+    }
+    else
+    {
+        ImGui::TextDisabled("Start the editor with -renderdoc to capture frames.");
+    }
     ImGui::SeparatorText("Window");
     if (ImGui::MenuItem("Fullscreen Viewport", "Ctrl+Shift+F", m_IsViewportFullScreen))
         m_IsViewportFullScreen = !m_IsViewportFullScreen;
