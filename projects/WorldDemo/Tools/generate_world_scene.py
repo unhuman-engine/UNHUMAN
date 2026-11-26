@@ -7,7 +7,8 @@ terrain and game UI together.
 The scene: a generated terrain under the procedural sky at a low sun, a few
 boxes that fall onto it in Play (the terrain is a heightfield collider), and
 a HUD - a panel with live readouts and a battery bar, a throttle slider and a
-reset button. Scripts/Hud.lua drives the HUD and answers the button's
+reset button. An Intro sequence flies the camera round the valley on a loop
+and swings the sun (Sequencer panel). Scripts/Hud.lua drives the HUD and answers the button's
 OnClick. Edit the scene in the editor freely; rerunning this overwrites it.
 """
 
@@ -138,6 +139,37 @@ def main():
         "OrthographicSize": 10, "OrthographicNear": -1, "OrthographicFar": 1, "Primary": True,
         "FixedAspectRatio": False})])
     relation(uid, 0, [])
+
+    # ── Intro: a looping camera flight and a sun that swings across the sky ──
+    camera_id = next_id[0]  # the Camera entity written just above
+    sun_id = camera_id - 1
+    entity("Intro", components=[])
+    camera_path = [  # time, position, rotation (radians)
+        (0, (14, 18, 46), (-0.30, 0.29, 0)),
+        (5, (-22, 15, 38), (-0.26, -0.50, 0)),
+        (10, (-34, 24, -12), (-0.38, -1.45, 0)),
+        (15, (8, 30, -40), (-0.45, -2.80, 0)),
+        (20, (14, 18, 46), (-0.30, -6.0, 0)),
+    ]
+    lines.extend([
+        "    SequencerComponent:",
+        "      Duration: 20",
+        "      Loop: true",
+        "      PlayOnStart: true",
+        "      Speed: 1",
+        "      Tracks:",
+    ])
+
+    def track(target, prop, keys):
+        lines.extend([f"        - Target: {target}", f"          Property: {prop}", "          Muted: false",
+                      "          Keys:"])
+        for t, value in keys:
+            lines.append(f"            - {{Time: {t}, Value: {vec(value)}, Interp: Smooth}}")
+
+    track(camera_id, "Position", [(t, p) for t, p, _ in camera_path])
+    track(camera_id, "Rotation", [(t, r) for t, _, r in camera_path])
+    track(sun_id, "Rotation", [(0, (-0.35, 2.5, 0)), (10, (-0.9, 3.4, 0)), (20, (-0.35, 2.5, 0))])
+    relation(next_id[0], 0, [])
 
     # ── HUD ──
     panel = 9100
