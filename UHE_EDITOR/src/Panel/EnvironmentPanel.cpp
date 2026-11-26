@@ -9,6 +9,7 @@
 #include <imgui/imgui_internal.h>
 #include <string>
 #include "SceneHierarchyStyle.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Renderer3D/RenderSettings.h"
 #include "UHE/Scene/Scene.h"
 
@@ -248,6 +249,76 @@ void DrawEnvironmentSection(EnvironmentSettings& env)
     EndSection();
 }
 
+/// A dropped file's path relative to the mount it is under (the project's
+/// Assets, then the engine's), as scenes store paths; absolute when it is
+/// under neither, which the exporter then warns about.
+std::string MountRelative(const std::filesystem::path& file)
+{
+    std::error_code ec;
+    const std::filesystem::path absolute = std::filesystem::weakly_canonical(file, ec);
+    for (const auto& [scheme, root] : Vfs::Get().GetMounts())
+    {
+        const std::filesystem::path base = std::filesystem::weakly_canonical(root, ec);
+        const std::filesystem::path relative = absolute.lexically_relative(base);
+        if (!relative.empty() && *relative.begin() != "..")
+            return relative.generic_string();
+    }
+    return file.generic_string();
+}
+
+void DrawSkySection(SkySettings& sky)
+{
+    const SectionState section = SectionHeader("Sky", nullptr);
+    if (section.Reset)
+        sky = SkySettings{};
+    if (!section.Open || !BeginSection("##SkyProperties", true))
+        return;
+
+    const char* modes[] = {"Color", "Procedural", "Image"};
+    int mode = std::clamp(static_cast<int>(sky.Mode), 0, 2);
+    PropertyLabel("Mode", "Color: the Environment's sky colour.\nProcedural: follows the sun (sunsets, night).\n"
+                          "Image: an equirectangular panorama (.hdr, .png, .jpg).");
+    if (ImGui::Combo("##SkyMode", &mode, modes, 3))
+        sky.Mode = static_cast<SkySettings::SkyMode>(mode);
+
+    if (sky.Mode != SkySettings::SkyMode::Color)
+        SliderRow("Intensity", sky.Intensity, 0.0f, 8.0f, "%.2f", "Brightness of the whole sky.", kClampLogarithmic);
+
+    if (sky.Mode == SkySettings::SkyMode::Procedural)
+    {
+        ColorRow("Zenith", sky.ZenithColor, "Straight up, in daylight.");
+        ColorRow("Horizon", sky.HorizonColor, "At the horizon, in daylight.");
+        ColorRow("Ground", sky.GroundColor, "Below the horizon.");
+        SliderRow("Sun Size", sky.SunSize, 0.1f, 10.0f, "%.1f\xC2\xB0", "Apparent diameter of the sun disk.");
+        SliderRow("Sun Brightness", sky.SunBrightness, 0.0f, 200.0f, "%.0f",
+                  "Disk brightness as a multiple of the sun light; high values bloom.", kClampLogarithmic);
+        CheckboxRow("Ambient From Sky", sky.AmbientFromSky,
+                    "Ambient light uses the sky's colours instead of the Environment's sky and ground colours.");
+        NoteRow("The sun is the scene's first directional light: rotate it for sunsets and night.");
+    }
+    else if (sky.Mode == SkySettings::SkyMode::Image)
+    {
+        PropertyLabel("Image", "An equirectangular panorama in the project's assets. Drop one here.");
+        char path[512];
+        std::snprintf(path, sizeof(path), "%s", sky.ImagePath.c_str());
+        if (ImGui::InputTextWithHint("##SkyImage", "Skies/sky.hdr", path, sizeof(path),
+                                     ImGuiInputTextFlags_EnterReturnsTrue))
+            sky.ImagePath = path;
+        if (ImGui::BeginDragDropTarget())
+        {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("Content_Browser_item"))
+                sky.ImagePath = MountRelative(static_cast<const char*>(payload->Data));
+            ImGui::EndDragDropTarget();
+        }
+        SliderRow("Rotation", sky.ImageRotation, -180.0f, 180.0f, "%.0f\xC2\xB0", "Turns the panorama.");
+    }
+    else
+    {
+        NoteRow("The background is the Environment's Sky Color.");
+    }
+    EndSection();
+}
+
 void DrawShadowSection(ShadowSettings& shadows)
 {
     const SectionState section = SectionHeader("Shadows", &shadows.Enabled);
@@ -403,6 +474,7 @@ void EnvironmentPanel::OnImGuiRender(bool& open)
 
     RenderSettings& settings = m_Scene->GetRenderSettings();
     DrawEnvironmentSection(settings.Environment);
+    DrawSkySection(settings.Sky);
     DrawShadowSection(settings.Shadows);
     DrawLocalShadowSection(settings.LocalShadows);
     DrawSSAOSection(settings.SSAO);

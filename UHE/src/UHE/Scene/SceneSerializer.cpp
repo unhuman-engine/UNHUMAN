@@ -430,6 +430,21 @@ static void SerializeRenderSettings(YAML::Emitter& out, const RenderSettings& se
     out << YAML::Key << "Exposure" << YAML::Value << env.Exposure;
     out << YAML::EndMap;
 
+    const SkySettings& sky = settings.Sky;
+    out << YAML::Key << "Sky" << YAML::BeginMap;
+    const char* modeNames[] = {"Color", "Procedural", "Image"};
+    out << YAML::Key << "Mode" << YAML::Value << modeNames[std::clamp(static_cast<int>(sky.Mode), 0, 2)];
+    out << YAML::Key << "Intensity" << YAML::Value << sky.Intensity;
+    out << YAML::Key << "ZenithColor" << YAML::Value << sky.ZenithColor;
+    out << YAML::Key << "HorizonColor" << YAML::Value << sky.HorizonColor;
+    out << YAML::Key << "GroundColor" << YAML::Value << sky.GroundColor;
+    out << YAML::Key << "SunSize" << YAML::Value << sky.SunSize;
+    out << YAML::Key << "SunBrightness" << YAML::Value << sky.SunBrightness;
+    out << YAML::Key << "ImagePath" << YAML::Value << sky.ImagePath;
+    out << YAML::Key << "ImageRotation" << YAML::Value << sky.ImageRotation;
+    out << YAML::Key << "AmbientFromSky" << YAML::Value << sky.AmbientFromSky;
+    out << YAML::EndMap;
+
     const ShadowSettings& shadows = settings.Shadows;
     out << YAML::Key << "Shadows" << YAML::BeginMap;
     out << YAML::Key << "Enabled" << YAML::Value << shadows.Enabled;
@@ -504,6 +519,26 @@ static void DeserializeRenderSettings(const YAML::Node& node, RenderSettings& se
     ReadOptional(envNode, "GroundColor", env.GroundColor);
     ReadOptional(envNode, "AmbientIntensity", env.AmbientIntensity);
     ReadOptional(envNode, "Exposure", env.Exposure);
+
+    const YAML::Node skyNode = node["Sky"];
+    SkySettings& sky = settings.Sky;
+    std::string skyMode;
+    ReadOptional(skyNode, "Mode", skyMode);
+    if (skyMode == "Color")
+        sky.Mode = SkySettings::SkyMode::Color;
+    else if (skyMode == "Image")
+        sky.Mode = SkySettings::SkyMode::Image;
+    else if (skyMode == "Procedural")
+        sky.Mode = SkySettings::SkyMode::Procedural;
+    ReadOptional(skyNode, "Intensity", sky.Intensity);
+    ReadOptional(skyNode, "ZenithColor", sky.ZenithColor);
+    ReadOptional(skyNode, "HorizonColor", sky.HorizonColor);
+    ReadOptional(skyNode, "GroundColor", sky.GroundColor);
+    ReadOptional(skyNode, "SunSize", sky.SunSize);
+    ReadOptional(skyNode, "SunBrightness", sky.SunBrightness);
+    ReadOptional(skyNode, "ImagePath", sky.ImagePath);
+    ReadOptional(skyNode, "ImageRotation", sky.ImageRotation);
+    ReadOptional(skyNode, "AmbientFromSky", sky.AmbientFromSky);
 
     const YAML::Node shadowNode = node["Shadows"];
     ShadowSettings& shadows = settings.Shadows;
