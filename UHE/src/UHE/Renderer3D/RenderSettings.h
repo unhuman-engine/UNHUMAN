@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <string>
 
 namespace UHE
 {
@@ -20,6 +21,35 @@ struct EnvironmentSettings
     glm::vec3 GroundColor{0.30f, 0.27f, 0.24f}; ///< ambient bounced up from below
     float AmbientIntensity = 0.30f;             ///< multiplies both hemisphere colours
     float Exposure = 1.0f;                      ///< linear scale applied before the tonemap curve
+};
+
+/// @brief What is drawn behind everything, where no geometry is.
+struct SkySettings
+{
+    enum class SkyMode : int
+    {
+        Color = 0,      ///< the flat Environment sky colour (the clear colour), as before skies existed
+        Procedural = 1, ///< a gradient that follows the scene's sun: horizon haze, sun disk, sunsets, night
+        Image = 2,      ///< an equirectangular panorama (.hdr for real HDR light, or .png/.jpg)
+    };
+
+    SkyMode Mode = SkyMode::Procedural;
+    float Intensity = 1.0f; ///< multiplies the whole sky (both modes)
+
+    // Procedural. Colours are sRGB, as a colour picker shows them.
+    glm::vec3 ZenithColor{0.22f, 0.42f, 0.78f};  ///< straight up, in daylight
+    glm::vec3 HorizonColor{0.68f, 0.78f, 0.90f}; ///< at the horizon, in daylight
+    glm::vec3 GroundColor{0.32f, 0.30f, 0.27f};  ///< below the horizon
+    float SunSize = 1.5f;                        ///< apparent diameter of the sun disk, degrees
+    float SunBrightness = 30.0f;                 ///< disk radiance as a multiple of the sun light's own colour
+
+    // Image.
+    std::string ImagePath;      ///< asset path of an equirectangular image
+    float ImageRotation = 0.0f; ///< degrees about the vertical axis
+
+    /// Ambient (the Environment's hemisphere light) follows the sky's own
+    /// zenith and ground colours instead of the Environment's sky and ground colours.
+    bool AmbientFromSky = false;
 };
 
 /// @brief Cascaded shadow maps for the first directional light that casts shadows.
@@ -81,6 +111,7 @@ struct WindSettings
 struct RenderSettings
 {
     EnvironmentSettings Environment;
+    SkySettings Sky;
     ShadowSettings Shadows;
     LocalShadowSettings LocalShadows;
     SSAOSettings SSAO;

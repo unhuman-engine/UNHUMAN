@@ -9,6 +9,7 @@
 #include "UHE/Renderer3D/LightSystem.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 #include "UHE/Renderer3D/SSAO.h"
+#include "UHE/Renderer3D/SkyRenderer.h"
 #include "UHE/Renderer3D/WaterRenderer.h"
 #include "UHE/Scene/Scene.h"
 
@@ -38,6 +39,7 @@ struct FrameState
     u32 LocalAtlasSize = 0;
 
     bool Resolved = false;
+    SkyRenderer::Frame Sky; ///< the camera and sun the sky pass draws with
     SceneRenderView View;
     Renderer3D::SceneFrameData Frame;
     int CascadeCount = 0;
@@ -279,6 +281,23 @@ void Resolve(FrameState& state)
 
     frame.Shadow = glm::vec4(-1.0f, -1.0f, 0.0f, 0.0f);
     frame.Sky = glm::vec4(SrgbToLinear(environment.SkyColor), -1.0f);
+
+    // The procedural sky lights the scene and colours the water's reflection
+    // like it colours the background, when asked to.
+    const SkySettings& sky = settings.Sky;
+    if (sky.Mode == SkySettings::SkyMode::Procedural)
+    {
+        const glm::vec3 zenith = SkyRenderer::ZenithRadiance(sky);
+        const glm::vec3 horizon = SkyRenderer::HorizonRadiance(sky);
+        frame.Sky = glm::vec4(glm::mix(horizon, zenith, 0.35f), -1.0f);
+        if (sky.AmbientFromSky)
+        {
+            frame.AmbientSky = glm::vec4(glm::mix(horizon, zenith, 0.5f) * environment.AmbientIntensity, 0.0f);
+            frame.AmbientGround = glm::vec4(SrgbToLinear(sky.GroundColor) * environment.AmbientIntensity, 0.0f);
+        }
+    }
+    state.Sky.InverseViewProjection = glm::inverse(state.View.Projection * state.View.View);
+    state.Sky.CameraPosition = state.View.Position;
     if (scene == nullptr)
         return;
     const std::vector<RD3d::LightData> lights = RD3d::LightSystem::ExtractLights(scene->GetRegistry());
@@ -287,6 +306,17 @@ void Resolve(FrameState& state)
         if (lights[i].Type_Radius_Pad.x == 0.0f)
         {
             frame.Sky.w = static_cast<float>(i); // the sun the water reflects
+            const glm::vec3 direction(lights[i].PositionOrDirection);
+            state.Sky.HasSun = glm::dot(direction, direction) > 1e-8f;
+            state.Sky.ToSun = state.Sky.HasSun ? -glm::normalize(direction) : glm::vec3(0.0f, 1.0f, 0.0f);
+            state.Sky.SunColor = glm::vec3(lights[i].ColorIntensity) * lights[i].ColorIntensity.w;
+            // Ambient taken from the sky fades with it at night.
+            if (sky.Mode == SkySettings::SkyMode::Procedural && sky.AmbientFromSky)
+            {
+                const float daylight = std::max(SkyRenderer::Daylight(state.Sky.ToSun.y), 0.03f);
+                frame.AmbientSky *= daylight;
+                frame.AmbientGround *= daylight;
+            }
             break;
         }
     }
@@ -545,9 +575,39 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
         return output;
     }
 
-    // ── Water: the opaque scene copied into a new HDR image, surfaces over it ──
     FGHandle<FGTexture> hdr = scene.Color;
     FGHandle<FGTexture> entity = scene.Entity;
+
+    // ── Sky: behind everything, where the colour pass left the far plane ──
+    if (SkyRenderer::Draws(settings.Sky))
+    {
+        SkyRenderer::PrepareImage(settings.Sky); // uploads, so not from inside a pass
+        struct SkyData
+        {
+            FGHandle<FGTexture> Color;
+            FGHandle<FGTexture> Depth;
+        };
+        const SkyData& sky = graph.AddPass<SkyData>(
+            "Scene.Sky",
+            [&](FGBuilder& builder, SkyData& d)
+            {
+                FGAttachment keep;
+                keep.Load = LoadOp::Load;
+                d.Color = builder.Write(hdr, FGWrite::RenderTarget, keep);
+                d.Depth = builder.Read(scene.Depth);
+            },
+            [state](const SkyData& d, FGContext& context)
+            {
+                Resolve(*state);
+                RHICommandBuffer& cmd = context.Cmd();
+                cmd.SetViewport(0.0f, 0.0f, static_cast<f32>(context.Width()), static_cast<f32>(context.Height()));
+                cmd.SetScissor(0, 0, context.Width(), context.Height());
+                SkyRenderer::Draw(context, state->Settings.Sky, state->Sky, BindlessIndex(context.Get(d.Depth)));
+            });
+        hdr = sky.Color;
+    }
+
+    // ── Water: the opaque scene copied into a new HDR image, surfaces over it ──
     if (desc.SceneData != nullptr && desc.SceneData->HasWater())
     {
         // The surfaces sample the opaque colour, so they cannot draw into it:
@@ -561,7 +621,7 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
             "Scene.WaterCopy",
             [&](FGBuilder& builder, CopyData& d)
             {
-                d.Opaque = builder.Read(scene.Color);
+                d.Opaque = builder.Read(hdr);
                 // Every pixel is written by the copy.
                 d.Output = builder.Write(builder.Create("Scene.HDR.Water", {width, height, TextureFormat::RGBA16F}),
                                          FGWrite::RenderTarget);
@@ -585,7 +645,7 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
             "Scene.Water",
             [&](FGBuilder& builder, WaterData& d)
             {
-                d.Opaque = builder.Read(scene.Color);
+                d.Opaque = builder.Read(hdr);
                 d.Depth = builder.Read(scene.Depth);
                 FGAttachment keep;
                 keep.Load = LoadOp::Load;
@@ -668,6 +728,7 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
 void SceneRenderer::Shutdown()
 {
     SSAO::Shutdown();
+    SkyRenderer::Shutdown();
     WaterRenderer::Shutdown();
 }
 
