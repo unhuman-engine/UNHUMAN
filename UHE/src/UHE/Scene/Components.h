@@ -415,6 +415,101 @@ struct UHE_API TerrainComponent
     TerrainComponent(const TerrainComponent&) = default;
 };
 
+// ── Game UI ────────────────────────────────────────────────────────────────
+// Screen-space UI, drawn over the finished frame in the game and in the
+// editor's viewport. Every UI element has a UIRectComponent; the others add
+// what it shows and does. Pixels, origin at the top left, y down. A UI
+// entity's rect is laid out inside its parent's when the parent is UI too,
+// otherwise inside the screen. UI::Update (UI/UISystem.h) lays them out,
+// handles the mouse and builds the draw list.
+
+/**
+ * @brief Where a UI element sits, relative to its parent (Unity's RectTransform).
+ *
+ * The anchors are fractions of the parent: equal anchors pin a point (a
+ * corner, the centre), different ones stretch the element with the parent on
+ * that axis. On a stretched axis Size is added to the stretched size (so -20
+ * leaves 10 px either side); otherwise it is the size. Position moves the
+ * pivot away from the anchor point.
+ */
+struct UHE_API UIRectComponent
+{
+    glm::vec2 AnchorMin{0.5f, 0.5f};
+    glm::vec2 AnchorMax{0.5f, 0.5f};
+    glm::vec2 Pivot{0.5f, 0.5f};    ///< the point of the element that sits at Position, fractions of its size
+    glm::vec2 Position{0.0f, 0.0f}; ///< pixels from the anchor point to the pivot
+    glm::vec2 Size{160.0f, 40.0f};  ///< pixels (added to the stretched size on a stretched axis)
+    int Order = 0;                  ///< among siblings, higher draws on top and gets the mouse first
+    bool Visible = true;            ///< hidden elements and their children neither draw nor take the mouse
+
+    // Laid out by UI::Update; not saved.
+    glm::vec2 ComputedMin{0.0f};
+    glm::vec2 ComputedMax{0.0f};
+};
+
+/// @brief A filled box: colour, an optional image, rounded corners and a border.
+struct UHE_API UIImageComponent
+{
+    glm::vec4 Color{0.10f, 0.12f, 0.16f, 0.85f}; ///< sRGB with alpha; multiplies the image
+    std::string TexturePath;                     ///< empty: a plain box
+    float CornerRadius = 6.0f;                   ///< pixels
+    float BorderWidth = 0.0f;                    ///< pixels
+    glm::vec4 BorderColor{1.0f, 1.0f, 1.0f, 0.25f};
+
+    Ref<Texture2D> Texture; ///< loaded from TexturePath; not saved
+    std::string LoadedPath; ///< the path Texture came from
+};
+
+/// @brief Text inside the element's rect.
+struct UHE_API UITextComponent
+{
+    enum class Alignment : int
+    {
+        Left = 0,
+        Center = 1,
+        Right = 2,
+    };
+
+    std::string Text = "Text";
+    float FontSize = 22.0f; ///< pixels per line
+    glm::vec4 Color{1.0f};  ///< sRGB with alpha
+    Alignment Align = Alignment::Center;
+    std::string FontPath; ///< a .ttf in the assets; empty: the engine's default font
+};
+
+/**
+ * @brief Makes the element clickable: its UIImage takes the normal, hover
+ *        and pressed colours, and a click calls `OnClick(self)` on the
+ *        element's script.
+ */
+struct UHE_API UIButtonComponent
+{
+    glm::vec4 NormalColor{0.20f, 0.24f, 0.32f, 0.95f};
+    glm::vec4 HoverColor{0.28f, 0.34f, 0.46f, 1.0f};
+    glm::vec4 PressedColor{0.14f, 0.17f, 0.24f, 1.0f};
+    bool Interactable = true;
+
+    // Mouse state, kept by UI::Update; not saved.
+    bool Hovered = false;
+    bool Pressed = false;
+    u32 Clicks = 0; ///< clicks since the scene started
+};
+
+/**
+ * @brief A bar filled to Value: a readout (speed, battery, progress), or a
+ *        slider the mouse drags when Interactable.
+ */
+struct UHE_API UIProgressBarComponent
+{
+    float Value = 0.5f; ///< 0..1
+    glm::vec4 FillColor{0.30f, 0.65f, 1.0f, 1.0f};
+    glm::vec4 BackgroundColor{0.08f, 0.09f, 0.12f, 0.85f};
+    float CornerRadius = 4.0f;
+    bool Interactable = false; ///< a slider: dragging sets Value
+
+    bool Dragging = false; ///< kept by UI::Update; not saved
+};
+
 struct UHE_API BoxColliderComponent
 {
     glm::vec2 Offset{0.0f, 0.0f};

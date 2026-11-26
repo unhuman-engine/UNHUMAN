@@ -11,6 +11,7 @@
 #include "UHE/Renderer/EditorCamera.h"
 #include "UHE/Renderer3D/RenderSettings.h"
 #include "UHE/Scene/Components.h"
+#include "UHE/UI/UISystem.h"
 #include "entt.hpp"
 class b2World;
 
@@ -171,6 +172,17 @@ public:
     static Ref<Scene> Copy(Ref<Scene> other);
     entt::registry& GetRegistry() { return m_registry; }
 
+    /**
+     * @brief Lays out the game UI for a screen of \p screenSize pixels and
+     *        applies the mouse (UI::Update); a clicked button calls its
+     *        script's `OnClick`. Once per frame, before the UI is drawn.
+     */
+    void UpdateUI(glm::vec2 screenSize, const UI::Pointer& pointer);
+    /// @brief What UpdateUI last laid out, back to front (UIRenderer draws it).
+    [[nodiscard]] const std::vector<UI::DrawCommand>& GetUIDrawList() const { return m_UIDrawList; }
+    /// @brief The mouse was over a UI element at the last UpdateUI: a game should not also act on that click.
+    [[nodiscard]] bool IsPointerOverUI() const { return m_PointerOverUI; }
+
     /// The scene's physics system. Scripts drive rigid bodies through it
     /// (velocity and force), so it is reachable rather than private.
     [[nodiscard]] Physics::PhysicsSystem3D& GetPhysicsSystem3D() { return m_PhysicsSystem3D; }
@@ -246,6 +258,8 @@ private:
 
     entt::registry m_registry;
     u32 m_ViewportWidth = 0, m_ViewportHeight = 0;
+    std::vector<UI::DrawCommand> m_UIDrawList;
+    bool m_PointerOverUI = false;
 
     // Issue #17: world-space transform cache, rebuilt each frame.
     std::unordered_map<entt::entity, glm::mat4> m_WorldTransformCache;

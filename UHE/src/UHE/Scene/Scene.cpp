@@ -291,6 +291,16 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
         // The built mesh and heights are shared, not rebuilt: they are immutable once built.
         if (srcRegistry.all_of<TerrainComponent>(srcEntity))
             newEntity.AddComponent<TerrainComponent>() = srcRegistry.get<TerrainComponent>(srcEntity);
+        if (srcRegistry.all_of<UIRectComponent>(srcEntity))
+            newEntity.AddComponent<UIRectComponent>() = srcRegistry.get<UIRectComponent>(srcEntity);
+        if (srcRegistry.all_of<UIImageComponent>(srcEntity))
+            newEntity.AddComponent<UIImageComponent>() = srcRegistry.get<UIImageComponent>(srcEntity);
+        if (srcRegistry.all_of<UITextComponent>(srcEntity))
+            newEntity.AddComponent<UITextComponent>() = srcRegistry.get<UITextComponent>(srcEntity);
+        if (srcRegistry.all_of<UIButtonComponent>(srcEntity))
+            newEntity.AddComponent<UIButtonComponent>() = srcRegistry.get<UIButtonComponent>(srcEntity);
+        if (srcRegistry.all_of<UIProgressBarComponent>(srcEntity))
+            newEntity.AddComponent<UIProgressBarComponent>() = srcRegistry.get<UIProgressBarComponent>(srcEntity);
 
         // Copy PointLightComponent
         if (srcRegistry.all_of<PointLightComponent>(srcEntity))
@@ -1906,6 +1916,18 @@ void Scene::OnRuntimeStart()
     }
 }
 
+void Scene::UpdateUI(glm::vec2 screenSize, const UI::Pointer& pointer)
+{
+    UI::Events events;
+    const UISettings& ui = m_RenderSettings.UI;
+    m_UIDrawList =
+        UI::Update(*this, screenSize, pointer, &events, UI::Scale(ui.ScaleWithScreen, ui.ReferenceHeight, screenSize));
+    m_PointerOverUI = events.PointerOverUI;
+    // After the layout, not during it: a script may add, remove or hide UI.
+    for (const entt::entity clicked : events.Clicked)
+        ScriptEngine::Get().OnUIClick(*this, static_cast<u32>(clicked));
+}
+
 void Scene::UpdateTerrains()
 {
     auto view = m_registry.view<TerrainComponent>();
@@ -2057,6 +2079,11 @@ template <> void Scene::OnComponentAdded<SpotLightComponent>(Entity entity, Spot
 template <> void Scene::OnComponentAdded<FoliageComponent>(Entity entity, FoliageComponent& component) {};
 template <> void Scene::OnComponentAdded<WaterComponent>(Entity entity, WaterComponent& component) {};
 template <> void Scene::OnComponentAdded<TerrainComponent>(Entity entity, TerrainComponent& component) {};
+template <> void Scene::OnComponentAdded<UIRectComponent>(Entity entity, UIRectComponent& component) {};
+template <> void Scene::OnComponentAdded<UIImageComponent>(Entity entity, UIImageComponent& component) {};
+template <> void Scene::OnComponentAdded<UITextComponent>(Entity entity, UITextComponent& component) {};
+template <> void Scene::OnComponentAdded<UIButtonComponent>(Entity entity, UIButtonComponent& component) {};
+template <> void Scene::OnComponentAdded<UIProgressBarComponent>(Entity entity, UIProgressBarComponent& component) {};
 template <> void Scene::OnComponentAdded<AreaLightComponent>(Entity entity, AreaLightComponent& component) {};
 template <> void Scene::OnComponentAdded<WindComponent>(Entity entity, WindComponent& component) {};
 template <> void Scene::OnComponentAdded<AnimatorComponent>(Entity entity, AnimatorComponent& component) {};

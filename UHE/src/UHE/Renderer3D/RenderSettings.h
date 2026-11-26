@@ -52,6 +52,16 @@ struct SkySettings
     bool AmbientFromSky = false;
 };
 
+/// @brief How the game UI scales with the screen.
+struct UISettings
+{
+    /// Lay the UI out on a 16:9 screen ReferenceHeight pixels tall and scale
+    /// that to fit the screen, so it covers the same share of a small window
+    /// and of a 4K one. Off: UI pixels are screen pixels.
+    bool ScaleWithScreen = true;
+    float ReferenceHeight = 720.0f;
+};
+
 /// @brief Cascaded shadow maps for the first directional light that casts shadows.
 struct ShadowSettings
 {
@@ -112,6 +122,7 @@ struct RenderSettings
 {
     EnvironmentSettings Environment;
     SkySettings Sky;
+    UISettings UI;
     ShadowSettings Shadows;
     LocalShadowSettings LocalShadows;
     SSAOSettings SSAO;

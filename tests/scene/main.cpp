@@ -425,7 +425,7 @@ static void TestTerrain()
 
     const Terrain::Heightfield a = Terrain::BuildHeightfield(terrain);
     const Terrain::Heightfield b = Terrain::BuildHeightfield(terrain);
-    CHECK(a.Samples == 33 && a.Heights.size() == 33u * 33u, "a 32-quad grid has 33 x 33 samples");
+    CHECK(a.Samples == 33 && a.Heights.size() == std::size_t{33} * 33, "a 32-quad grid has 33 x 33 samples");
     CHECK(a.Heights == b.Heights, "the same seed builds the same ground");
     const auto [low, high] = std::minmax_element(a.Heights.begin(), a.Heights.end());
     CHECK(std::fabs(*low) < 1e-4f && std::fabs(*high - 6.0f) < 1e-3f, "noise spans 0 to Height");
@@ -442,7 +442,8 @@ static void TestTerrain()
     CHECK(std::fabs(Terrain::HeightAt(a, -100.0f, -100.0f) - corner) < 1e-5f, "outside the edge clamps");
 
     const RD3d::Primitive prim = Terrain::BuildPrimitive(a, terrain);
-    CHECK(prim.vertices.size() == 33u * 33u && prim.indices.size() == 32u * 32u * 6u, "one vertex per sample");
+    CHECK(prim.vertices.size() == std::size_t{33} * 33 && prim.indices.size() == std::size_t{32} * 32 * 6,
+          "one vertex per sample");
     bool upward = true;
     for (const auto& v : prim.vertices)
         upward &= v.normal.y > 0.0f && std::fabs(glm::length(v.normal) - 1.0f) < 1e-4f;
@@ -503,7 +504,8 @@ static void TestTerrain()
     ball.AddComponent<SphereCollider3DComponent>().Radius = 0.5f;
 
     scene->OnUpdateEditorSimulation(Timestep(0.016f));
-    CHECK(tc.Mesh != nullptr && tc.Heights != nullptr && tc.Heights->size() == 65u * 65u, "built on first update");
+    CHECK(tc.Mesh != nullptr && tc.Heights != nullptr && tc.Heights->size() == std::size_t{65} * 65,
+          "built on first update");
     const Ref<RD3d::Model> firstMesh = tc.Mesh;
     scene->OnUpdateEditorSimulation(Timestep(0.016f));
     CHECK(tc.Mesh == firstMesh, "not rebuilt while nothing changed");
@@ -529,6 +531,143 @@ static void TestTerrain()
     scene->OnRuntimeStop();
 }
 
+// --- game UI: layout, clicks and sliders ---
+static void TestUI()
+{
+    std::cout << "[ui]\n";
+    auto scene = CreateRef<Scene>();
+    const glm::vec2 screen(800.0f, 600.0f);
+    const auto near = [](glm::vec2 a, glm::vec2 b) { return glm::length(a - b) < 1e-3f; };
+
+    // Pinned to the top-right corner, 20 px in from both edges.
+    Entity corner = scene->CreateEntity("Corner");
+    auto& cr = corner.AddComponent<UIRectComponent>();
+    cr.AnchorMin = cr.AnchorMax = {1.0f, 0.0f};
+    cr.Pivot = {1.0f, 0.0f};
+    cr.Position = {-20.0f, 20.0f};
+    cr.Size = {100.0f, 30.0f};
+    // Stretched across the bottom, 10 px margins, 50 px tall.
+    Entity bar = scene->CreateEntity("Bottom");
+    auto& br = bar.AddComponent<UIRectComponent>();
+    br.AnchorMin = {0.0f, 1.0f};
+    br.AnchorMax = {1.0f, 1.0f};
+    br.Pivot = {0.5f, 1.0f};
+    br.Position = {0.0f, -10.0f};
+    br.Size = {-20.0f, 50.0f};
+    bar.AddComponent<UIImageComponent>();
+    // A centred panel with a button in it.
+    Entity panel = scene->CreateEntity("Panel");
+    auto& pr = panel.AddComponent<UIRectComponent>();
+    pr.Size = {300.0f, 200.0f};
+    panel.AddComponent<UIImageComponent>();
+    Entity button = scene->CreateChildEntity(panel, "Button");
+    auto& bt = button.AddComponent<UIRectComponent>();
+    bt.AnchorMin = bt.AnchorMax = {0.5f, 1.0f};
+    bt.Pivot = {0.5f, 1.0f};
+    bt.Position = {0.0f, -10.0f};
+    bt.Size = {120.0f, 40.0f};
+    button.AddComponent<UIImageComponent>();
+    auto& bc = button.AddComponent<UIButtonComponent>();
+    button.AddComponent<UITextComponent>().Text = "Go";
+    scene->OnUpdateEditorSimulation(Timestep(0.016f)); // applies the deferred child attach
+
+    UI::Pointer idle;
+    std::vector<UI::DrawCommand> list = UI::Update(*scene, screen, idle);
+    CHECK(near(cr.ComputedMin, {680.0f, 20.0f}) && near(cr.ComputedMax, {780.0f, 50.0f}),
+          "a corner anchor keeps its distance from that corner");
+    CHECK(near(br.ComputedMin, {10.0f, 540.0f}) && near(br.ComputedMax, {790.0f, 590.0f}),
+          "stretched anchors follow the screen's width, minus the margins");
+    CHECK(near(pr.ComputedMin, {250.0f, 200.0f}), "a centre anchor centres");
+    CHECK(near(bt.ComputedMin, {340.0f, 350.0f}) && near(bt.ComputedMax, {460.0f, 390.0f}),
+          "a child is laid out inside its parent");
+    UI::Update(*scene, {1000.0f, 600.0f}, idle);
+    CHECK(near(cr.ComputedMin, {880.0f, 20.0f}), "and moves with the corner when the screen resizes");
+    list = UI::Update(*scene, screen, idle);
+    CHECK(list.size() == 4 && list.back().Type == UI::DrawCommand::Kind::Text && list.back().Text == "Go",
+          "the draw list is back to front: bar, panel, button, its text");
+
+    // Clicks: press and release on the button, with the pointer active.
+    UI::Pointer over;
+    over.Active = true;
+    over.Position = {400.0f, 370.0f};
+    UI::Events events;
+    UI::Update(*scene, screen, over, &events);
+    CHECK(bc.Hovered && !bc.Pressed && events.PointerOverUI, "hovering marks the button");
+    over.Down = over.Pressed = true;
+    UI::Update(*scene, screen, over, &events);
+    over.Pressed = false;
+    CHECK(bc.Pressed, "pressing holds it down");
+    over.Down = false;
+    over.Released = true;
+    events = {};
+    UI::Update(*scene, screen, over, &events);
+    over.Released = false;
+    CHECK(bc.Clicks == 1 && events.Clicked.size() == 1 && events.Clicked[0] == static_cast<entt::entity>(button),
+          "a press and release on it is one click");
+    // Pressed on the button, released elsewhere: no click.
+    over.Down = over.Pressed = true;
+    UI::Update(*scene, screen, over);
+    over.Pressed = false;
+    over.Position = {50.0f, 50.0f};
+    over.Down = false;
+    over.Released = true;
+    UI::Update(*scene, screen, over);
+    over.Released = false;
+    CHECK(bc.Clicks == 1, "releasing off the button cancels the click");
+    // Hidden: neither drawn nor clickable.
+    pr.Visible = false;
+    over.Position = {400.0f, 370.0f};
+    list = UI::Update(*scene, screen, over);
+    CHECK(!bc.Hovered && list.size() == 1, "a hidden panel hides its children too");
+    pr.Visible = true;
+
+    // A slider follows the mouse from the press, even past its ends.
+    Entity slider = scene->CreateEntity("Slider");
+    auto& sr = slider.AddComponent<UIRectComponent>();
+    sr.AnchorMin = sr.AnchorMax = {0.0f, 0.0f};
+    sr.Pivot = {0.0f, 0.0f};
+    sr.Position = {100.0f, 100.0f};
+    sr.Size = {200.0f, 20.0f};
+    sr.Order = 10;
+    auto& sb = slider.AddComponent<UIProgressBarComponent>();
+    sb.Interactable = true;
+    UI::Pointer drag;
+    drag.Active = true;
+    drag.Position = {150.0f, 110.0f};
+    drag.Down = drag.Pressed = true;
+    UI::Update(*scene, screen, drag);
+    CHECK(std::fabs(sb.Value - 0.25f) < 1e-4f && sb.Dragging, "pressing a slider sets its value there");
+    drag.Pressed = false;
+    drag.Position = {500.0f, 300.0f};
+    UI::Update(*scene, screen, drag);
+    CHECK(sb.Value == 1.0f, "dragging past the end clamps to 1");
+    drag.Down = false;
+    drag.Released = true;
+    UI::Update(*scene, screen, drag);
+    CHECK(!sb.Dragging, "releasing ends the drag");
+    list = UI::Update(*scene, screen, idle);
+    CHECK(list.size() == 6 && list[4].Max.x == 300.0f && list[5].Max.x == 300.0f,
+          "a bar draws its background and a fill as wide as its value");
+
+    // Scaled UI: laid out at 720 px tall, drawn at 1440: everything doubles,
+    // and the mouse is mapped back (the button is under the same spot).
+    CHECK(UI::Scale(true, 720.0f, {2560.0f, 1440.0f}) == 2.0f && UI::Scale(false, 720.0f, {2560.0f, 1440.0f}) == 1.0f,
+          "scale is the screen height over the reference height, when on");
+    CHECK(UI::Scale(true, 720.0f, {3440.0f, 1440.0f}) == 2.0f, "a wider screen is fitted by its height");
+    CHECK(UI::Scale(true, 720.0f, {640.0f, 1440.0f}) == 0.5f, "a portrait screen is fitted by its width");
+    list = UI::Update(*scene, {1600.0f, 1200.0f}, idle, nullptr, 2.0f);
+    CHECK(near(cr.ComputedMin, {680.0f, 20.0f}), "rects stay in UI pixels");
+    const auto cornerBox = std::find_if(list.begin(), list.end(), [&](const UI::DrawCommand& c)
+                                        { return c.Entity == static_cast<entt::entity>(button); });
+    CHECK(cornerBox != list.end() && near(cornerBox->Min, {680.0f, 700.0f}) && cornerBox->CornerRadius == 12.0f,
+          "the draw list is scaled to the screen");
+    UI::Pointer scaled;
+    scaled.Active = true;
+    scaled.Position = {800.0f, 740.0f}; // the button's centre at twice the size
+    UI::Update(*scene, {1600.0f, 1200.0f}, scaled, nullptr, 2.0f);
+    CHECK(bc.Hovered, "the pointer is mapped into UI pixels");
+}
+
 int main()
 {
     Scene::GetEditorOverlays().LightIcons = false; // no texture loading in headless tests
@@ -537,6 +676,7 @@ int main()
     TestCreationAndIndex();
     TestSceneCameraClipPlanes();
     TestTerrain();
+    TestUI();
     TestHierarchy();
     TestRecursiveDestroy();
     TestScriptLifetime();
