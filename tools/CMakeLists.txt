@@ -22,6 +22,7 @@ set(UHE_SHADER_SOURCES
     "${UHE_SHADER_DIR}/Texture.slang"
     "${UHE_SHADER_DIR}/Text.slang"
     "${UHE_SHADER_DIR}/Tonemap.slang"
+    "${UHE_SHADER_DIR}/UI.slang"
     "${UHE_SHADER_DIR}/Water.slang"
 )
 
