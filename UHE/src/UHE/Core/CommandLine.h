@@ -1,5 +1,5 @@
 #pragma once
-
+#include <filesystem>
 #include <string>
 #include <vector>
 #include "UHE/Core/Core.h"
@@ -22,6 +22,14 @@ public:
     [[nodiscard]] static const std::vector<std::string>& GetArgs();
     /// @brief argv[0]: how the executable was started (relative or absolute); empty before Init.
     [[nodiscard]] static const std::string& GetExecutable();
+    /**
+     * @brief The running executable's absolute path, from the OS (/proc/self/exe,
+     *        GetModuleFileName); argv[0] made absolute where the OS does not say.
+     *
+     * argv[0] alone is only the name when the program was found through PATH,
+     * and resolving that against the working directory finds the wrong folder.
+     */
+    [[nodiscard]] static std::filesystem::path GetExecutablePath();
 
     [[nodiscard]] static bool HasFlag(const char* name);
 

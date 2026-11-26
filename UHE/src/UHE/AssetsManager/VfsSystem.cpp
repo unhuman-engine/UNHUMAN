@@ -136,6 +136,18 @@ std::filesystem::path ResolveAssetPath(const std::string& path)
         return {};
 
     std::error_code ec;
+
+    // An explicit "game:" or "engine:" names its root: resolved there only
+    // (and not against the working directory, where a ':' path means nothing).
+    for (const char* scheme : {"game:", "engine:"})
+    {
+        if (path.rfind(scheme, 0) != 0)
+            continue;
+        if (auto resolved = Vfs::Get().Resolve(path); resolved && fs::exists(*resolved, ec))
+            return *resolved;
+        return fs::path(path);
+    }
+
     const fs::path candidate(path);
 
     // Absolute paths (file dialogs, engine assets) and paths that already resolve

@@ -1501,7 +1501,7 @@ void Editor::ExportGame()
     ExportOptions options;
     options.OutputDir = folder;
     // The runtime is built next to the editor, into the same folder.
-    options.RuntimeDir = std::filesystem::absolute(CommandLine::GetExecutable()).parent_path();
+    options.RuntimeDir = CommandLine::GetExecutablePath().parent_path();
     options.EngineAssets = FileSystem::Get().GetRootPath() / "assets";
     const ExportReport report = GameExporter::Export(*m_Project, options);
     for (const std::string& warning : report.Warnings)

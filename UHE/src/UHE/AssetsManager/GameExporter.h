@@ -49,7 +49,8 @@ struct ExportReport
  *   shared library next to it (Linux binaries find them through $ORIGIN);
  * - `assets/`: the engine assets the runtime itself loads (compiled shaders
  *   without their sources, icons, the default fonts) and those the scenes use;
- * - `Project.uheproject` and `Assets/`: the manifest and the project assets
+ * - `Project.uheproject` and `Assets/`: the manifest (written from the
+ *   ProjectInfo given, saved or not) and the project assets
  *   the game references (CollectAssets), which the runtime finds next to its
  *   executable;
  * - `.uhe-export`: marks the folder as an export.
@@ -79,7 +80,12 @@ public:
      * nothing, or that is an absolute path, is a warning.
      */
     [[nodiscard]] static AssetManifest CollectAssets(const std::filesystem::path& projectAssets,
-                                                     const std::filesystem::path& engineAssets);
+                                                     const std::filesystem::path& engineAssets,
+                                                     const std::vector<std::filesystem::path>& extraScenes = {});
+
+    /// @brief Every .slang under \p engineAssets with no compiled `.spv` beside it
+    ///        (relative paths); an export with any is refused, a game cannot compile.
+    [[nodiscard]] static std::vector<std::string> MissingShaderArtifacts(const std::filesystem::path& engineAssets);
 
     /// @brief The project name made safe for a file name (letters, digits, '-', '_', '.').
     [[nodiscard]] static std::string ExecutableName(const std::string& projectName);

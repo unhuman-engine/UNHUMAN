@@ -304,6 +304,9 @@ void ProjectLauncherPanel::DrawMessage()
 bool ProjectLauncherPanel::DrawEntry(const Entry& entry, bool removable, std::optional<Result>& result)
 {
     bool remove = false;
+    // The list goes into the id too: an example the user opened is in both lists,
+    // and two rows (and their context menus) with one id answer each other.
+    ImGui::PushID(removable ? "Recent" : "Example");
     ImGui::PushID(entry.Root.string().c_str());
 
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -371,6 +374,7 @@ bool ProjectLauncherPanel::DrawEntry(const Entry& entry, bool removable, std::op
     ImGui::SetCursorPos(ImVec2(start.x, start.y + rowHeight + style.ItemSpacing.y));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 
+    ImGui::PopID();
     ImGui::PopID();
     return remove;
 }

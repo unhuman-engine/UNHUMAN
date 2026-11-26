@@ -3,6 +3,7 @@
 // mounts. No GPU, no ImGui.
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -97,6 +98,12 @@ int main()
                   relative.AssetPath == root / Project::kAssetFolderName,
               "load: a relative path gives an absolute root");
         Check(Project::NormalizeRoot("GameSnake") == root, "normalize: relative to the working directory");
+        fs::current_path(root);
+        ProjectInfo bare;
+        Check(Project::Load(Project::kManifestName, bare, &error) && bare.RootPath == root &&
+                  Project::NormalizeRoot(Project::kManifestName) == root,
+              "load: a bare manifest name is the project in the working directory");
+        fs::current_path(sandbox);
         fs::current_path(previous);
     }
 
@@ -167,6 +174,7 @@ int main()
     const fs::path engineAssets = sandbox / "engine_assets";
     WriteFile(engineAssets / "shared.txt", "engine copy");
     WriteFile(engineAssets / "shaders" / "basic.slang", "engine shader");
+    WriteFile(engineAssets / "shaders" / "basic.vertex.default.spv", "spirv"); // compiled, as a build leaves it
 
     Project::Mount(snake, engineAssets);
 
@@ -183,6 +191,14 @@ int main()
     Check(ResolveAssetPath("") == fs::path(), "resolve: an empty path stays empty");
     Check(ResolveAssetPath("missing.png") == fs::path("missing.png"),
           "resolve: an unresolved path is returned unchanged");
+
+    Check(ResolveAssetPath("engine:/shared.txt") == engineAssets / "shared.txt" &&
+              ResolveAssetPath("engine:shared.txt") == engineAssets / "shared.txt",
+          "resolve: an explicit engine: picks the engine copy over the project's");
+    Check(ResolveAssetPath("game:/Textures/wall.png") == snake.AssetPath / "Textures" / "wall.png",
+          "resolve: an explicit game: resolves in the project");
+    Check(ResolveAssetPath("game:/shaders/basic.slang") == fs::path("game:/shaders/basic.slang"),
+          "resolve: an explicit game: does not fall back to the engine");
 
     const fs::path escaped = ResolveAssetPath("../escape.png");
     Check(!fs::exists(escaped), "resolve: traversal cannot escape the mounts");
@@ -298,7 +314,13 @@ int main()
         WriteFile(engine / "Inter/static/Inter_18pt-Regular.ttf", "font");
         WriteFile(engine / "Inter/static/Inter_24pt-Thin.ttf", "unused font");
         WriteFile(engine / "Inter/OFL.txt", "font licence");
-        WriteFile(engine / "model/hero.glb", "glb");
+        // A minimal valid GLB: header, then a 4-byte JSON chunk "{}  ".
+        {
+            const std::uint32_t words[5] = {0x46546C67u, 2u, 24u, 4u, 0x4E4F534Au};
+            std::string glb(reinterpret_cast<const char*>(words), sizeof(words));
+            glb += "{}  ";
+            WriteFile(engine / "model/hero.glb", glb);
+        }
         WriteFile(engine / "model/license.txt", "model licence");
         WriteFile(engine / "model/unused.glb", "glb");
 
@@ -379,6 +401,8 @@ int main()
 
         pond.StartScene = "Assets/Scenes/Pond.unhuman";
         report = GameExporter::Export(pond, options);
+        for (const std::string& error : report.Errors)
+            std::printf("  export error: %s\n", error.c_str());
         Check(report.Ok, "export: succeeds with a start scene");
         const fs::path out = options.OutputDir;
 #ifdef _WIN32
@@ -418,6 +442,69 @@ int main()
         options.OutputDir = gameRoot2 / "Build";
         report = GameExporter::Export(pond, options);
         Check(!report.Ok, "export: an output folder inside the project is refused");
+
+        // Refusals: a shader with no compiled stage (a game cannot compile it),
+        // and a start scene outside the project.
+        WriteFile(engine / "shaders/Orphan.slang", "uncompiled");
+        options.OutputDir = sandbox / "out_refused";
+        report = GameExporter::Export(pond, options);
+        Check(!report.Ok && !report.Errors.empty() && report.Errors[0].find("Orphan.slang") != std::string::npos,
+              "export: a shader without a compiled .spv is refused, by name");
+        fs::remove(engine / "shaders/Orphan.slang");
+        ProjectInfo outside = pond;
+        outside.StartScene = "../elsewhere.unhuman";
+        WriteFile(sandbox / "elsewhere.unhuman", "Scene: X");
+        report = GameExporter::Export(outside, options);
+        Check(!report.Ok, "export: a start scene outside the project is refused");
+
+        // Unsaved settings are what ships: the manifest is written from the ProjectInfo given.
+        ProjectInfo unsaved = pond;
+        unsaved.Window.Title = "Not Saved Yet";
+        options.OutputDir = sandbox / "out_unsaved";
+        report = GameExporter::Export(unsaved, options);
+        ProjectInfo shipped;
+        Check(report.Ok && Project::Load(options.OutputDir, shipped) && shipped.Window.Title == "Not Saved Yet" &&
+                  shipped.StartScene == "Assets/Scenes/Pond.unhuman",
+              "export: the manifest carries the given settings, saved or not");
+
+        // A start scene beside the manifest, not in Assets/, ships at the same place.
+        ProjectInfo beside = pond;
+        WriteFile(gameRoot2 / "Start.unhuman", "Scene: Start\nEntities:\n  - Entity: 1\n    Model3DComponent:\n"
+                                               "      ModelPath: Models/Ground.gltf\n");
+        beside.StartScene = "Start.unhuman";
+        options.OutputDir = sandbox / "out_beside";
+        report = GameExporter::Export(beside, options);
+        Check(report.Ok && fs::exists(options.OutputDir / "Start.unhuman") &&
+                  fs::exists(options.OutputDir / "Assets/Models/Ground.gltf"),
+              "export: a start scene beside the manifest ships there, with what it references");
+
+#ifndef _WIN32
+        // A symlink in the assets pointing outside them is exported as its own
+        // place in the tree (the target's content), never outside the output.
+        WriteFile(sandbox / "secret.txt", "outside");
+        std::error_code linkError;
+        fs::create_symlink(sandbox / "secret.txt", pond.AssetPath / "Scripts" / "linked.lua", linkError);
+        options.OutputDir = sandbox / "out_link";
+        report = GameExporter::Export(pond, options);
+        Check(!linkError && report.Ok && fs::exists(options.OutputDir / "Assets/Scripts/linked.lua") &&
+                  !fs::exists(sandbox / "secret.txt.exported"),
+              "export: a symlinked asset lands inside the export");
+        fs::remove(pond.AssetPath / "Scripts" / "linked.lua");
+#endif
+
+        // A truncated GLB whose header claims 4 GB is a warning, not an allocation.
+        {
+            const std::uint32_t words[5] = {0x46546C67u, 2u, 0xffffffffu, 0xfffffff0u, 0x4E4F534Au};
+            WriteFile(engine / "model/broken.glb", std::string(reinterpret_cast<const char*>(words), sizeof(words)));
+            WriteFile(pond.AssetPath / "Scenes/Broken.unhuman",
+                      "Scene: B\nEntities:\n  - Entity: 2\n    Model3DComponent:\n      ModelPath: model/broken.glb\n");
+            const AssetManifest manifest = GameExporter::CollectAssets(pond.AssetPath, engine);
+            Check(std::any_of(manifest.Warnings.begin(), manifest.Warnings.end(),
+                              [](const std::string& w) { return w.find("broken.glb") != std::string::npos; }),
+                  "collect: a GLB whose header does not fit the file is a warning");
+            fs::remove(pond.AssetPath / "Scenes/Broken.unhuman");
+            fs::remove(engine / "model/broken.glb");
+        }
 
         options.OutputDir = sandbox / "out_all";
         options.AllAssets = true;

@@ -711,6 +711,9 @@ void SceneSerializer::Serialize(const std::string& filepath)
 
     out << YAML::BeginMap;
     out << YAML::Key << "Scene" << YAML::Value << "Untitled";
+    // 2: cameras store their own perspective far plane (format 1 wrote the
+    // orthographic one there; those files are repaired on load).
+    out << YAML::Key << "SceneFormat" << YAML::Value << 2;
     SerializeRenderSettings(out, m_Scene->GetRenderSettings());
     out << YAML::Key << "Entities" << YAML::BeginSeq;
 
@@ -763,6 +766,7 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
         return false;
 
     YAML::Node data = YAML::Load(stream);
+    const int sceneFormat = data["SceneFormat"] ? data["SceneFormat"].as<int>(1) : 1;
     if (!data["Scene"])
         return false;
 
@@ -861,10 +865,14 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             cam.SetPerpecstiveNear(cameraNode["PerspectiveNear"].as<float>());
             // Scenes saved before the GetProjectionFar fix stored the
             // orthographic far plane here; they load with the default instead.
+            // Only files from before format 2 can carry the old value; a newer
+            // file whose two far planes match was authored that way.
             bool repaired = false;
-            cam.SetPerspecstiveFar(SceneCamera::LoadedPerspectiveFar(
-                cameraNode["PerspectiveNear"].as<float>(), cameraNode["PerspectiveFar"].as<float>(),
-                cameraNode["OrthographicFar"].as<float>(), repaired));
+            const float savedFar = cameraNode["PerspectiveFar"].as<float>();
+            cam.SetPerspecstiveFar(
+                sceneFormat < 2 ? SceneCamera::LoadedPerspectiveFar(cameraNode["PerspectiveNear"].as<float>(), savedFar,
+                                                                    cameraNode["OrthographicFar"].as<float>(), repaired)
+                                : savedFar);
             if (repaired)
                 UHE_CORE_WARN("Scene '{0}': camera '{1}' had a perspective far plane of {2} (saved by an older "
                               "editor); using {3}. Save the scene to keep it.",

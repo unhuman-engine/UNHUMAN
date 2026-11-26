@@ -47,6 +47,9 @@ std::filesystem::path Project::NormalizeRoot(const std::filesystem::path& path)
     std::filesystem::path root = path;
     if (root.filename() == kManifestName)
         root = root.parent_path();
+    // A bare "Project.uheproject" names the folder we are in.
+    if (root.empty())
+        root = ".";
     std::error_code ec;
     root = std::filesystem::absolute(root, ec).lexically_normal();
     // lexically_normal keeps a trailing separator ("a/b/"): drop it, so the
@@ -178,7 +181,7 @@ bool Project::Load(const std::filesystem::path& path, ProjectInfo& out, std::str
     ProjectInfo info;
     // Absolute: a relative root ("projects/Snake" from -project) would follow
     // the working directory and end up in the recent list that way.
-    info.RootPath = NormalizeRoot(manifest.parent_path());
+    info.RootPath = NormalizeRoot(manifest);
     info.AssetPath = info.RootPath / kAssetFolderName;
     // A manifest without a name still opens: fall back to the folder name.
     info.Name = project["Name"] ? project["Name"].as<std::string>() : info.RootPath.filename().string();

@@ -93,18 +93,26 @@ std::string ReadText(const fs::path& file)
     return text.str();
 }
 
-/// The JSON a glTF file holds: the whole .gltf, or the first chunk of a .glb.
-std::string GltfJson(const fs::path& file)
+/// The JSON a glTF file holds: the whole .gltf, or the first chunk of a .glb;
+/// nothing for a .glb whose header does not fit the file (truncated or not a glTF).
+std::optional<std::string> GltfJson(const fs::path& file)
 {
     if (Lower(file.extension().string()) != ".glb")
         return ReadText(file);
+    std::error_code ec;
+    const std::uintmax_t size = fs::file_size(file, ec);
     std::ifstream in(file, std::ios::binary);
     std::array<std::uint32_t, 5> header{}; // magic, version, length, chunk length, chunk type
     in.read(reinterpret_cast<char*>(header.data()), sizeof(header));
-    if (!in || header[0] != 0x46546C67u || header[4] != 0x4E4F534Au || header[3] > header[2])
-        return {};
+    // The lengths come from the file: checked against its real size before
+    // anything is allocated, so a broken header cannot ask for 4 GB.
+    if (!in || ec || header[0] != 0x46546C67u || header[4] != 0x4E4F534Au || header[2] > size ||
+        std::uintmax_t{header[3]} > size - std::min<std::uintmax_t>(size, sizeof(header)))
+        return std::nullopt;
     std::string json(header[3], '\0');
     in.read(json.data(), static_cast<std::streamsize>(json.size()));
+    if (!in)
+        return std::nullopt;
     return json;
 }
 
@@ -144,6 +152,9 @@ public:
     {
     }
 
+    /// Also follows the references of a scene outside both roots (a start scene beside the manifest).
+    void AddExternalScene(const fs::path& file) { m_ExternalScenes.push_back(file); }
+
     AssetManifest Run()
     {
         std::error_code ec;
@@ -153,7 +164,7 @@ public:
                  it.increment(ec))
             {
                 if (it->is_regular_file(ec) && !IsShaderSource(it->path()))
-                    Add(kEngine, fs::relative(it->path(), m_Roots[kEngine], ec));
+                    Add(kEngine, it->path().lexically_relative(m_Roots[kEngine]));
             }
         }
         for (const char* file : kEngineRuntimeFiles)
@@ -164,7 +175,19 @@ public:
         {
             const std::string extension = Lower(it->path().extension().string());
             if (it->is_regular_file(ec) && (extension == ".unhuman" || extension == ".lua"))
-                Add(kProject, fs::relative(it->path(), m_Roots[kProject], ec));
+                Add(kProject, it->path().lexically_relative(m_Roots[kProject]));
+        }
+
+        for (const fs::path& scene : m_ExternalScenes)
+        {
+            try
+            {
+                Values(YAML::LoadFile(scene.string()), scene.filename(), false);
+            }
+            catch (const YAML::Exception& e)
+            {
+                Warn(scene.filename(), std::string("could not be read: ") + e.what());
+            }
         }
 
         while (!m_Pending.empty())
@@ -186,8 +209,17 @@ private:
     static constexpr int kEngine = 1;
 
     /// Queues \p relative under root \p root (and the licences beside it) unless it is already in.
-    void Add(int root, const fs::path& relative)
+    void Add(int root, const fs::path& path)
     {
+        // Relative to its root and inside it: the export writes it to out / root / path,
+        // and a path climbing out (a symlink resolved to its target) would land outside.
+        const std::optional<fs::path> inside = Inside(path);
+        if (!inside)
+        {
+            Warn(path, "lies outside the asset folder and was not exported");
+            return;
+        }
+        const fs::path relative = *inside;
         std::error_code ec;
         if (!fs::is_regular_file(m_Roots[root] / relative, ec) || !m_Files[root].insert(relative).second)
             return;
@@ -283,7 +315,13 @@ private:
         {
             // Buffers and images beside the model, relative to its folder.
             static const std::regex kUri(R"json("uri"\s*:\s*"([^"]*)")json");
-            const std::string json = GltfJson(file);
+            const std::optional<std::string> parsed = GltfJson(file);
+            if (!parsed)
+            {
+                Warn(relative, "is not a valid glTF binary (truncated?); its dependencies were not followed");
+                return;
+            }
+            const std::string& json = *parsed;
             for (std::sregex_iterator it(json.begin(), json.end(), kUri), end; it != end; ++it)
             {
                 const std::string uri = (*it)[1].str();
@@ -324,6 +362,7 @@ private:
     std::array<std::set<fs::path>, 2> m_Files;
     std::array<std::set<fs::path>, 2> m_LicenceFolders;
     std::vector<std::pair<int, fs::path>> m_Pending;
+    std::vector<fs::path> m_ExternalScenes;
     std::vector<std::string> m_Warnings;
 };
 
@@ -356,7 +395,16 @@ public:
         {
             if (!it->is_regular_file(ec) || skip(it->path()))
                 continue;
-            File(it->path(), to / fs::relative(it->path(), from, ec));
+            // Lexical, so a symlink keeps its own place in the tree instead of
+            // its target's, and the destination stays inside the output.
+            const fs::path relative = it->path().lexically_relative(from).lexically_normal();
+            if (relative.empty() || *relative.begin() == "..")
+            {
+                m_Report.Warnings.push_back("'" + it->path().string() + "' lies outside '" + from.string() +
+                                            "' and was not exported");
+                continue;
+            }
+            File(it->path(), to / relative);
         }
         if (ec)
             m_Report.Errors.push_back("could not read '" + from.string() + "': " + ec.message());
@@ -367,9 +415,41 @@ private:
 };
 } // namespace
 
-AssetManifest GameExporter::CollectAssets(const fs::path& projectAssets, const fs::path& engineAssets)
+AssetManifest GameExporter::CollectAssets(const fs::path& projectAssets, const fs::path& engineAssets,
+                                          const std::vector<fs::path>& extraScenes)
 {
-    return AssetCollector(projectAssets, engineAssets).Run();
+    AssetCollector collector(projectAssets, engineAssets);
+    for (const fs::path& scene : extraScenes)
+        collector.AddExternalScene(scene);
+    return collector.Run();
+}
+
+std::vector<std::string> GameExporter::MissingShaderArtifacts(const fs::path& engineAssets)
+{
+    // A game ships no shader sources and cannot compile: each .slang needs at
+    // least one compiled stage beside it (<stem>.<stage>.<variant>.spv, ShaderArtifactPath).
+    std::vector<std::string> missing;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(engineAssets, ec), end; it != end && !ec; it.increment(ec))
+    {
+        if (!it->is_regular_file(ec) || Lower(it->path().extension().string()) != ".slang")
+            continue;
+        const std::string prefix = it->path().stem().string() + ".";
+        bool compiled = false;
+        for (const fs::directory_entry& sibling : fs::directory_iterator(it->path().parent_path(), ec))
+        {
+            const std::string name = sibling.path().filename().string();
+            if (name.starts_with(prefix) && name.ends_with(".spv"))
+            {
+                compiled = true;
+                break;
+            }
+        }
+        if (!compiled)
+            missing.push_back(it->path().lexically_relative(engineAssets).generic_string());
+    }
+    std::sort(missing.begin(), missing.end());
+    return missing;
 }
 
 std::string GameExporter::ExecutableName(const std::string& projectName)
@@ -400,6 +480,11 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
     const fs::path startScene = Project::StartScenePath(project);
     if (startScene.empty() || !fs::is_regular_file(startScene, ec))
         return fail("the project has no start scene; set StartScene in Project.uheproject");
+    // Copied to the same place relative to the manifest, so it must stay inside the project.
+    const fs::path startRelative = fs::path(project.StartScene).lexically_normal();
+    if (startRelative.is_absolute() || startRelative.has_root_name() || startRelative.empty() ||
+        *startRelative.begin() == "..")
+        return fail("the start scene '" + project.StartScene + "' is outside the project folder");
 #ifdef _WIN32
     const std::string runtimeFile = options.RuntimeName + ".exe";
     const std::string gameFile = ExecutableName(project.Name) + ".exe";
@@ -414,6 +499,13 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
         return fail("the engine assets '" + options.EngineAssets.string() + "' are missing");
     if (options.OutputDir.empty())
         return fail("no output folder");
+    if (const std::vector<std::string> missing = MissingShaderArtifacts(options.EngineAssets); !missing.empty())
+    {
+        std::string list;
+        for (const std::string& shader : missing)
+            list += (list.empty() ? "" : ", ") + shader;
+        return fail("no compiled shader for " + list + "; build the uhe_shaders target first");
+    }
 
     // Never write into a folder of the user's that was not an export.
     const fs::path out = fs::absolute(options.OutputDir, ec);
@@ -450,8 +542,24 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
             copy.File(entry.path(), out / entry.path().filename());
     }
 
+    // ── The manifest: the settings being exported, which may not be saved yet ──
+    {
+        ProjectInfo exported = project;
+        exported.RootPath = out;
+        exported.AssetPath = out / Project::kAssetFolderName;
+        std::string error;
+        if (!Project::Save(exported, &error))
+            report.Errors.push_back("could not write the manifest: " + error);
+        else
+            ++report.FilesCopied;
+    }
+    // A start scene beside the manifest rather than in Assets/ goes to the same place.
+    const fs::path startInAssets = startScene.lexically_relative(project.AssetPath);
+    const bool startOutsideAssets = startInAssets.empty() || *startInAssets.begin() == "..";
+    if (startOutsideAssets)
+        copy.File(startScene, out / startRelative);
+
     // ── Assets: what the game references, or everything ──
-    copy.File(Project::ManifestPath(project.RootPath), out / Project::kManifestName);
     if (options.AllAssets)
     {
         copy.Tree(options.EngineAssets, out / "assets", [](const fs::path& file) { return IsShaderSource(file); });
@@ -459,7 +567,9 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
     }
     else
     {
-        AssetManifest manifest = CollectAssets(project.AssetPath, options.EngineAssets);
+        AssetManifest manifest =
+            CollectAssets(project.AssetPath, options.EngineAssets,
+                          startOutsideAssets ? std::vector<fs::path>{startScene} : std::vector<fs::path>{});
         for (const fs::path& file : manifest.EngineFiles)
             copy.File(options.EngineAssets / file, out / "assets" / file);
         for (const fs::path& file : manifest.ProjectFiles)

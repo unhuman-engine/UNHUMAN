@@ -85,10 +85,13 @@ private:
  * @brief Resolves an asset path handed in by content (scene files, inspector
  * fields, drag & drop) against the mounted roots.
  *
- * Absolute paths and paths that already exist relative to the process are
- * returned unchanged; otherwise the project mount ("game:") is tried first and
- * the engine asset folder ("engine:") second. When nothing matches the original
- * path is returned so the caller reports the failure it always did.
+ * A path that starts with "game:" or "engine:" resolves against that mount
+ * only ("engine:/icon/x.png", the leading slash optional). Otherwise absolute
+ * paths and paths that already exist relative to the process are returned
+ * unchanged, then the project mount ("game:") is tried first and the engine
+ * asset folder ("engine:") second. When nothing matches the original path is
+ * returned so the caller reports the failure it always did. The exporter
+ * (GameExporter::CollectAssets) follows the same rules.
  */
 UHE_API std::filesystem::path ResolveAssetPath(const std::string& path);
 } // namespace UHE

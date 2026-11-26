@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Scene/Components.h"
@@ -324,6 +325,54 @@ end
         check(!label.GetComponent<UIRectComponent>().Visible && buttonState.Clicks == 2,
               "a second click: SetVisible hid the label");
         check(engine.ErroredInstanceCount() == 0, "nothing errored");
+    }
+
+    section("camera far plane across save and load");
+    {
+        // A camera whose two far planes are equal on purpose keeps them after
+        // a save and a load (format 2); a format 1 file with the old bug's
+        // value is repaired.
+        const std::string path = (g_ScriptDir / "camera.unhuman").string();
+        {
+            Ref<Scene> source = CreateRef<Scene>();
+            Entity e = source->CreateEntity("Camera");
+            auto& c = e.AddComponent<CameraComponent>();
+            c.Camera.SetPerspective(0.8f, 0.01f, 100.0f);
+            c.Camera.SetOrthographic(10.0f, -1.0f, 100.0f);
+            c.Camera.SetProjectionType(SceneCamera::ProjectionType::Perpective);
+            SceneSerializer(source).Serialize(path);
+        }
+        Ref<Scene> loaded = CreateRef<Scene>();
+        check(SceneSerializer(loaded).Deserialize(path), "the scene loads");
+        float far = 0.0f;
+        for (auto handle : loaded->GetRegistry().view<CameraComponent>())
+            far = loaded->GetRegistry().get<CameraComponent>(handle).Camera.GetProjectionFar();
+        check(std::abs(far - 100.0f) < 1e-4f, "a deliberate far plane equal to the orthographic one is kept");
+
+        // The same file as format 1 with the old bug's value: repaired.
+        std::string text;
+        {
+            std::ifstream in(path);
+            text.assign(std::istreambuf_iterator<char>(in), {});
+        }
+        const auto replace = [&](const std::string& from, const std::string& to)
+        {
+            const size_t at = text.find(from);
+            if (at != std::string::npos)
+                text.replace(at, from.size(), to);
+        };
+        replace("SceneFormat: 2\n", "");
+        replace("PerspectiveFar: 100", "PerspectiveFar: 1");
+        replace("OrthographicFar: 100", "OrthographicFar: 1");
+        {
+            std::ofstream out(path);
+            out << text;
+        }
+        Ref<Scene> legacy = CreateRef<Scene>();
+        check(SceneSerializer(legacy).Deserialize(path), "the legacy scene loads");
+        for (auto handle : legacy->GetRegistry().view<CameraComponent>())
+            far = legacy->GetRegistry().get<CameraComponent>(handle).Camera.GetProjectionFar();
+        check(far == SceneCamera::kDefaultPerspectiveFar, "a format 1 camera with the old value is repaired");
     }
 
     section("controller loop");

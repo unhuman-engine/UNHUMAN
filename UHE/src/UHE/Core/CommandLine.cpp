@@ -37,6 +37,24 @@ const std::string& CommandLine::GetExecutable()
     return s_Executable;
 }
 
+std::filesystem::path CommandLine::GetExecutablePath()
+{
+    std::error_code ec;
+#if defined(_WIN32)
+    std::wstring buffer(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length > 0 && length < buffer.size())
+        return std::filesystem::path(buffer.substr(0, length));
+#elif defined(__linux__)
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec && !self.empty())
+        return self;
+#endif
+    if (s_Executable.empty())
+        return {};
+    return std::filesystem::absolute(s_Executable, ec);
+}
+
 const std::vector<std::string>& CommandLine::GetArgs()
 {
     return s_Args;

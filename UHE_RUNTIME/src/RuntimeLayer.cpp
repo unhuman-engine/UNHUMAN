@@ -17,15 +17,11 @@ using namespace UHE;
 
 namespace
 {
-/// The folder of the running executable (argv[0]): where an exported build keeps its project.
+/// The folder of the running executable: where an exported build keeps its project.
 std::filesystem::path ExecutableFolder()
 {
-    const std::string& executable = CommandLine::GetExecutable();
-    if (executable.empty())
-        return std::filesystem::current_path();
-    std::error_code ec;
-    const std::filesystem::path self = std::filesystem::absolute(executable, ec);
-    return ec ? std::filesystem::current_path() : self.parent_path();
+    const std::filesystem::path self = CommandLine::GetExecutablePath();
+    return self.empty() ? std::filesystem::current_path() : self.parent_path();
 }
 } // namespace
 
