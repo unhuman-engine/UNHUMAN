@@ -8,6 +8,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -193,9 +194,9 @@ void Editor::OnDetach()
 namespace
 {
 /// @brief Every console entry the editor owns, so OnDetach removes exactly these.
-constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "gpu.capture",
-                                                 "view.shading",  "view.buffer",  "scene.stats",
-                                                 "scene.select",  "view.panel",   "clear"};
+constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate",  "gpu.capture",  "view.shading",
+                                                 "view.buffer",   "scene.stats",   "scene.select", "view.panel",
+                                                 "view.camera",   "view.overlays", "clear"};
 } // namespace
 
 void Editor::RegisterConsoleEntries()
@@ -318,6 +319,46 @@ void Editor::RegisterConsoleEntries()
                                 // Applied once the window exists: -exec runs before the first frame.
                                 m_PendingPanelFocus = name;
                                 return "focusing " + name;
+                            });
+
+    console.RegisterCommand(
+        "view.camera", "view.camera [x y z pitch yaw]: print or place the viewport camera (radians, pitch + is down)",
+        [this](const std::vector<std::string>& args) -> std::string
+        {
+            if (args.empty())
+            {
+                const glm::vec3 p = m_EditorCamera.GetPosition();
+                char text[96];
+                std::snprintf(text, sizeof(text), "%.2f %.2f %.2f %.3f %.3f", p.x, p.y, p.z, m_EditorCamera.GetPitch(),
+                              m_EditorCamera.GetYaw());
+                return text;
+            }
+            if (args.size() != 5)
+                return "usage: view.camera x y z pitch yaw";
+            float v[5];
+            for (size_t i = 0; i < 5; ++i)
+            {
+                std::istringstream in(args[i]);
+                if (!(in >> v[i]))
+                    return "not a number: " + args[i];
+            }
+            // The camera orbits a focal point: put it a fixed distance ahead of the eye.
+            constexpr float kDistance = 10.0f;
+            m_EditorCamera.SetPitch(v[3]);
+            m_EditorCamera.SetYaw(v[4]);
+            const glm::vec3 eye{v[0], v[1], v[2]};
+            m_EditorCamera.FocusOn(eye + m_EditorCamera.GetForwardDirection() * kDistance, kDistance);
+            return "camera placed";
+        });
+
+    console.RegisterCommand("view.overlays", "view.overlays on|off: the viewport grid and light icons",
+                            [](const std::vector<std::string>& args) -> std::string
+                            {
+                                if (args.size() != 1 || (args[0] != "on" && args[0] != "off"))
+                                    return "usage: view.overlays on|off";
+                                Scene::EditorOverlays& overlays = Scene::GetEditorOverlays();
+                                overlays.Grid = overlays.LightIcons = args[0] == "on";
+                                return "overlays " + args[0];
                             });
 
     console.RegisterCommand("clear", "clear the console log",
