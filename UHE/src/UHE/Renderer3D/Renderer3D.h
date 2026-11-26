@@ -22,12 +22,13 @@ public:
      */
     enum class ViewMode : int
     {
-        Lit = 0,       ///< materials and scene lights
-        Unlit = 1,     ///< base colour only
-        Solid = 2,     ///< neutral clay with a studio light: shape without materials
-        Normals = 3,   ///< world-space normal as colour
-        Wireframe = 4, ///< triangle edges only (needs RHIDevice::SupportsWireframe)
-        Overdraw = 5,  ///< how often each pixel is drawn: every fragment adds, nothing hides anything
+        Lit = 0,             ///< materials and scene lights
+        Unlit = 1,           ///< base colour only
+        Solid = 2,           ///< neutral clay with a studio light: shape without materials
+        Normals = 3,         ///< world-space normal as colour
+        Wireframe = 4,       ///< triangle edges only (needs RHIDevice::SupportsWireframe)
+        Overdraw = 5,        ///< how often each pixel is drawn: every fragment adds, nothing hides anything
+        LightComplexity = 6, ///< how many local lights reach each pixel, as a heatmap
     };
 
     /// @brief What the editor's ground grid shows.

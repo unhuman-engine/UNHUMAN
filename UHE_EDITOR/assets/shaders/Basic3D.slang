@@ -75,6 +75,7 @@ static const int kViewModeSolid = 2;
 static const int kViewModeNormals = 3;
 static const int kViewModeWireframe = 4;
 static const int kViewModeOverdraw = 5;
+static const int kViewModeLightComplexity = 6;
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc;
 
@@ -615,6 +616,40 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
             // Added up by the overdraw pipeline (additive, no depth test): one
             // layer is a dim red, four or five are orange, ten or more are white.
             output.Color = float4(0.10, 0.04, 0.015, 1.0);
+#ifndef UHE_NO_ENTITY_ID
+            output.EntityID = pc.entityID;
+#endif
+            return output;
+        }
+        if (pc.viewMode == kViewModeLightComplexity)
+        {
+            // How many local lights reach this pixel: inside a point light's
+            // range, a spot's range and cone, or in front of an area panel.
+            // Directional lights reach everything and are not counted.
+            int reached = 0;
+            for (int i = 0; i < pc.numLights; ++i)
+            {
+                LightData light = u_LightBuffers[pc.lightBufferIndex][i];
+                const int type = int(light.type_radius_cones.x);
+                if (type == 0)
+                    continue;
+                const float radius = max(light.type_radius_cones.y, 0.1);
+                const float3 toLight = light.position_or_direction.xyz - input.v_WorldPos;
+                if (dot(toLight, toLight) >= radius * radius)
+                    continue;
+                if (type == 3 && light.direction_pad.w < 0.5 &&
+                    dot(input.v_WorldPos - light.position_or_direction.xyz, light.direction_pad.xyz) <= 0.0)
+                    continue; // behind a one-sided panel
+                if (type == 2 && dot(normalize(-toLight), normalize(light.direction_pad.xyz)) <=
+                                     min(light.type_radius_cones.w, light.type_radius_cones.z))
+                    continue; // outside the cone
+                ++reached;
+            }
+            // None: dark blue; 1 blue, 2 green, 3 yellow, 4 orange, 5 or more red.
+            const float3 ramp[6] = { float3(0.04, 0.05, 0.12), float3(0.10, 0.35, 0.90), float3(0.10, 0.80, 0.35),
+                                     float3(0.95, 0.88, 0.15), float3(1.00, 0.45, 0.08), float3(1.00, 0.08, 0.08) };
+            const float shape = 0.55 + 0.45 * saturate(dot(normal, normalize(float3(0.45, 0.80, 0.40))));
+            output.Color = float4(ramp[min(reached, 5)] * shape, 1.0);
 #ifndef UHE_NO_ENTITY_ID
             output.EntityID = pc.entityID;
 #endif

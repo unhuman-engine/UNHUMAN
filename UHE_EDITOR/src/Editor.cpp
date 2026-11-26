@@ -228,29 +228,35 @@ void Editor::RegisterConsoleEntries()
                                 return text;
                             });
 
-    console.RegisterCommand("gpu.capture", "gpu.capture: capture the next frame with RenderDoc (start with -renderdoc)",
-                            [](const std::vector<std::string>&) -> std::string
+    console.RegisterCommand("gpu.capture",
+                            "gpu.capture [note]: capture the next frame with RenderDoc (start with -renderdoc); the "
+                            "note is saved in the capture's comments",
+                            [](const std::vector<std::string>& args) -> std::string
                             {
                                 if (!RenderDoc::Available())
                                     return "RenderDoc is not attached; start with -renderdoc";
-                                RenderDoc::TriggerCapture();
+                                std::string note;
+                                for (const std::string& word : args)
+                                    note += (note.empty() ? "" : " ") + word;
+                                RenderDoc::TriggerCapture(note);
                                 return "capturing the next frame";
                             });
 
     console.RegisterCommand(
-        "view.shading", "view.shading [lit|unlit|solid|normals|wireframe|overdraw]: the viewport's shading mode",
+        "view.shading", "view.shading [lit|unlit|solid|normals|wireframe|overdraw|lights]: the viewport's shading mode",
         [this](const std::vector<std::string>& args) -> std::string
         {
-            static constexpr const char* kNames[] = {"lit", "unlit", "solid", "normals", "wireframe", "overdraw"};
+            static constexpr const char* kNames[] = {"lit",       "unlit",    "solid", "normals",
+                                                     "wireframe", "overdraw", "lights"};
             if (!args.empty())
             {
                 const auto* found = std::find_if(std::begin(kNames), std::end(kNames),
                                                  [&](const char* name) { return args.front() == name; });
                 if (found == std::end(kNames))
-                    return "expected lit, unlit, solid, normals, wireframe or overdraw";
+                    return "expected lit, unlit, solid, normals, wireframe, overdraw or lights";
                 SetViewMode(static_cast<Renderer3D::ViewMode>(found - std::begin(kNames)));
             }
-            return std::string("view.shading = ") + kNames[std::clamp(static_cast<int>(m_ViewMode), 0, 5)];
+            return std::string("view.shading = ") + kNames[std::clamp(static_cast<int>(m_ViewMode), 0, 6)];
         });
 
     console.RegisterCommand("view.buffer", "view.buffer [image|ao|depth|bloom]: what the lit viewport shows",
@@ -2130,6 +2136,10 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
         [this] { SetViewMode(Renderer3D::ViewMode::Lit); });
     add("Shading: Normals", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::Normals,
         [this] { SetViewMode(Renderer3D::ViewMode::Normals); });
+    add("Shading: Overdraw", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::Overdraw,
+        [this] { SetViewMode(Renderer3D::ViewMode::Overdraw); });
+    add("Shading: Light Complexity", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::LightComplexity,
+        [this] { SetViewMode(Renderer3D::ViewMode::LightComplexity); });
     add("Toggle Grid", "Viewport", "", true,
         [] { Scene::GetEditorOverlays().Grid = !Scene::GetEditorOverlays().Grid; });
     add("Toggle Light Icons", "Viewport", "", true,
@@ -2674,7 +2684,7 @@ void Editor::DrawPreferencesContent()
 {
     UHE_PROFILE_FUNCTION();
     EditorUI::SectionHeader("Rendering");
-    const char* shadingModes[] = {"Lit", "Unlit", "Solid", "Normals", "Wireframe", "Overdraw"};
+    const char* shadingModes[] = {"Lit", "Unlit", "Solid", "Normals", "Wireframe", "Overdraw", "Light Complexity"};
     int shading = static_cast<int>(m_ViewMode);
     if (ImGui::Combo("Viewport Shading", &shading, shadingModes, IM_ARRAYSIZE(shadingModes)))
         SetViewMode(static_cast<Renderer3D::ViewMode>(shading));
