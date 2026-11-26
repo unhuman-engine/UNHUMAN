@@ -58,8 +58,16 @@ private:
 
     // Project lifecycle: the editor has no asset root until a project is open.
     bool OpenProject(const std::filesystem::path& path);
-    void SetProject(ProjectInfo info);
+    /// @param starterScene a new project: write the starter scene first and open it.
+    void SetProject(ProjectInfo info, bool starterScene = false);
+    /// @brief Stops Play, drops the scene and returns to the project manager.
     void CloseProject();
+    /**
+     * @brief Gives a new project something to look at: a ground, a cube, a sun
+     *        and a camera in Assets/Scenes/Main.unhuman, set as its start scene.
+     * @return false (logged) when a file cannot be written; the project still opens.
+     */
+    bool WriteStarterScene(ProjectInfo& project);
     [[nodiscard]] std::filesystem::path ProjectAssetPath() const;
 
     // Files dropped from the OS file explorer: imported into the project, and

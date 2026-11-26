@@ -16,6 +16,7 @@
 #include "ImGuizmo.h"
 #include "UHE/AssetsManager/AssetImport.h"
 #include "UHE/AssetsManager/GameExporter.h"
+#include "UHE/AssetsManager/PrimitiveGltf.h"
 #include "UHE/AssetsManager/Project.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Audio/AudioEngine.h"
@@ -126,13 +127,28 @@ void Editor::OnAttach()
     m_IconPause = Texture2D::Create((rootPath / "assets/icon/pause.png").string());
     m_IconStop = Texture2D::Create((rootPath / "assets/icon/stop.png").string());
 
-    // An explicit -project wins. Otherwise the most recent project that is still
+    // An explicit -new-project or -project wins. Otherwise the most recent project that is still
     // on disk is reopened, so relaunching the editor lands back in the project
     // that was open rather than making the user find it again. `-launcher` asks
     // for the manager instead, and File > Project Manager... returns to it from
     // inside a project.
     const std::string requestedProject = CommandLine::GetValue("-project");
-    if (!requestedProject.empty())
+    // -new-project <folder>: what the manager's Create does, with the starter scene.
+    const std::string newProject = CommandLine::GetValue("-new-project");
+    if (!newProject.empty())
+    {
+        const std::filesystem::path root = Project::NormalizeRoot(newProject);
+        const std::string problem = Project::CheckNewProject(root.parent_path(), root.filename().string());
+        ProjectInfo created;
+        std::string error;
+        if (!problem.empty())
+            m_ProjectLauncher.SetMessage("Could not create '" + root.string() + "': " + problem);
+        else if (!Project::Create(root, root.filename().string(), created, &error))
+            m_ProjectLauncher.SetMessage("Could not create '" + root.string() + "': " + error);
+        else
+            SetProject(std::move(created), true);
+    }
+    else if (!requestedProject.empty())
     {
         if (!OpenProject(requestedProject))
             m_ProjectLauncher.SetMessage("Could not open '" + requestedProject + "'");
@@ -980,11 +996,13 @@ bool Editor::OpenProject(const std::filesystem::path& path)
     return true;
 }
 
-void Editor::SetProject(ProjectInfo info)
+void Editor::SetProject(ProjectInfo info, bool starterScene)
 {
     std::string error;
     if (!Project::EnsureAssetFolder(info, &error))
         UHE_CORE_WARN("Project '{0}': {1}", info.Name, error);
+    if (starterScene)
+        WriteStarterScene(info);
 
     // "game:" -> the project's Assets folder, "engine:" -> the folder shipped
     // next to the binary. Mounting the project last keeps it ahead of the engine
@@ -1011,9 +1029,75 @@ void Editor::SetProject(ProjectInfo info)
     Notify(NotificationCenter::Kind::Success, "Project opened", projectName);
 }
 
+bool Editor::WriteStarterScene(ProjectInfo& project)
+{
+    // Its own shapes rather than the engine's sample models: the project
+    // keeps working, and exports, without anything outside its folder.
+    const std::filesystem::path models = project.AssetPath / "Models";
+    std::string error;
+    if (!WritePrimitiveGltf(models / "Ground.gltf", PrimitiveShape::Plane, {0.20f, 0.30f, 0.15f, 1.0f}, 0.9f, &error) ||
+        !WritePrimitiveGltf(models / "Cube.gltf", PrimitiveShape::Cube, {0.75f, 0.26f, 0.10f, 1.0f}, 0.5f, &error))
+    {
+        UHE_CORE_ERROR("Starter scene for '{0}': {1}", project.Name, error);
+        return false;
+    }
+
+    Ref<Scene> scene = CreateRef<Scene>();
+    const auto place = [&](const char* name, glm::vec3 position, glm::vec3 rotation, glm::vec3 scale)
+    {
+        Entity entity = scene->CreateEntity(name);
+        auto& transform = entity.GetComponent<TransformComponent>();
+        transform.Translation = position;
+        transform.Rotation = rotation;
+        transform.Scale = scale;
+        return entity;
+    };
+    place("Ground", glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(30.0f, 1.0f, 30.0f))
+        .AddComponent<Model3DComponent>()
+        .ModelPath = "Models/Ground.gltf";
+    place("Cube", glm::vec3(0.0f, 0.5f, 0.0f), glm::vec3(0.0f, 0.2f, 0.0f), glm::vec3(1.0f))
+        .AddComponent<Model3DComponent>()
+        .ModelPath = "Models/Cube.gltf";
+    // From the side of the view, not from behind the camera: light from
+    // behind lights every face alike and hides the cube's shadow behind it.
+    place("Sun", glm::vec3(0.0f, 6.0f, 0.0f), glm::vec3(-0.8f, 2.4f, 0.0f), glm::vec3(1.0f))
+        .AddComponent<DirectionalLightComponent>()
+        .Intensity = 1.6f;
+    // Up and to the side, looking at the cube.
+    const glm::vec3 eye(4.0f, 2.6f, 6.0f);
+    const float yaw = std::atan2(eye.x, eye.z);
+    const float pitch = -std::atan2(eye.y - 0.5f, glm::length(glm::vec2(eye.x, eye.z)));
+    auto& camera = place("Camera", eye, glm::vec3(pitch, yaw, 0.0f), glm::vec3(1.0f)).AddComponent<CameraComponent>();
+    camera.Camera.SetProjectionType(SceneCamera::ProjectionType::Perpective);
+    camera.Primary = true;
+
+    const std::filesystem::path scenePath = project.AssetPath / "Scenes" / "Main.unhuman";
+    std::error_code ec;
+    std::filesystem::create_directories(scenePath.parent_path(), ec);
+    SceneSerializer(scene).Serialize(scenePath.string());
+    if (!std::filesystem::is_regular_file(scenePath, ec))
+    {
+        UHE_CORE_ERROR("Starter scene for '{0}': could not write '{1}'", project.Name, scenePath.string());
+        return false;
+    }
+
+    project.StartScene = std::filesystem::relative(scenePath, project.RootPath, ec).generic_string();
+    if (!Project::Save(project, &error))
+        UHE_CORE_WARN("Starter scene for '{0}': the manifest was not saved: {1}", project.Name, error);
+    return true;
+}
+
 void Editor::CloseProject()
 {
+    // Nothing of the project keeps running behind the manager: Play stops
+    // (scripts, physics, audio) and its scene is let go.
+    OnSceneStop();
+    m_ActiveScene = CreateRef<Scene>();
+    m_EditorScene = m_ActiveScene;
+    m_SceneHireacyPanel.SetContext(m_ActiveScene);
+    m_CurrentScenePath.clear();
     m_Project.reset();
+    m_ProjectLauncher.Refresh();
     m_ShowLauncher = true;
     m_ProjectLauncher.SetMessage("");
     m_UndoStack.clear();
@@ -1488,9 +1572,8 @@ void Editor::OnImGuiRender()
     // editor. Nothing else is submitted, so no panel can touch a missing asset root.
     if (m_ShowLauncher && !m_Project)
     {
-        ProjectInfo opened;
-        if (m_ProjectLauncher.OnImGuiRender(opened))
-            SetProject(std::move(opened));
+        if (std::optional<ProjectLauncherPanel::Result> picked = m_ProjectLauncher.OnImGuiRender())
+            SetProject(std::move(picked->Project), picked->Created && picked->StarterScene);
         else
         {
             m_CommandPalette.Close();
