@@ -14,12 +14,18 @@ namespace UHE {
         m_ProjectionType = ProjectionType::Orhtographic;
 
         m_OrhtographicSize = size;
-		m_OrthographicNear = nearClip;
+        m_OrthographicNear = nearClip;
 		m_OthergraphicFar = farClip;
 		RecalculateProjection();
 	}
 
-	void SceneCamera::SetViewportSize(u32 width, u32 height)
+    f32 SceneCamera::LoadedPerspectiveFar(f32 perspectiveNear, f32 perspectiveFar, f32 orthographicFar, bool& repaired)
+    {
+        repaired = perspectiveFar == orthographicFar || perspectiveFar <= perspectiveNear;
+        return repaired ? kDefaultPerspectiveFar : perspectiveFar;
+    }
+
+    void SceneCamera::SetViewportSize(u32 width, u32 height)
 	{
 		m_AspactRatio = (f32)width / (f32)height;
 		RecalculateProjection();
@@ -33,7 +39,7 @@ namespace UHE {
         m_PerspectiveFar = farClip;
         RecalculateProjection();
     }
-	// Fix: Ensure m_Projection is of type glm::mat4 (or compatible with glm::ortho return type)
+    // Fix: Ensure m_Projection is of type glm::mat4 (or compatible with glm::ortho return type)
     // If not, update its declaration in SceneCamera.h to:
     // glm::mat4 m_Projection;
 

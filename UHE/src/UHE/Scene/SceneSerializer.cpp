@@ -732,7 +732,17 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
 
             cam.SetPerspectiveFOV(cameraNode["PerspectiveFOV"].as<float>());
             cam.SetPerpecstiveNear(cameraNode["PerspectiveNear"].as<float>());
-            cam.SetPerspecstiveFar(cameraNode["PerspectiveFar"].as<float>());
+            // Scenes saved before the GetProjectionFar fix stored the
+            // orthographic far plane here; they load with the default instead.
+            bool repaired = false;
+            cam.SetPerspecstiveFar(SceneCamera::LoadedPerspectiveFar(
+                cameraNode["PerspectiveNear"].as<float>(), cameraNode["PerspectiveFar"].as<float>(),
+                cameraNode["OrthographicFar"].as<float>(), repaired));
+            if (repaired)
+                UHE_CORE_WARN("Scene '{0}': camera '{1}' had a perspective far plane of {2} (saved by an older "
+                              "editor); using {3}. Save the scene to keep it.",
+                              filepath, entity.GetComponent<TagComponent>().Tag,
+                              cameraNode["PerspectiveFar"].as<float>(), SceneCamera::kDefaultPerspectiveFar);
 
             cam.SetOrthographicSize(cameraNode["OrthographicSize"].as<float>());
             cam.SetOrthoGraphicNearClip(cameraNode["OrthographicNear"].as<float>());

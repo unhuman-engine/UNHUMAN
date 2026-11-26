@@ -396,6 +396,17 @@ static void TestSceneCameraClipPlanes()
     camera.SetOrthoGraphicNearClip(-5.0f);
     CHECK(camera.GetOrthographicNearClip() == -5.0f, "orthographic near plane is set");
     CHECK(camera.GetProjection() != before, "changing the orthographic near plane updates the projection");
+
+    // Scenes saved with the old getter load with a usable far plane.
+    bool repaired = false;
+    CHECK(SceneCamera::LoadedPerspectiveFar(0.01f, 1.0f, 1.0f, repaired) == SceneCamera::kDefaultPerspectiveFar &&
+              repaired,
+          "a far plane equal to the orthographic one (the old bug) is repaired");
+    CHECK(SceneCamera::LoadedPerspectiveFar(0.5f, 0.2f, 1.0f, repaired) == SceneCamera::kDefaultPerspectiveFar &&
+              repaired,
+          "a far plane before the near plane is repaired");
+    CHECK(SceneCamera::LoadedPerspectiveFar(0.1f, 500.0f, 1.0f, repaired) == 500.0f && !repaired,
+          "a real far plane is kept");
 }
 
 int main()
