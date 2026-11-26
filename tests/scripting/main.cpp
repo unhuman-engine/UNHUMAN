@@ -344,10 +344,10 @@ end
         }
         Ref<Scene> loaded = CreateRef<Scene>();
         check(SceneSerializer(loaded).Deserialize(path), "the scene loads");
-        float far = 0.0f;
+        float farPlane = 0.0f;
         for (auto handle : loaded->GetRegistry().view<CameraComponent>())
-            far = loaded->GetRegistry().get<CameraComponent>(handle).Camera.GetProjectionFar();
-        check(std::abs(far - 100.0f) < 1e-4f, "a deliberate far plane equal to the orthographic one is kept");
+            farPlane = loaded->GetRegistry().get<CameraComponent>(handle).Camera.GetProjectionFar();
+        check(std::abs(farPlane - 100.0f) < 1e-4f, "a deliberate far plane equal to the orthographic one is kept");
 
         // The same file as format 1 with the old bug's value: repaired.
         std::string text;
@@ -371,8 +371,8 @@ end
         Ref<Scene> legacy = CreateRef<Scene>();
         check(SceneSerializer(legacy).Deserialize(path), "the legacy scene loads");
         for (auto handle : legacy->GetRegistry().view<CameraComponent>())
-            far = legacy->GetRegistry().get<CameraComponent>(handle).Camera.GetProjectionFar();
-        check(far == SceneCamera::kDefaultPerspectiveFar, "a format 1 camera with the old value is repaired");
+            farPlane = legacy->GetRegistry().get<CameraComponent>(handle).Camera.GetProjectionFar();
+        check(farPlane == SceneCamera::kDefaultPerspectiveFar, "a format 1 camera with the old value is repaired");
     }
 
     section("controller loop");
