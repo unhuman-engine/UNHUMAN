@@ -218,7 +218,8 @@ jobs:
           # find exits non-zero for a folder that is not there; with pipefail that would end the step.
           RD_LAYER=$(find /tmp/renderdoc_* /usr/share/vulkan /etc/vulkan -name 'renderdoc_capture.json' 2>/dev/null | head -n 1 || true)
           if [ -n "$RD_LAYER" ]; then
-            export VK_ADD_LAYER_PATH="$(dirname "$RD_LAYER")"
+            # IMPLICIT: VK_ADD_LAYER_PATH registers it as an explicit layer, which never loads by itself.
+            export VK_ADD_IMPLICIT_LAYER_PATH="$(dirname "$RD_LAYER")"
             echo "RenderDoc layer manifest: $RD_LAYER"
             cat "$RD_LAYER"
           fi
