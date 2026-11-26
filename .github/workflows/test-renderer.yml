@@ -208,14 +208,15 @@ jobs:
           else
             sudo apt-get install -y renderdoc
           fi
-          RD_LIB=$(find /tmp/renderdoc_* /usr/lib -name librenderdoc.so 2>/dev/null | head -n 1)
+          RD_LIB=$(find /tmp/renderdoc_* /usr/lib -name librenderdoc.so 2>/dev/null | head -n 1 || true)
           [ -n "$RD_LIB" ] || { echo "librenderdoc.so not found"; exit 1; }
           export LD_LIBRARY_PATH="$(dirname "$RD_LIB"):${LD_LIBRARY_PATH:-}"
           # RenderDoc captures Vulkan through its implicit layer. A system
           # install registers it; the tarball only ships the manifest, so point
           # the loader at it and switch the layer on, or the API attaches and
           # every capture silently records nothing.
-          RD_LAYER=$(find /tmp/renderdoc_* /usr/share/vulkan /etc/vulkan -name 'renderdoc_capture.json' 2>/dev/null | head -n 1)
+          # find exits non-zero for a folder that is not there; with pipefail that would end the step.
+          RD_LAYER=$(find /tmp/renderdoc_* /usr/share/vulkan /etc/vulkan -name 'renderdoc_capture.json' 2>/dev/null | head -n 1 || true)
           if [ -n "$RD_LAYER" ]; then
             export VK_ADD_LAYER_PATH="$(dirname "$RD_LAYER")"
             echo "RenderDoc layer manifest: $RD_LAYER"
