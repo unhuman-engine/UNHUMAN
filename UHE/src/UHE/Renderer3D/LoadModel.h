@@ -294,6 +294,18 @@ public:
     Model& operator=(const Model&) = delete;
 
     bool loadModel(const std::filesystem::path& filepath, const ModelLoadOptions& options = {});
+
+    /**
+     * @brief Builds the model from geometry made in code (terrain, generated
+     *        shapes) instead of from a file, and uploads it.
+     *
+     * One mesh at the model's origin, one node. Each primitive needs its
+     * vertices and indices; Primitive::materialIndex picks from \p materials
+     * (an empty list gets the glTF default material). It draws, casts shadows
+     * and is picked like a loaded model.
+     */
+    bool LoadFromPrimitives(const std::string& name, std::vector<Primitive> primitives,
+                            std::vector<Material> materials);
     void Destroy();
 
     const std::vector<Mesh>& GetMesh() const { return m_LoadedMeshes; }

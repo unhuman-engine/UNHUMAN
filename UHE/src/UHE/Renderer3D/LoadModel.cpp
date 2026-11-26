@@ -99,6 +99,61 @@ void Model::Destroy()
     m_PunctualLights.clear();
 }
 
+bool Model::LoadFromPrimitives(const std::string& name, std::vector<Primitive> primitives,
+                               std::vector<Material> materials)
+{
+    Destroy();
+    m_Options = {};
+    if (materials.empty())
+        materials.emplace_back();
+    m_LoadedMaterials = std::move(materials);
+
+    Geometry geometry;
+    geometry.name = name;
+    for (Primitive& prim : primitives)
+    {
+        if (prim.vertices.empty() || prim.indices.empty())
+            continue;
+        prim.geometryIndex = 0;
+        prim.usesSharedGeometry = false;
+        prim.IndexCount = static_cast<u32>(prim.indices.size());
+        prim.materialIndex = std::min(prim.materialIndex, m_LoadedMaterials.size() - 1);
+        geometry.primitive.push_back(std::move(prim));
+    }
+    if (geometry.primitive.empty())
+        return false;
+    m_Geometry.push_back(std::move(geometry));
+    ComputeBounds(m_Geometry[0]);
+    UploadGeometry(m_Geometry[0], 0);
+
+    const Geometry& geom = m_Geometry[0];
+    Mesh mesh;
+    mesh.name = name;
+    mesh.geometryIndex = 0;
+    mesh.hasBounds = geom.hasBounds;
+    mesh.boundsMin = geom.boundsMin;
+    mesh.boundsMax = geom.boundsMax;
+    for (const Primitive& source : geom.primitive)
+    {
+        Primitive prim;
+        prim.materialIndex = source.materialIndex;
+        prim.geometryIndex = 0;
+        prim.usesSharedGeometry = true; // borrows the geometry's buffers, like a loaded node
+        prim.VertexBuffer = source.VertexBuffer;
+        prim.IndexBuffer = source.IndexBuffer;
+        prim.IndexCount = source.IndexCount;
+        prim.hasVertexColor = source.hasVertexColor;
+        mesh.primitive.push_back(prim);
+    }
+    m_LoadedMeshes.push_back(std::move(mesh));
+
+    ModelNode& node = m_Nodes.emplace_back();
+    node.Name = name;
+    node.MeshIndex = 0;
+    m_RootNodes.push_back(0);
+    return true;
+}
+
 glm::mat4 Model::NodeLocalTransform(const fastgltf::Node& node)
 {
     glm::mat4 local{1.0f};
