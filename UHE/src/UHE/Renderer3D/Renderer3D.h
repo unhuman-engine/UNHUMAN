@@ -27,6 +27,7 @@ public:
         Solid = 2,     ///< neutral clay with a studio light: shape without materials
         Normals = 3,   ///< world-space normal as colour
         Wireframe = 4, ///< triangle edges only (needs RHIDevice::SupportsWireframe)
+        Overdraw = 5,  ///< how often each pixel is drawn: every fragment adds, nothing hides anything
     };
 
     /// @brief What the editor's ground grid shows.

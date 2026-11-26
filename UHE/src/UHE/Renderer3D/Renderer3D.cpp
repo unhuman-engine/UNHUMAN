@@ -82,6 +82,8 @@ struct Renderer3DData
     // Wireframe view: the same shaders, edges only, no culling (the back
     // edges are part of the shape).
     RHI::PipelineHandle ModelPipelineWireframe;
+    /// ViewMode::Overdraw: additive, no depth test or write, so every layer counts.
+    RHI::PipelineHandle ModelPipelineOverdraw = nullptr;
     // Blended surfaces: drawn last and back to front, testing depth without
     // writing it, so one does not hide another drawn after it.
     RHI::PipelineHandle ModelPipelineTransparent;
@@ -449,6 +451,14 @@ void Renderer3D::CreateShaderResources()
     wireframeDesc.debugName = "ModelPipeline.Wireframe";
     s_Data3D.ModelPipelineWireframe = device.CreateGraphicsPipeline(wireframeDesc);
 
+    RHI::GraphicsPipelineDesc overdrawDesc = doubleSidedDesc;
+    overdrawDesc.blendMode = RHI::BlendMode::Additive;
+    overdrawDesc.depthTest = false;
+    overdrawDesc.depthWrite = false;
+    overdrawDesc.depthAttachmentOnly = true; // the debug pass has depth; this pipeline ignores it
+    overdrawDesc.debugName = "ModelPipeline.Overdraw";
+    s_Data3D.ModelPipelineOverdraw = device.CreateGraphicsPipeline(overdrawDesc);
+
     RHI::GraphicsPipelineDesc transparentDesc = pipeDesc;
     transparentDesc.depthWrite = false;
     transparentDesc.debugName = "ModelPipeline.Transparent";
@@ -508,6 +518,7 @@ void Renderer3D::DestroyShaderResources()
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipeline);
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineDoubleSided);
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineWireframe);
+    device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineOverdraw);
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineTransparent);
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineTransparentDoubleSided);
     for (auto& [format, set] : s_Data3D.SingleTargets)
@@ -549,6 +560,7 @@ void Renderer3D::DestroyShaderResources()
     s_Data3D.ModelPipeline = nullptr;
     s_Data3D.ModelPipelineDoubleSided = nullptr;
     s_Data3D.ModelPipelineWireframe = nullptr;
+    s_Data3D.ModelPipelineOverdraw = nullptr;
     s_Data3D.ModelPipelineTransparent = nullptr;
     s_Data3D.ModelPipelineTransparentDoubleSided = nullptr;
     s_Data3D.GridPipeline = nullptr;
@@ -1018,6 +1030,9 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
         else if (single != nullptr)
             cmd.BindPipeline(wireframe ? single->ModelWireframe
                                        : (doubleSided ? single->ModelDoubleSided : single->Model));
+        else if (s_Data3D.Mode == ViewMode::Overdraw && s_Data3D.ModelPipelineOverdraw != nullptr &&
+                 s_Data3D.EntityTargetFormat == RHI::TextureFormat::RGBA8_SRGB)
+            cmd.BindPipeline(s_Data3D.ModelPipelineOverdraw); // the editor's debug views draw into RGBA8
         else
         {
             const Renderer3DData::SingleTargetPipelines set = EntityTargetSet();

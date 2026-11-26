@@ -191,8 +191,8 @@ void Editor::OnDetach()
 namespace
 {
 /// @brief Every console entry the editor owns, so OnDetach removes exactly these.
-constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "view.buffer", "scene.stats",
-                                                 "clear"};
+constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "view.shading",
+                                                 "view.buffer",   "scene.stats",  "clear"};
 } // namespace
 
 void Editor::RegisterConsoleEntries()
@@ -226,6 +226,22 @@ void Editor::RegisterConsoleEntries()
                                 std::snprintf(text, sizeof(text), "sim.tickrate = %.0f Hz", 1.0 / clock.GetFixedStep());
                                 return text;
                             });
+
+    console.RegisterCommand(
+        "view.shading", "view.shading [lit|unlit|solid|normals|wireframe|overdraw]: the viewport's shading mode",
+        [this](const std::vector<std::string>& args) -> std::string
+        {
+            static constexpr const char* kNames[] = {"lit", "unlit", "solid", "normals", "wireframe", "overdraw"};
+            if (!args.empty())
+            {
+                const auto* found = std::find_if(std::begin(kNames), std::end(kNames),
+                                                 [&](const char* name) { return args.front() == name; });
+                if (found == std::end(kNames))
+                    return "expected lit, unlit, solid, normals, wireframe or overdraw";
+                SetViewMode(static_cast<Renderer3D::ViewMode>(found - std::begin(kNames)));
+            }
+            return std::string("view.shading = ") + kNames[std::clamp(static_cast<int>(m_ViewMode), 0, 5)];
+        });
 
     console.RegisterCommand("view.buffer", "view.buffer [image|ao|depth|bloom]: what the lit viewport shows",
                             [this](const std::vector<std::string>& args) -> std::string
@@ -2633,7 +2649,7 @@ void Editor::DrawPreferencesContent()
 {
     UHE_PROFILE_FUNCTION();
     EditorUI::SectionHeader("Rendering");
-    const char* shadingModes[] = {"Lit", "Unlit", "Solid", "Normals", "Wireframe"};
+    const char* shadingModes[] = {"Lit", "Unlit", "Solid", "Normals", "Wireframe", "Overdraw"};
     int shading = static_cast<int>(m_ViewMode);
     if (ImGui::Combo("Viewport Shading", &shading, shadingModes, IM_ARRAYSIZE(shadingModes)))
         SetViewMode(static_cast<Renderer3D::ViewMode>(shading));

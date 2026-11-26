@@ -74,6 +74,7 @@ static const int kViewModeUnlit = 1;
 static const int kViewModeSolid = 2;
 static const int kViewModeNormals = 3;
 static const int kViewModeWireframe = 4;
+static const int kViewModeOverdraw = 5;
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc;
 
@@ -609,6 +610,16 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
         if (!isFrontFace && pc.foliage.x <= 0.0) // foliage keeps its normals on both sides (grass cards)
             normal = -normal;
         float3 color = baseColor.rgb;
+        if (pc.viewMode == kViewModeOverdraw)
+        {
+            // Added up by the overdraw pipeline (additive, no depth test): one
+            // layer is a dim red, four or five are orange, ten or more are white.
+            output.Color = float4(0.10, 0.04, 0.015, 1.0);
+#ifndef UHE_NO_ENTITY_ID
+            output.EntityID = pc.entityID;
+#endif
+            return output;
+        }
         if (pc.viewMode == kViewModeWireframe)
         {
             color = float3(0.62, 0.64, 0.68); // edges only: one neutral line colour

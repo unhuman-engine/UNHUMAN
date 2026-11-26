@@ -424,6 +424,9 @@ struct GraphicsPipelineDesc
     bool depthWrite = true;
     /// Rasterize triangle edges only. Needs RHIDevice::SupportsWireframe(); filled otherwise.
     bool wireframe = false;
+    /// Declare the depth format although neither depthTest nor depthWrite is
+    /// on: the pass has a depth attachment the pipeline ignores (an overdraw view).
+    bool depthAttachmentOnly = false;
     u32 pushConstantSize = 0;
     const char* debugName = nullptr;
     RenderPassDesc renderPassDesc = {};
