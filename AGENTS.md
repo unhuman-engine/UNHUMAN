@@ -198,6 +198,14 @@ here. Follow them; if a rule is wrong, change it here first.
   The inline helpers in `imgui_internal.h` (`GetCurrentWindow`, `GetActiveID`,
   ...) read the global `GImGui`, which the engine DLL does not export on
   Windows: the editor compiled everywhere and failed to link on Windows only.
+- **Wait on children with a continuation, not a nested `Wait`.** `Wait()` runs
+  other jobs on the waiting thread's stack, so waits inside jobs grow it;
+  `UheJobsystem::Then(counter, job)` or a `JobTask` coroutine's
+  `co_await jobs.WhenDone(counter)` resume with no thread held. A
+  `JobCounter` may be destroyed only after `Wait()` on it returned or from its
+  continuation: the job that finished the group is still inside it until then.
+  The deque is Chase–Lev with seq_cst operations instead of fences, because
+  TSan (which CI runs on `tests/jobsystem`) does not model fences.
 - **Behaviour lives in `UHE/src/UHE`; apps compose layers.** `sandbox`,
   `UHEGAME` and `UHE_EDITOR` are composition roots, not engines.
 - **The engine and the editor share one scene format**: `.unhuman` YAML, with
