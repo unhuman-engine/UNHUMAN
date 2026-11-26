@@ -62,11 +62,18 @@ struct PushConstants {
     int materialBufferIndex;    // 168
     int materialIndex;          // 172
     int useVertexColor;         // 176 - per-PRIMITIVE flag, not per-material
-    // An int[3] ARRAY, not int3: std430 gives a vec3 a 16-byte base alignment,
-    // which would push this member to offset 192 and grow the block to 208.
-    // The array keeps the C++ struct (sizeof 192) and the SPIR-V layout equal.
-    int padding[3];             // 180
+    int viewMode;               // 180 - Renderer3D::ViewMode (kViewMode* below)
+    // An int[2] ARRAY, not int2: std430 gives a vector its own alignment, while
+    // the array keeps the C++ struct (sizeof 192) and the SPIR-V layout equal.
+    int padding[2];             // 184
 };                              // 192 bytes
+
+// Renderer3D::ViewMode: the editor viewport's shading modes.
+static const int kViewModeLit = 0;
+static const int kViewModeUnlit = 1;
+static const int kViewModeSolid = 2;
+static const int kViewModeNormals = 3;
+static const int kViewModeWireframe = 4;
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> pc;
 
@@ -305,6 +312,41 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
         if (baseColor.a < m.alphaCutoff)
             discard;
     }
+    // Editor view modes other than Lit: shape and data views, no materials.
+    if (pc.viewMode != kViewModeLit)
+    {
+        float3 normal = normalize(input.v_Normal);
+        if (!isFrontFace)
+            normal = -normal;
+        float3 color = baseColor.rgb;
+        if (pc.viewMode == kViewModeWireframe)
+        {
+            color = float3(0.62, 0.64, 0.68); // edges only: one neutral line colour
+        }
+        else if (pc.viewMode == kViewModeNormals)
+        {
+            color = normal * 0.5 + 0.5;
+        }
+        else if (pc.viewMode == kViewModeSolid)
+        {
+            // Clay under a fixed studio rig: a key light from above, a weaker
+            // fill from the opposite side, a sky/ground ambient and a soft rim.
+            // Directions are constant, so flat faces shade flat and form reads
+            // from the faces' angles alone, without materials.
+            const float3 V = normalize(pc.cameraPos.xyz - input.v_WorldPos);
+            const float key = saturate(dot(normal, normalize(float3(0.45, 0.80, 0.40))));
+            const float fill = saturate(dot(normal, normalize(float3(-0.60, 0.30, -0.50))));
+            const float ambient = lerp(0.14, 0.26, normal.y * 0.5 + 0.5);
+            const float rim = pow(1.0 - saturate(dot(normal, V)), 4.0) * 0.10;
+            color = float3(0.72, 0.72, 0.74) * (ambient + key * 0.70 + fill * 0.18) + rim;
+        }
+        output.Color = float4(color, (m.flags.x == 2 && pc.viewMode == kViewModeUnlit) ? baseColor.a : 1.0);
+#ifndef UHE_NO_ENTITY_ID
+        output.EntityID = pc.entityID;
+#endif
+        return output;
+    }
+
     // glTF unlit: output the base colour untouched (BLEND keeps its alpha).
     if (m.flags.y == 1)
     {

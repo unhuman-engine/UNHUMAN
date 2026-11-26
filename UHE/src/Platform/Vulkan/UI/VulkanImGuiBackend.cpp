@@ -11,7 +11,9 @@
 #include "Platform/Vulkan/VulkanCommandBuffer.h"
 #include "Platform/Vulkan/VulkanDevice.h"
 #include "Platform/Vulkan/VulkanLogicalDevice.h"
+#include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/Application.h"
+#include "UHE/Renderer/ShaderCache.h"
 
 namespace UHE::RHI::VULKAN
 {
@@ -64,8 +66,62 @@ void VulkanImGuiLayer::OnAttach()
     pipelineRenderingCreateInfo.pColorAttachmentFormats = &colorFormat;
 
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo = pipelineRenderingCreateInfo;
+    UseSrgbShaders(init_info, colorFormat);
 
     ImGui_ImplVulkan_Init(&init_info);
+}
+
+namespace
+{
+bool IsSrgbFormat(VkFormat format)
+{
+    switch (format)
+    {
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief One stage's SPIR-V as 32-bit words (what VkShaderModuleCreateInfo takes).
+bool StageWords(const ShaderCache::Shader& shader, ShaderStage stage, std::vector<u32>& out)
+{
+    const ShaderStageBinary* binary = shader.FindStage(stage);
+    if (binary == nullptr || binary->SPIRV.empty() || binary->SPIRV.size() % sizeof(u32) != 0)
+        return false;
+    out.resize(binary->SPIRV.size() / sizeof(u32));
+    std::memcpy(out.data(), binary->SPIRV.data(), binary->SPIRV.size());
+    return true;
+}
+} // namespace
+
+void VulkanImGuiLayer::UseSrgbShaders(ImGui_ImplVulkan_InitInfo& info, VkFormat colorFormat)
+{
+    if (!IsSrgbFormat(colorFormat))
+        return; // a UNORM swapchain shows ImGui's sRGB colours as they are
+
+    ShaderCache& library = ShaderCache::Get();
+    const auto path = FileSystem::Get().GetRootPath() / "assets/shaders/ImGuiSrgb.slang";
+    const ShaderCache::Shader* shader = library.Get(library.Load(path.string()));
+    if (shader == nullptr || !StageWords(*shader, ShaderStage::Vertex, m_VertexSpirv) ||
+        !StageWords(*shader, ShaderStage::Fragment, m_FragmentSpirv))
+    {
+        UHE_CORE_WARN("ImGui: ImGuiSrgb.slang is unavailable; the UI is drawn with ImGui's shaders and looks "
+                      "lighter than its theme on this sRGB swapchain");
+        return;
+    }
+
+    info.CustomShaderVertCreateInfo = {};
+    info.CustomShaderVertCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    info.CustomShaderVertCreateInfo.codeSize = m_VertexSpirv.size() * sizeof(u32);
+    info.CustomShaderVertCreateInfo.pCode = m_VertexSpirv.data();
+    info.CustomShaderFragCreateInfo = {};
+    info.CustomShaderFragCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    info.CustomShaderFragCreateInfo.codeSize = m_FragmentSpirv.size() * sizeof(u32);
+    info.CustomShaderFragCreateInfo.pCode = m_FragmentSpirv.data();
 }
 
 void VulkanImGuiLayer::OnDetach()

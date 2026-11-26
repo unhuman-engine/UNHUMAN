@@ -159,6 +159,9 @@ vk::PhysicalDeviceFeatures2* VulkanExtensionCheck::BuildDeviceFeatureChain()
         m_features2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
     if (m_supportedCoreFeatures.shaderStorageImageReadWithoutFormat)
         m_features2.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
+    // Line polygon mode: the editor's wireframe view.
+    if (m_supportedCoreFeatures.fillModeNonSolid)
+        m_features2.features.fillModeNonSolid = VK_TRUE;
 
     // ── Always chain Vulkan 1.1 / 1.2 / 1.3 (they are core for Vulkan 1.3) ──
     m_features2.pNext = &m_v11Features;

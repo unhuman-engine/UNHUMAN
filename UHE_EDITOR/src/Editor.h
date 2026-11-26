@@ -14,6 +14,7 @@
 #include "Panel/ScriptsPanel.h"
 #include "UHE.h"
 #include "UHE/Renderer/EditorCamera.h"
+#include "UHE/Renderer3D/Renderer3D.h"
 #include "imgui.h"
 
 namespace UHE::RHI
@@ -65,6 +66,12 @@ private:
     void DrawMainMenuBar();
     void DrawEditorToolbar();
     void DrawViewportHeader();
+    // The viewport header's right side, Blender-style: camera and overlay
+    // menus, then the shading mode buttons.
+    void DrawViewportCameraMenu();
+    void DrawViewportOverlaysMenu();
+    void DrawViewportShading();
+    void SetViewMode(Renderer3D::ViewMode mode);
     void DrawViewportOverlay(const ImVec2& imageMin, const ImVec2& imageMax);
     void DrawAxisGizmo(ImDrawList* draw, const ImVec2& center, float radius);
     void DrawStatusBar();
@@ -121,8 +128,8 @@ private:
 
     u32 m_mapWidth, m_mapHeight;
 
-    glm::vec2 m_ViewPortSize;
-    glm::vec2 m_ViewPortBounds[2];
+    glm::vec2 m_ViewPortSize{0.0f}; // glm leaves vectors uninitialized: a garbage size skipped the seed in OnAttach
+    glm::vec2 m_ViewPortBounds[2]{};
     int m_GizmoType = -1;
     bool m_GizmoSpaceWorld = false;
     bool m_SnapEnabled = false;
@@ -167,6 +174,12 @@ private:
     bool m_ShowAbout = false;
     bool m_ResetLayout = false;
     bool m_ShowViewportOverlay = true;
+    // Viewport display. The shading mode applies to the scene pass; the grid
+    // and light icons live in Scene::GetEditorOverlays().
+    Renderer3D::ViewMode m_ViewMode = Renderer3D::ViewMode::Lit;
+    Renderer3D::ViewMode m_ViewModeBeforeWireframe = Renderer3D::ViewMode::Lit; ///< Shift+Z goes back to it
+    bool m_ShowNavigationGizmo = true;
+    bool m_ShowToolBadges = true;
     float m_SnapValue = 0.5f;
 
     // Transform undo/redo. The editor records one entry per completed edit

@@ -66,6 +66,7 @@ void Renderer3D::SubmitModel(const RD3d::Model&, const glm::mat4&, int, const RD
 void Renderer3D::SubmitMesh(const RD3d::Mesh&, const glm::mat4&, int, const RD3d::Model&,
                             const MaterialBinding&, int, int) {}
 void Renderer3D::DrawGrid() {}
+void Renderer3D::DrawGrid(const GridOptions&) {}
 bool Renderer3D::IsLightingEnabled() { return false; }
 void Renderer3D::SetLightingEnabled(bool) {}
 void Renderer3D::RestartMaterialRegion() {}

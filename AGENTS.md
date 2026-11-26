@@ -41,6 +41,16 @@ here. Follow them; if a rule is wrong, change it here first.
   `ShaderReflection` reads them out of the SPIR-V, so a shader edit that changes
   its interface fails `tests/shader` instead of drawing garbage. Never re-add a
   hand-written copy of what the shader says.
+- **ImGui colours are sRGB; the swapchain is sRGB too.** ImGui's own shader
+  writes theme colours unchanged and the swapchain encodes them a second time,
+  which drew the whole editor washed-out grey (a 0.095 background showed as
+  0.34). `ImGuiSrgb.slang` replaces ImGui's shaders and decodes the vertex
+  colour first; keep it in `UHE_SHADER_SOURCES`, and author theme and draw-list
+  colours in sRGB as a colour picker shows them.
+- **Every `GraphicsPipelineDesc` field is part of the pipeline cache key.**
+  `VulkanPipelineState::Hash` dedupes pipelines by the fields it hashes; a new
+  field it leaves out makes two different descs share one pipeline. The
+  `wireframe` flag did exactly that: the wireframe view drew filled.
 - **Destroy GPU resources only after a wait.** Uploads and draws are queued;
   destroying a texture or buffer a submission still reads is invalid. Teardown
   waits at frame end, or `WaitIdle()` for a one-off — including the pipeline
@@ -130,6 +140,10 @@ here. Follow them; if a rule is wrong, change it here first.
   that interface plus the backend implementation (see `GetSwapchainFormat`).
   Demo layers may reach the swapchain for its extent — that is the documented
   exception.
+- **Editor code reads ImGui internals through `ImGui::GetCurrentContext()`.**
+  The inline helpers in `imgui_internal.h` (`GetCurrentWindow`, `GetActiveID`,
+  ...) read the global `GImGui`, which the engine DLL does not export on
+  Windows: the editor compiled everywhere and failed to link on Windows only.
 - **Behaviour lives in `UHE/src/UHE`; apps compose layers.** `sandbox`,
   `UHEGAME` and `UHE_EDITOR` are composition roots, not engines.
 - **The engine and the editor share one scene format**: `.unhuman` YAML, with

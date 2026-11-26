@@ -65,6 +65,8 @@ public:
     /// this format, and a pipeline has to be created for the pass it is bound
     /// in, so a scene pipeline that also serves such a pass needs it.
     [[nodiscard]] virtual TextureFormat GetSwapchainFormat() = 0;
+    /// @brief Whether a pipeline can rasterize edges only (GraphicsPipelineDesc::wireframe).
+    [[nodiscard]] virtual bool SupportsWireframe() const { return false; }
 
     // ── Resource creation ────────────────────────────────────────────────────
 

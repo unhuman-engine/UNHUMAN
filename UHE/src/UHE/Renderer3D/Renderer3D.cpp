@@ -42,9 +42,13 @@ struct Renderer3DData
     // pipeline, so a doubleSided material cannot be drawn with ModelPipeline -
     // it needs this variant bound instead.
     RHI::PipelineHandle ModelPipelineDoubleSided;
+    // Wireframe view: the same shaders, edges only, no culling (the back
+    // edges are part of the shape).
+    RHI::PipelineHandle ModelPipelineWireframe;
 
     RHI::ShaderHandle GridVertexShader;
     RHI::ShaderHandle GridFragmentShader;
+    RHI::ShaderHandle GridFragmentShaderNoId; ///< for single-attachment passes
     RHI::PipelineHandle GridPipeline;
 
     // The editor draws the scene into its own framebuffer, which is a colour
@@ -58,6 +62,7 @@ struct Renderer3DData
     {
         RHI::PipelineHandle Model = nullptr;
         RHI::PipelineHandle ModelDoubleSided = nullptr;
+        RHI::PipelineHandle ModelWireframe = nullptr;
         RHI::PipelineHandle Grid = nullptr;
     };
     std::map<RHI::TextureFormat, SingleTargetPipelines> SingleTargets;
@@ -110,6 +115,7 @@ struct Renderer3DData
     uint32_t MaterialBufferOffset = 0;
 
     bool EnableLighting = true;
+    Renderer3D::ViewMode Mode = Renderer3D::ViewMode::Lit;
 };
 
 static Renderer3DData s_Data3D;
@@ -134,6 +140,10 @@ static const Renderer3DData::SingleTargetPipelines* SingleTargetFor(RHI::Texture
     doubleSided.cullMode = RHI::CullMode::None;
     doubleSided.debugName = "ModelPipeline.SingleTarget.DoubleSided";
     set.ModelDoubleSided = device.CreateGraphicsPipeline(doubleSided);
+    RHI::GraphicsPipelineDesc wireframe = doubleSided;
+    wireframe.wireframe = true;
+    wireframe.debugName = "ModelPipeline.SingleTarget.Wireframe";
+    set.ModelWireframe = device.CreateGraphicsPipeline(wireframe);
     RHI::GraphicsPipelineDesc grid = s_Data3D.SingleTargetGridDesc;
     grid.colorFormats[0] = format;
     grid.debugName = "GridPipeline.SingleTarget";
@@ -221,11 +231,13 @@ void Renderer3D::CreateShaderResources()
     const ShaderCache::Handle modelHandle = library.Load((shaderDir / "Basic3D.slang").string());
     const ShaderCache::Handle modelNoIdHandle = library.Load((shaderDir / "Basic3D.slang").string(), "no_entity_id");
     const ShaderCache::Handle gridHandle = library.Load((shaderDir / "Grid.slang").string());
+    const ShaderCache::Handle gridNoIdHandle = library.Load((shaderDir / "Grid.slang").string(), "no_entity_id");
 
     const ShaderCache::Shader* model = library.Get(modelHandle);
     const ShaderCache::Shader* modelNoId = library.Get(modelNoIdHandle);
     const ShaderCache::Shader* grid = library.Get(gridHandle);
-    if (model == nullptr || modelNoId == nullptr || grid == nullptr)
+    const ShaderCache::Shader* gridNoId = library.Get(gridNoIdHandle);
+    if (model == nullptr || modelNoId == nullptr || grid == nullptr || gridNoId == nullptr)
     {
         UHE_CORE_ERROR("Renderer3D: a scene shader failed to load; the scene will not draw");
         return;
@@ -237,6 +249,8 @@ void Renderer3D::CreateShaderResources()
         CreateStageShader(device, *modelNoId, RHI::ShaderStage::Fragment, "Basic3D.fragment.noEntityId");
     s_Data3D.GridVertexShader = CreateStageShader(device, *grid, RHI::ShaderStage::Vertex, "Grid.vertex");
     s_Data3D.GridFragmentShader = CreateStageShader(device, *grid, RHI::ShaderStage::Fragment, "Grid.fragment");
+    s_Data3D.GridFragmentShaderNoId =
+        CreateStageShader(device, *gridNoId, RHI::ShaderStage::Fragment, "Grid.fragment.noEntityId");
 
     RHI::GraphicsPipelineDesc pipeDesc{};
     pipeDesc.vertexShader = s_Data3D.VertexShader;
@@ -269,16 +283,23 @@ void Renderer3D::CreateShaderResources()
     doubleSidedDesc.debugName = "ModelPipeline.DoubleSided";
     s_Data3D.ModelPipelineDoubleSided = device.CreateGraphicsPipeline(doubleSidedDesc);
 
+    RHI::GraphicsPipelineDesc wireframeDesc = doubleSidedDesc;
+    wireframeDesc.wireframe = true;
+    wireframeDesc.debugName = "ModelPipeline.Wireframe";
+    s_Data3D.ModelPipelineWireframe = device.CreateGraphicsPipeline(wireframeDesc);
+
     RHI::GraphicsPipelineDesc gridPipeDesc{};
     gridPipeDesc.vertexShader = s_Data3D.GridVertexShader;
     gridPipeDesc.fragmentShader = s_Data3D.GridFragmentShader;
     // The grid generates its vertices from gl_VertexIndex, so the module declares
     // no vertex inputs and reflection returns an empty layout.
     gridPipeDesc.vertexLayout = ReflectedVertexLayout(*grid);
-    gridPipeDesc.pushConstantSize = ReflectedPushConstantSize(*grid); // viewProj + inverseViewProj
+    gridPipeDesc.pushConstantSize = ReflectedPushConstantSize(*grid);
     gridPipeDesc.blendMode = RHI::BlendMode::Alpha;
+    // Drawn after the scene: tested against it, so geometry hides the grid,
+    // but never written, so the translucent plane cannot hide what follows.
     gridPipeDesc.depthTest = true;
-    gridPipeDesc.depthWrite = true;
+    gridPipeDesc.depthWrite = false;
 
     gridPipeDesc.colorAttachmentCount = 2;
     gridPipeDesc.colorFormats[0] = RHI::TextureFormat::RGBA8_SRGB;
@@ -293,6 +314,7 @@ void Renderer3D::CreateShaderResources()
     s_Data3D.SingleTargetModelDesc.fragmentShader = s_Data3D.FragmentShaderNoId;
     s_Data3D.SingleTargetGridDesc = gridPipeDesc;
     s_Data3D.SingleTargetGridDesc.colorAttachmentCount = 1;
+    s_Data3D.SingleTargetGridDesc.fragmentShader = s_Data3D.GridFragmentShaderNoId;
     s_Data3D.ShaderResourcesReady = true;
     // The swapchain set is built now rather than on first use, as before.
     (void)SingleTargetFor(device.GetSwapchainFormat());
@@ -304,10 +326,12 @@ void Renderer3D::DestroyShaderResources()
 
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipeline);
     device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineDoubleSided);
+    device.DestroyGraphicsPipeline(s_Data3D.ModelPipelineWireframe);
     for (auto& [format, set] : s_Data3D.SingleTargets)
     {
         device.DestroyGraphicsPipeline(set.Model);
         device.DestroyGraphicsPipeline(set.ModelDoubleSided);
+        device.DestroyGraphicsPipeline(set.ModelWireframe);
         device.DestroyGraphicsPipeline(set.Grid);
     }
     s_Data3D.SingleTargets.clear();
@@ -318,17 +342,20 @@ void Renderer3D::DestroyShaderResources()
     device.DestroyShader(s_Data3D.FragmentShaderNoId);
     device.DestroyShader(s_Data3D.GridVertexShader);
     device.DestroyShader(s_Data3D.GridFragmentShader);
+    device.DestroyShader(s_Data3D.GridFragmentShaderNoId);
 
     // Nulled, not left dangling: a second destroy of the same handle would free
     // someone else's object.
     s_Data3D.ModelPipeline = nullptr;
     s_Data3D.ModelPipelineDoubleSided = nullptr;
+    s_Data3D.ModelPipelineWireframe = nullptr;
     s_Data3D.GridPipeline = nullptr;
     s_Data3D.VertexShader = nullptr;
     s_Data3D.FragmentShader = nullptr;
     s_Data3D.FragmentShaderNoId = nullptr;
     s_Data3D.GridVertexShader = nullptr;
     s_Data3D.GridFragmentShader = nullptr;
+    s_Data3D.GridFragmentShaderNoId = nullptr;
 }
 
 void Renderer3D::ReloadShaders()
@@ -424,19 +451,32 @@ void Renderer3D::SetColorTarget(RHI::TextureFormat format)
 
 void Renderer3D::DrawGrid()
 {
+    DrawGrid(GridOptions{});
+}
+
+void Renderer3D::DrawGrid(const GridOptions& options)
+{
     UHE_PROFILE_FUNCTION();
+    if (options.Opacity <= 0.0f)
+        return;
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
     const auto* single = SingleTargetFor(s_Data3D.TargetFormat);
     cmd.BindPipeline(single != nullptr ? single->Grid : s_Data3D.GridPipeline);
 
+    // MUST match PushConstants in Grid.slang.
     struct GridPushConstants
     {
         glm::mat4 viewProj;
         glm::mat4 inverseViewProj;
+        glm::vec4 cameraPos; // xyz: eye
+        glm::vec4 options;   // x: opacity, y: axes on (1) / off (0)
     } pc;
+    static_assert(sizeof(GridPushConstants) == 160, "GridPushConstants must match Grid.slang");
     pc.viewProj = s_Data3D.ViewProjection;
     pc.inverseViewProj = glm::inverse(s_Data3D.ViewProjection);
+    pc.cameraPos = glm::vec4(s_Data3D.CameraPosition, 1.0f);
+    pc.options = glm::vec4(std::clamp(options.Opacity, 0.0f, 1.0f), options.Axes ? 1.0f : 0.0f, 0.0f, 0.0f);
 
     cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(GridPushConstants), 0);
 
@@ -548,7 +588,8 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
         int materialBufferIndex;
         int materialIndex;
         int useVertexColor;
-        glm::ivec3 padding;
+        int viewMode; // Renderer3D::ViewMode
+        int padding[2];
     } pc;
 
     static_assert(sizeof(PushConstants) == 192, "PushConstants must stay byte-identical to the Slang struct");
@@ -576,7 +617,8 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
     pc.materialBufferIndex = (materialBinding.BufferIndex >= 0) ? materialBinding.BufferIndex
                                                                 : static_cast<int>(s_Data3D.MaterialStorageBufferIndex);
     pc.useVertexColor = 0;
-    pc.padding = glm::ivec3(0);
+    pc.viewMode = static_cast<int>(s_Data3D.Mode);
+    pc.padding[0] = pc.padding[1] = 0;
 
     const auto& materials = model.GetMaterials();
 
@@ -611,10 +653,14 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
         // Cull mode lives in the pipeline, so a doubleSided material needs the
         // variant bound rather than a state change.
         const bool doubleSided = material && material->DoubleSided;
+        const bool wireframe = s_Data3D.Mode == ViewMode::Wireframe;
         const auto* single = SingleTargetFor(s_Data3D.TargetFormat);
-        cmd.BindPipeline(single != nullptr
-                             ? (doubleSided ? single->ModelDoubleSided : single->Model)
-                             : (doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline));
+        if (single != nullptr)
+            cmd.BindPipeline(wireframe ? single->ModelWireframe
+                                       : (doubleSided ? single->ModelDoubleSided : single->Model));
+        else
+            cmd.BindPipeline(wireframe ? s_Data3D.ModelPipelineWireframe
+                                       : (doubleSided ? s_Data3D.ModelPipelineDoubleSided : s_Data3D.ModelPipeline));
 
         cmd.PushConstants(RHI::ShaderStage::AllGraphics, &pc, sizeof(PushConstants), 0);
 
@@ -632,6 +678,21 @@ bool Renderer3D::IsLightingEnabled()
 void Renderer3D::SetLightingEnabled(bool enabled)
 {
     s_Data3D.EnableLighting = enabled;
+}
+
+void Renderer3D::SetViewMode(ViewMode mode)
+{
+    s_Data3D.Mode = mode;
+}
+
+Renderer3D::ViewMode Renderer3D::GetViewMode()
+{
+    return s_Data3D.Mode;
+}
+
+bool Renderer3D::SupportsWireframe()
+{
+    return Renderer::GetDevice().SupportsWireframe();
 }
 
 } // namespace UHE

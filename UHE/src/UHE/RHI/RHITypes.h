@@ -422,6 +422,8 @@ struct GraphicsPipelineDesc
     CullMode cullMode = CullMode::None;
     bool depthTest = true;
     bool depthWrite = true;
+    /// Rasterize triangle edges only. Needs RHIDevice::SupportsWireframe(); filled otherwise.
+    bool wireframe = false;
     u32 pushConstantSize = 0;
     const char* debugName = nullptr;
     RenderPassDesc renderPassDesc = {};

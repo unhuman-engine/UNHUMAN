@@ -107,6 +107,7 @@ jobs:
             # with, which would otherwise pass by saying nothing.
             if ! grep -qF "[VALIDATION] enabled" editor.log; then
               echo "Editor ran, but never enabled validation layers: the run proves nothing."
+              tail -n 50 editor.log || true
               exit 1
             fi
             echo "Engine survived for 10 seconds. Test passed!"

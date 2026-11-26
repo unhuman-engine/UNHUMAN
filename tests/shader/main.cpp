@@ -168,8 +168,9 @@ int main(int argc, char** argv)
             const UHE::ShaderReflection reflection = UHE::ReflectSPIRV(vertexIt->second);
             check(reflection.Valid, "the grid vertex module reflects");
             check(reflection.VertexInputs.empty(), "the grid takes no vertex buffer (gl_VertexIndex)");
-            check(reflection.PushConstantSize == sizeof(float) * 16 * 2,
-                  "the grid's push constant block is two matrices");
+            // viewProj, inverseViewProj, cameraPos, options: GridPushConstants in Renderer3D.cpp.
+            check(reflection.PushConstantSize == sizeof(float) * (16 * 2 + 4 * 2),
+                  "the grid's push constant block is two matrices and two vectors (160 bytes)");
         }
     }
 

@@ -45,6 +45,7 @@ namespace EditorTheme
             float TitleTint; // accent mixed into the focused title bar
         };
 
+        // clang-format off: one theme per row, columns aligned
         const ThemeDef kThemes[] = {
             {"Dark Violet", false, {0.424f, 0.388f, 1.000f, 1.0f}, {0.095f, 0.095f, 0.115f, 1.0f}, {0.920f, 0.920f, 0.940f, 1.0f}, {0.480f, 0.480f, 0.540f, 1.0f}, 0.07f},
             {"Midnight",    false, {0.260f, 0.780f, 0.870f, 1.0f}, {0.070f, 0.085f, 0.105f, 1.0f}, {0.880f, 0.910f, 0.940f, 1.0f}, {0.430f, 0.470f, 0.520f, 1.0f}, 0.07f},
@@ -58,12 +59,16 @@ namespace EditorTheme
             {"Dracula",     false, {0.745f, 0.580f, 0.986f, 1.0f}, {0.133f, 0.129f, 0.173f, 1.0f}, {0.968f, 0.968f, 0.952f, 1.0f}, {0.550f, 0.530f, 0.600f, 1.0f}, 0.08f},
             {"Paper",       true,  {0.720f, 0.450f, 0.200f, 1.0f}, {0.965f, 0.955f, 0.935f, 1.0f}, {0.150f, 0.130f, 0.110f, 1.0f}, {0.550f, 0.520f, 0.470f, 1.0f}, 0.03f},
             {"Carbon",      false, {0.900f, 0.920f, 0.960f, 1.0f}, {0.045f, 0.045f, 0.048f, 1.0f}, {0.920f, 0.930f, 0.950f, 1.0f}, {0.440f, 0.450f, 0.470f, 1.0f}, 0.05f},
+            {"Godot",       false, {0.439f, 0.729f, 0.980f, 1.0f}, {0.129f, 0.149f, 0.180f, 1.0f}, {0.875f, 0.890f, 0.910f, 1.0f}, {0.490f, 0.520f, 0.570f, 1.0f}, 0.04f},
+            {"Blender",     false, {0.278f, 0.447f, 0.702f, 1.0f}, {0.165f, 0.165f, 0.165f, 1.0f}, {0.900f, 0.900f, 0.900f, 1.0f}, {0.540f, 0.540f, 0.540f, 1.0f}, 0.00f},
         };
+        // clang-format on
         static_assert(sizeof(kThemes) / sizeof(kThemes[0]) == (int)EditorThemeId::COUNT,
                       "Theme table out of sync with EditorThemeId");
 
         // ---------- state ----------
-        EditorThemeId s_Selected = EditorThemeId::DarkViolet;
+        // Godot's look is the default; a choice saved in editor_theme.ini wins.
+        EditorThemeId s_Selected = EditorThemeId::Godot;
         bool s_Applied = false;
         bool s_CustomEnabled = false;
         ImVec4 s_CustomAccent{0.424f, 0.388f, 1.000f, 1.0f};
@@ -135,7 +140,9 @@ namespace EditorTheme
             c[ImGuiCol_TableBorderStrong]     = raise(0.140f);
             c[ImGuiCol_TableBorderLight]      = raise(0.080f);
             c[ImGuiCol_TableRowBg]            = ImVec4(0, 0, 0, 0);
-            c[ImGuiCol_TableRowBgAlt]         = light ? ImVec4(0, 0, 0, 0.030f) : ImVec4(1, 1, 1, 0.025f);
+            // Opaque: a translucent white blends in linear light on the sRGB
+            // swapchain and came out as a harsh zebra stripe.
+            c[ImGuiCol_TableRowBgAlt] = raise(light ? 0.020f : 0.012f);
             c[ImGuiCol_TextLink]              = A;
             c[ImGuiCol_TextSelectedBg]        = WithAlpha(A, 0.35f);
             c[ImGuiCol_TreeLines]             = raise(0.170f);
@@ -185,12 +192,13 @@ namespace EditorTheme
 
         void ApplyMetrics(ImGuiStyle& s)
         {
-            s.WindowRounding    = 6.0f;
-            s.ChildRounding     = 5.0f;
-            s.FrameRounding     = 5.0f;
-            s.PopupRounding     = 6.0f;
-            s.GrabRounding      = 5.0f;
-            s.TabRounding       = 6.0f;
+            // Small radii, as in Godot and Blender: panels read as one surface.
+            s.WindowRounding = 4.0f;
+            s.ChildRounding = 4.0f;
+            s.FrameRounding = 3.0f;
+            s.PopupRounding = 4.0f;
+            s.GrabRounding = 3.0f;
+            s.TabRounding = 4.0f;
             s.ScrollbarRounding = 9.0f;
             s.WindowBorderSize  = 1.0f;
             s.ChildBorderSize   = 1.0f;

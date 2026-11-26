@@ -63,6 +63,7 @@ u64 VulkanPipelineStateCache::Hash(const GraphicsPipelineDesc& desc)
     HashAddEnum(seed, desc.blendMode);
     HashAdd(seed, desc.depthTest);
     HashAdd(seed, desc.depthWrite);
+    HashAdd(seed, desc.wireframe);
     HashAdd(seed, desc.pushConstantSize);
 
     const RenderPassDesc& renderPass = desc.renderPassDesc;
