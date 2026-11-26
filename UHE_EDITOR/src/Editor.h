@@ -91,6 +91,15 @@ private:
     void DrawPreferencesModal();
     void DrawAboutModal();
     void CreateEntityFromMenu(const char* name, int componentKind);
+    /// @brief Create > UI: an element of \p kind (0 panel, 1 text, 2 button, 3 progress bar, 4 slider),
+    ///        inside the selected UI element when one is selected.
+    void CreateUIElement(int kind);
+
+    // Game UI in the viewport: the mouse in scene pixels, from the viewport panel.
+    glm::vec2 m_ViewportPointer{-1.0f};
+    bool m_ViewportPointerInside = false;
+    bool m_UIMouseWasDown = false;
+    bool m_ShowGameUI = true; ///< View > Overlays: draw the game UI over the viewport
 
     // ---- editor ergonomics ----
     void Notify(NotificationCenter::Kind kind, std::string title, std::string message = {});

@@ -488,6 +488,16 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             AddComponentMenuItem<WindComponent>(m_SelectionContext, "Wind");
         if (match("Terrain"))
             AddComponentMenuItem<TerrainComponent>(m_SelectionContext, "Terrain");
+        if (match("UI Rect"))
+            AddComponentMenuItem<UIRectComponent>(m_SelectionContext, "UI Rect");
+        if (match("UI Image"))
+            AddComponentMenuItem<UIImageComponent>(m_SelectionContext, "UI Image");
+        if (match("UI Text"))
+            AddComponentMenuItem<UITextComponent>(m_SelectionContext, "UI Text");
+        if (match("UI Button"))
+            AddComponentMenuItem<UIButtonComponent>(m_SelectionContext, "UI Button");
+        if (match("UI Progress Bar"))
+            AddComponentMenuItem<UIProgressBarComponent>(m_SelectionContext, "UI Progress Bar");
         ImGui::EndPopup();
     }
 
@@ -1123,6 +1133,167 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             ImGui::EndDisabled();
             PropertyLabel("Foam", "Shoreline and crest foam.");
             ImGui::SliderFloat("##Foam", &water.Foam, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        });
+
+    ::UHE::DrawComponents<UIRectComponent>(
+        "UI Rect", entity,
+        [](UIRectComponent& rect)
+        {
+            // Presets for the anchors people use most; the fields stay editable.
+            struct Preset
+            {
+                const char* Name;
+                glm::vec2 Min, Max, Pivot;
+            };
+            static const Preset kPresets[] = {
+                {"Top Left", {0, 0}, {0, 0}, {0, 0}},
+                {"Top", {0.5f, 0}, {0.5f, 0}, {0.5f, 0}},
+                {"Top Right", {1, 0}, {1, 0}, {1, 0}},
+                {"Left", {0, 0.5f}, {0, 0.5f}, {0, 0.5f}},
+                {"Center", {0.5f, 0.5f}, {0.5f, 0.5f}, {0.5f, 0.5f}},
+                {"Right", {1, 0.5f}, {1, 0.5f}, {1, 0.5f}},
+                {"Bottom Left", {0, 1}, {0, 1}, {0, 1}},
+                {"Bottom", {0.5f, 1}, {0.5f, 1}, {0.5f, 1}},
+                {"Bottom Right", {1, 1}, {1, 1}, {1, 1}},
+                {"Stretch", {0, 0}, {1, 1}, {0.5f, 0.5f}},
+                {"Stretch Top", {0, 0}, {1, 0}, {0.5f, 0}},
+                {"Stretch Bottom", {0, 1}, {1, 1}, {0.5f, 1}},
+            };
+            PropertyLabel("Anchor Preset", "Pins the element to a point or edge of its parent (or the screen).");
+            if (ImGui::BeginCombo("##AnchorPreset", "Choose..."))
+            {
+                for (const Preset& preset : kPresets)
+                {
+                    if (ImGui::Selectable(preset.Name))
+                    {
+                        rect.AnchorMin = preset.Min;
+                        rect.AnchorMax = preset.Max;
+                        rect.Pivot = preset.Pivot;
+                        rect.Position = glm::vec2(0.0f);
+                        // Stretched axes start with no margin.
+                        if (preset.Min.x != preset.Max.x)
+                            rect.Size.x = 0.0f;
+                        if (preset.Min.y != preset.Max.y)
+                            rect.Size.y = 0.0f;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            PropertyLabel("Position", "Pixels from the anchor to the pivot (y down).");
+            ImGui::DragFloat2("##UIPosition", glm::value_ptr(rect.Position), 1.0f);
+            PropertyLabel("Size", "Pixels; on a stretched axis, added to the stretched size (negative = margins).");
+            ImGui::DragFloat2("##UISize", glm::value_ptr(rect.Size), 1.0f);
+            PropertyLabel("Anchor Min", "Fractions of the parent: (0,0) top left, (1,1) bottom right.");
+            ImGui::DragFloat2("##AnchorMin", glm::value_ptr(rect.AnchorMin), 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Anchor Max");
+            ImGui::DragFloat2("##AnchorMax", glm::value_ptr(rect.AnchorMax), 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Pivot", "The point of the element that sits at Position.");
+            ImGui::DragFloat2("##Pivot", glm::value_ptr(rect.Pivot), 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Order", "Among siblings: higher draws on top and gets the mouse first.");
+            ImGui::DragInt("##UIOrder", &rect.Order);
+            PropertyLabel("Visible");
+            ImGui::Checkbox("##UIVisible", &rect.Visible);
+        });
+
+    ::UHE::DrawComponents<UIImageComponent>(
+        "UI Image", entity,
+        [](UIImageComponent& image)
+        {
+            PropertyLabel("Color", "Multiplies the image; a button replaces it with its state colours.");
+            ImGui::ColorEdit4("##UIImageColor", glm::value_ptr(image.Color));
+            PropertyLabel("Image", "A texture in the project's assets; empty for a plain box. Drop one here.");
+            char path[512];
+            std::snprintf(path, sizeof(path), "%s", image.TexturePath.c_str());
+            if (ImGui::InputTextWithHint("##UIImagePath", "none", path, sizeof(path),
+                                         ImGuiInputTextFlags_EnterReturnsTrue))
+                image.TexturePath = path;
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("Content_Browser_item"))
+                {
+                    const std::filesystem::path dropped(static_cast<const char*>(payload->Data));
+                    std::string stored = dropped.generic_string();
+                    std::error_code ec;
+                    for (const auto& [scheme, root] : Vfs::Get().GetMounts())
+                    {
+                        const std::filesystem::path relative =
+                            std::filesystem::weakly_canonical(dropped, ec)
+                                .lexically_relative(std::filesystem::weakly_canonical(root, ec));
+                        if (!relative.empty() && *relative.begin() != "..")
+                        {
+                            stored = relative.generic_string();
+                            break;
+                        }
+                    }
+                    image.TexturePath = stored;
+                }
+                ImGui::EndDragDropTarget();
+            }
+            PropertyLabel("Corner Radius", "Pixels.");
+            ImGui::DragFloat("##UICorner", &image.CornerRadius, 0.25f, 0.0f, 500.0f, "%.1f",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Border Width", "Pixels; 0 for none.");
+            ImGui::DragFloat("##UIBorder", &image.BorderWidth, 0.1f, 0.0f, 50.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Border Color");
+            ImGui::ColorEdit4("##UIBorderColor", glm::value_ptr(image.BorderColor));
+        });
+
+    ::UHE::DrawComponents<UITextComponent>(
+        "UI Text", entity,
+        [](UITextComponent& text)
+        {
+            PropertyLabel("Text", "Several lines: press Enter for a new line.");
+            char buffer[1024];
+            std::snprintf(buffer, sizeof(buffer), "%s", text.Text.c_str());
+            if (ImGui::InputTextMultiline("##UIText", buffer, sizeof(buffer), ImVec2(-1.0f, 54.0f)))
+                text.Text = buffer;
+            PropertyLabel("Font Size", "Pixels per line.");
+            ImGui::DragFloat("##UIFontSize", &text.FontSize, 0.25f, 4.0f, 400.0f, "%.1f px",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Color");
+            ImGui::ColorEdit4("##UITextColor", glm::value_ptr(text.Color));
+            const char* alignments[] = {"Left", "Center", "Right"};
+            int align = static_cast<int>(text.Align);
+            PropertyLabel("Align");
+            if (ImGui::Combo("##UIAlign", &align, alignments, 3))
+                text.Align = static_cast<UITextComponent::Alignment>(align);
+            PropertyLabel("Font", "A .ttf in the assets; empty for the engine's font.");
+            char font[512];
+            std::snprintf(font, sizeof(font), "%s", text.FontPath.c_str());
+            if (ImGui::InputTextWithHint("##UIFont", "default", font, sizeof(font),
+                                         ImGuiInputTextFlags_EnterReturnsTrue))
+                text.FontPath = font;
+        });
+
+    ::UHE::DrawComponents<UIButtonComponent>("UI Button", entity,
+                                             [](UIButtonComponent& button)
+                                             {
+                                                 PropertyLabel("Normal");
+                                                 ImGui::ColorEdit4("##UINormal", glm::value_ptr(button.NormalColor));
+                                                 PropertyLabel("Hover");
+                                                 ImGui::ColorEdit4("##UIHover", glm::value_ptr(button.HoverColor));
+                                                 PropertyLabel("Pressed");
+                                                 ImGui::ColorEdit4("##UIPressed", glm::value_ptr(button.PressedColor));
+                                                 PropertyLabel("Interactable");
+                                                 ImGui::Checkbox("##UIInteractable", &button.Interactable);
+                                                 PropertyNote("A click calls OnClick(self) in this entity's script.");
+                                             });
+
+    ::UHE::DrawComponents<UIProgressBarComponent>(
+        "UI Progress Bar", entity,
+        [](UIProgressBarComponent& bar)
+        {
+            PropertyLabel("Value", "0..1; SetValue in a script.");
+            ImGui::SliderFloat("##UIValue", &bar.Value, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Fill");
+            ImGui::ColorEdit4("##UIFill", glm::value_ptr(bar.FillColor));
+            PropertyLabel("Background");
+            ImGui::ColorEdit4("##UIBarBackground", glm::value_ptr(bar.BackgroundColor));
+            PropertyLabel("Corner Radius", "Pixels.");
+            ImGui::DragFloat("##UIBarCorner", &bar.CornerRadius, 0.25f, 0.0f, 100.0f, "%.1f",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Slider", "The mouse drags the value in Play.");
+            ImGui::Checkbox("##UISlider", &bar.Interactable);
         });
 
     ::UHE::DrawComponents<TerrainComponent>(

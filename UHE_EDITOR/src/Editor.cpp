@@ -27,6 +27,7 @@
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHITexture.h"
 #include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Renderer/UIRenderer.h"
 #include "UHE/Renderer3D/Renderer3D.h"
 #include "UHE/Renderer3D/SceneRenderer.h"
 #include "UHE/Scripting/ScriptEngine.h"
@@ -394,9 +395,26 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
     if (!scene.Color.IsValid())
         return;
 
+    // The game UI over the viewport, in edit mode too (a preview of the
+    // layout); it takes the mouse only in Play. The viewport image is shown
+    // flipped (ImGui::Image with swapped v), so the UI is drawn flipped.
+    const bool mouseDown = Input::IsMouseButtonPressed(UHE_MOUSE_BUTTON_LEFT);
+    UI::Pointer pointer;
+    pointer.Active = runtime && m_ViewportPointerInside;
+    pointer.Position = m_ViewportPointer;
+    pointer.Down = mouseDown;
+    pointer.Pressed = mouseDown && !m_UIMouseWasDown;
+    pointer.Released = !mouseDown && m_UIMouseWasDown;
+    m_UIMouseWasDown = mouseDown;
+    m_ActiveScene->UpdateUI(glm::vec2(static_cast<f32>(width), static_cast<f32>(height)), pointer);
+    const FGHandle<FGTexture> color = m_ShowGameUI
+                                          ? UIRenderer::AddPass(*graph, scene.Color, TextureFormat::RGBA8_SRGB, width,
+                                                                height, true, m_ActiveScene->GetUIDrawList())
+                                          : scene.Color;
+
     // Read after the frame: the viewport panel samples the colour, and
     // picking copies one pixel out of the entity IDs.
-    graph->Export(scene.Color);
+    graph->Export(color);
     graph->Export(scene.Entity, {.FinalState = FGState::ShaderRead, .CopySource = true});
 }
 
@@ -1743,6 +1761,12 @@ void Editor::OnImGuiRender()
     int mouseX = (int)mx;
     int mouseY = (int)my;
 
+    // The game UI's mouse, in scene pixels (the scene is the panel times the render scale).
+    m_ViewportPointerInside = mouseX >= 0 && mouseY >= 0 && mouseX < (int)viewportSize.x &&
+                              mouseY < (int)viewportSize.y && ImGui::IsWindowHovered();
+    m_ViewportPointer = glm::vec2(mx * static_cast<f32>(m_SceneWidth) / std::max(viewportSize.x, 1.0f),
+                                  my * static_cast<f32>(m_SceneHeight) / std::max(viewportSize.y, 1.0f));
+
     if (mouseX >= 0 && mouseY >= 0 && mouseX < (int)viewportSize.x && mouseY < (int)viewportSize.y)
     {
         // The entity IDs are the scene's size (panel times render scale) and
@@ -2177,6 +2201,22 @@ void Editor::DrawMainMenuBar()
             CreateEntityFromMenu("Wind", 9);
         if (ImGui::MenuItem("Terrain"))
             CreateEntityFromMenu("Terrain", 10);
+        ImGui::Separator();
+        if (ImGui::BeginMenu("UI"))
+        {
+            // Inside the selected UI element, when one is selected.
+            if (ImGui::MenuItem("Panel"))
+                CreateUIElement(0);
+            if (ImGui::MenuItem("Text"))
+                CreateUIElement(1);
+            if (ImGui::MenuItem("Button"))
+                CreateUIElement(2);
+            if (ImGui::MenuItem("Progress Bar"))
+                CreateUIElement(3);
+            if (ImGui::MenuItem("Slider"))
+                CreateUIElement(4);
+            ImGui::EndMenu();
+        }
         ImGui::EndDisabled();
         ImGui::EndMenu();
     }
@@ -2445,6 +2485,7 @@ void Editor::DrawViewportOverlaysMenu()
     ImGui::Unindent();
     ImGui::EndDisabled();
     ImGui::Checkbox("Light Icons", &overlays.LightIcons);
+    ImGui::Checkbox("Game UI", &m_ShowGameUI);
 
     ImGui::SeparatorText("Viewport");
     ImGui::Checkbox("Navigation Gizmo", &m_ShowNavigationGizmo);
@@ -2815,6 +2856,50 @@ void Editor::CreateEntityFromMenu(const char* name, int componentKind)
             entity.AddComponent<TerrainComponent>();
             break;
         default: break;
+    }
+    m_SceneHireacyPanel.SetSelectedEntity(entity);
+}
+
+void Editor::CreateUIElement(int kind)
+{
+    if (!m_ActiveScene || m_SceneState != SceneState::Edit)
+        return;
+    static constexpr const char* kNames[] = {"Panel", "Text", "Button", "Progress Bar", "Slider"};
+    kind = std::clamp(kind, 0, 4);
+    Entity selected = m_SceneHireacyPanel.GetSelectedEntity();
+    Entity entity = selected && selected.HasComponent<UIRectComponent>()
+                        ? m_ActiveScene->CreateChildEntity(selected, kNames[kind])
+                        : m_ActiveScene->CreateEntity(kNames[kind]);
+    auto& rect = entity.AddComponent<UIRectComponent>();
+    switch (kind)
+    {
+        case 0:
+            rect.Size = {320.0f, 200.0f};
+            entity.AddComponent<UIImageComponent>();
+            break;
+        case 1:
+            rect.Size = {240.0f, 40.0f};
+            entity.AddComponent<UITextComponent>();
+            break;
+        case 2:
+        {
+            rect.Size = {160.0f, 44.0f};
+            auto& image = entity.AddComponent<UIImageComponent>();
+            image.CornerRadius = 8.0f;
+            entity.AddComponent<UIButtonComponent>();
+            auto& text = entity.AddComponent<UITextComponent>();
+            text.Text = "Button";
+            text.FontSize = 20.0f;
+            break;
+        }
+        default:
+        {
+            rect.Size = {240.0f, 18.0f};
+            auto& bar = entity.AddComponent<UIProgressBarComponent>();
+            bar.Value = 0.6f;
+            bar.Interactable = kind == 4;
+            break;
+        }
     }
     m_SceneHireacyPanel.SetSelectedEntity(entity);
 }

@@ -4,9 +4,12 @@
 #include <filesystem>
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
+#include "UHE/Core/input.h"
+#include "UHE/Core/mouseButtonCodes.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/Renderer.h"
+#include "UHE/Renderer/UIRenderer.h"
 #include "UHE/Renderer3D/SceneRenderer.h"
 #include "UHE/Scene/SceneSerializer.h"
 
@@ -185,7 +188,33 @@ void RuntimeLayer::DeclareFrame(Timestep ts)
         return view;
     };
     desc.DrawScene = [scene = m_Scene, ts](FGContext&) { scene->RenderRuntimeScene(ts); };
-    SceneRenderer::AddPasses(*graph, desc);
+    const SceneRenderer::Output output = SceneRenderer::AddPasses(*graph, desc);
+
+    // The game UI over the finished frame, upright in the backbuffer.
+    UpdateUI(backbuffer.Width, backbuffer.Height);
+    if (output.Color.IsValid())
+        UIRenderer::AddPass(*graph, output.Color, backbuffer.Format, backbuffer.Width, backbuffer.Height, false,
+                            m_Scene->GetUIDrawList());
+}
+
+void RuntimeLayer::UpdateUI(u32 width, u32 height)
+{
+    // Window pixels; the backbuffer can differ on a scaled display, so scale to it.
+    const Window& window = Application::Get().GetWindow();
+    const auto [mx, my] = Input::GetMousePosition();
+    const float sx = window.GetWidth() > 0 ? static_cast<float>(width) / static_cast<float>(window.GetWidth()) : 1.0f;
+    const float sy =
+        window.GetHeight() > 0 ? static_cast<float>(height) / static_cast<float>(window.GetHeight()) : 1.0f;
+    const bool down = Input::IsMouseButtonPressed(UHE_MOUSE_BUTTON_LEFT);
+    UI::Pointer pointer;
+    pointer.Position = glm::vec2(mx * sx, my * sy);
+    pointer.Active = mx >= 0.0f && my >= 0.0f && mx < static_cast<float>(window.GetWidth()) &&
+                     my < static_cast<float>(window.GetHeight());
+    pointer.Down = down;
+    pointer.Pressed = down && !m_MouseWasDown;
+    pointer.Released = !down && m_MouseWasDown;
+    m_MouseWasDown = down;
+    m_Scene->UpdateUI(glm::vec2(static_cast<float>(width), static_cast<float>(height)), pointer);
 }
 
 void RuntimeLayer::OnEvent(Event& event)

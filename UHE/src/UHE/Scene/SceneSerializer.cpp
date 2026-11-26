@@ -378,6 +378,64 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::EndMap;
     }
 
+    // Game UI (colours sRGB with alpha; layout results and mouse state are not saved)
+    if (entity.HasComponent<UIRectComponent>())
+    {
+        auto& r = entity.GetComponent<UIRectComponent>();
+        out << YAML::Key << "UIRectComponent" << YAML::BeginMap;
+        out << YAML::Key << "AnchorMin" << YAML::Value << r.AnchorMin;
+        out << YAML::Key << "AnchorMax" << YAML::Value << r.AnchorMax;
+        out << YAML::Key << "Pivot" << YAML::Value << r.Pivot;
+        out << YAML::Key << "Position" << YAML::Value << r.Position;
+        out << YAML::Key << "Size" << YAML::Value << r.Size;
+        out << YAML::Key << "Order" << YAML::Value << r.Order;
+        out << YAML::Key << "Visible" << YAML::Value << r.Visible;
+        out << YAML::EndMap;
+    }
+    if (entity.HasComponent<UIImageComponent>())
+    {
+        auto& i = entity.GetComponent<UIImageComponent>();
+        out << YAML::Key << "UIImageComponent" << YAML::BeginMap;
+        out << YAML::Key << "Color" << YAML::Value << i.Color;
+        out << YAML::Key << "TexturePath" << YAML::Value << i.TexturePath;
+        out << YAML::Key << "CornerRadius" << YAML::Value << i.CornerRadius;
+        out << YAML::Key << "BorderWidth" << YAML::Value << i.BorderWidth;
+        out << YAML::Key << "BorderColor" << YAML::Value << i.BorderColor;
+        out << YAML::EndMap;
+    }
+    if (entity.HasComponent<UITextComponent>())
+    {
+        auto& t = entity.GetComponent<UITextComponent>();
+        out << YAML::Key << "UITextComponent" << YAML::BeginMap;
+        out << YAML::Key << "Text" << YAML::Value << t.Text;
+        out << YAML::Key << "FontSize" << YAML::Value << t.FontSize;
+        out << YAML::Key << "Color" << YAML::Value << t.Color;
+        out << YAML::Key << "Align" << YAML::Value << static_cast<int>(t.Align);
+        out << YAML::Key << "FontPath" << YAML::Value << t.FontPath;
+        out << YAML::EndMap;
+    }
+    if (entity.HasComponent<UIButtonComponent>())
+    {
+        auto& b = entity.GetComponent<UIButtonComponent>();
+        out << YAML::Key << "UIButtonComponent" << YAML::BeginMap;
+        out << YAML::Key << "NormalColor" << YAML::Value << b.NormalColor;
+        out << YAML::Key << "HoverColor" << YAML::Value << b.HoverColor;
+        out << YAML::Key << "PressedColor" << YAML::Value << b.PressedColor;
+        out << YAML::Key << "Interactable" << YAML::Value << b.Interactable;
+        out << YAML::EndMap;
+    }
+    if (entity.HasComponent<UIProgressBarComponent>())
+    {
+        auto& p = entity.GetComponent<UIProgressBarComponent>();
+        out << YAML::Key << "UIProgressBarComponent" << YAML::BeginMap;
+        out << YAML::Key << "Value" << YAML::Value << p.Value;
+        out << YAML::Key << "FillColor" << YAML::Value << p.FillColor;
+        out << YAML::Key << "BackgroundColor" << YAML::Value << p.BackgroundColor;
+        out << YAML::Key << "CornerRadius" << YAML::Value << p.CornerRadius;
+        out << YAML::Key << "Interactable" << YAML::Value << p.Interactable;
+        out << YAML::EndMap;
+    }
+
     // Terrain (colours in sRGB; the mesh and heights are rebuilt on load)
     if (entity.HasComponent<TerrainComponent>())
     {
@@ -467,6 +525,11 @@ static void SerializeRenderSettings(YAML::Emitter& out, const RenderSettings& se
     out << YAML::Key << "ImagePath" << YAML::Value << sky.ImagePath;
     out << YAML::Key << "ImageRotation" << YAML::Value << sky.ImageRotation;
     out << YAML::Key << "AmbientFromSky" << YAML::Value << sky.AmbientFromSky;
+    out << YAML::EndMap;
+
+    out << YAML::Key << "UI" << YAML::BeginMap;
+    out << YAML::Key << "ScaleWithScreen" << YAML::Value << settings.UI.ScaleWithScreen;
+    out << YAML::Key << "ReferenceHeight" << YAML::Value << settings.UI.ReferenceHeight;
     out << YAML::EndMap;
 
     const ShadowSettings& shadows = settings.Shadows;
@@ -563,6 +626,11 @@ static void DeserializeRenderSettings(const YAML::Node& node, RenderSettings& se
     ReadOptional(skyNode, "ImagePath", sky.ImagePath);
     ReadOptional(skyNode, "ImageRotation", sky.ImageRotation);
     ReadOptional(skyNode, "AmbientFromSky", sky.AmbientFromSky);
+
+    const YAML::Node uiNode = node["UI"];
+    ReadOptional(uiNode, "ScaleWithScreen", settings.UI.ScaleWithScreen);
+    ReadOptional(uiNode, "ReferenceHeight", settings.UI.ReferenceHeight);
+    settings.UI.ReferenceHeight = std::clamp(settings.UI.ReferenceHeight, 100.0f, 8640.0f);
 
     const YAML::Node shadowNode = node["Shadows"];
     ShadowSettings& shadows = settings.Shadows;
@@ -1152,6 +1220,56 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             ReadOptional(waterNode, "Foam", wc.Foam);
             // The grid is Resolution^2 cells: a hand-edited 0 or 100000 must not reach the mesh builder.
             wc.Resolution = std::clamp(wc.Resolution, 1, 512);
+        }
+
+        // Game UI: every field optional
+        if (auto node = entityNode["UIRectComponent"])
+        {
+            auto& r = entity.AddComponent<UIRectComponent>();
+            ReadOptional(node, "AnchorMin", r.AnchorMin);
+            ReadOptional(node, "AnchorMax", r.AnchorMax);
+            ReadOptional(node, "Pivot", r.Pivot);
+            ReadOptional(node, "Position", r.Position);
+            ReadOptional(node, "Size", r.Size);
+            ReadOptional(node, "Order", r.Order);
+            ReadOptional(node, "Visible", r.Visible);
+        }
+        if (auto node = entityNode["UIImageComponent"])
+        {
+            auto& i = entity.AddComponent<UIImageComponent>();
+            ReadOptional(node, "Color", i.Color);
+            ReadOptional(node, "TexturePath", i.TexturePath);
+            ReadOptional(node, "CornerRadius", i.CornerRadius);
+            ReadOptional(node, "BorderWidth", i.BorderWidth);
+            ReadOptional(node, "BorderColor", i.BorderColor);
+        }
+        if (auto node = entityNode["UITextComponent"])
+        {
+            auto& t = entity.AddComponent<UITextComponent>();
+            ReadOptional(node, "Text", t.Text);
+            ReadOptional(node, "FontSize", t.FontSize);
+            ReadOptional(node, "Color", t.Color);
+            int align = static_cast<int>(t.Align);
+            ReadOptional(node, "Align", align);
+            t.Align = static_cast<UITextComponent::Alignment>(std::clamp(align, 0, 2));
+            ReadOptional(node, "FontPath", t.FontPath);
+        }
+        if (auto node = entityNode["UIButtonComponent"])
+        {
+            auto& b = entity.AddComponent<UIButtonComponent>();
+            ReadOptional(node, "NormalColor", b.NormalColor);
+            ReadOptional(node, "HoverColor", b.HoverColor);
+            ReadOptional(node, "PressedColor", b.PressedColor);
+            ReadOptional(node, "Interactable", b.Interactable);
+        }
+        if (auto node = entityNode["UIProgressBarComponent"])
+        {
+            auto& p = entity.AddComponent<UIProgressBarComponent>();
+            ReadOptional(node, "Value", p.Value);
+            ReadOptional(node, "FillColor", p.FillColor);
+            ReadOptional(node, "BackgroundColor", p.BackgroundColor);
+            ReadOptional(node, "CornerRadius", p.CornerRadius);
+            ReadOptional(node, "Interactable", p.Interactable);
         }
 
         // Terrain: every field optional

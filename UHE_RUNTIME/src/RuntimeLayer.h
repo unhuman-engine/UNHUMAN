@@ -36,12 +36,15 @@ public:
 private:
     /// @brief Loads \p path and starts it in play mode; @return false (logged) on failure.
     bool LoadScene(const std::filesystem::path& path);
+    /// @brief Lays out the game UI and gives it the mouse.
+    void UpdateUI(u32 width, u32 height);
     /// @brief Declares this frame's scene passes, ending in the backbuffer.
     void DeclareFrame(UHE::Timestep ts);
 
     std::optional<UHE::ProjectInfo> m_Project;
     UHE::Ref<UHE::Scene> m_Scene;
     float m_Time = 0.0f;
+    bool m_MouseWasDown = false; ///< the left button last frame, for the UI's press and release
     uint32_t m_Width = 0;
     uint32_t m_Height = 0;
 };

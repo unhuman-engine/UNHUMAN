@@ -319,6 +319,23 @@ void DrawSkySection(SkySettings& sky)
     EndSection();
 }
 
+void DrawUISection(UISettings& ui)
+{
+    const SectionState section = SectionHeader("Game UI", nullptr);
+    if (section.Reset)
+        ui = UISettings{};
+    if (!section.Open || !BeginSection("##UIProperties", true))
+        return;
+    CheckboxRow("Scale With Screen", ui.ScaleWithScreen,
+                "Lay the UI out at the reference height and scale it to the screen, so it covers the same "
+                "share of any window.");
+    ImGui::BeginDisabled(!ui.ScaleWithScreen);
+    SliderRow("Reference Height", ui.ReferenceHeight, 240.0f, 2160.0f, "%.0f px",
+              "The screen height the UI is designed at.");
+    ImGui::EndDisabled();
+    EndSection();
+}
+
 void DrawShadowSection(ShadowSettings& shadows)
 {
     const SectionState section = SectionHeader("Shadows", &shadows.Enabled);
@@ -475,6 +492,7 @@ void EnvironmentPanel::OnImGuiRender(bool& open)
     RenderSettings& settings = m_Scene->GetRenderSettings();
     DrawEnvironmentSection(settings.Environment);
     DrawSkySection(settings.Sky);
+    DrawUISection(settings.UI);
     DrawShadowSection(settings.Shadows);
     DrawLocalShadowSection(settings.LocalShadows);
     DrawSSAOSection(settings.SSAO);
