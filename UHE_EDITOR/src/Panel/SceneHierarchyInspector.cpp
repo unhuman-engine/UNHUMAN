@@ -490,6 +490,8 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             AddComponentMenuItem<TerrainComponent>(m_SelectionContext, "Terrain");
         if (match("Sequencer"))
             AddComponentMenuItem<SequencerComponent>(m_SelectionContext, "Sequencer");
+        if (match("Joint 3D"))
+            AddComponentMenuItem<Joint3DComponent>(m_SelectionContext, "Joint 3D");
         if (match("UI Rect"))
             AddComponentMenuItem<UIRectComponent>(m_SelectionContext, "UI Rect");
         if (match("UI Image"))
@@ -648,6 +650,97 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             ImGui::SameLine();
             ImGui::Checkbox("Z", &components.AllowedDOFs[5]);
             ImGui::PopID();
+        });
+
+    ::UHE::DrawComponents<Joint3DComponent>(
+        "Joint 3D", entity,
+        [this](Joint3DComponent& joint)
+        {
+            static constexpr const char* kTypes[] = {"Fixed", "Hinge", "Slider", "Ball"};
+            PropertyLabel("Type", "Fixed welds; Hinge rotates about the axis; Slider moves along it; Ball pivots.");
+            int type = static_cast<int>(joint.Type);
+            if (ImGui::Combo("##JointType", &type, kTypes, IM_ARRAYSIZE(kTypes)))
+                joint.Type = static_cast<Joint3DComponent::JointType>(type);
+
+            // The other body: any entity with a 3D rigid body, or the world.
+            PropertyLabel("Connected To", "The other body. World pins this one in place.");
+            std::string current = "World";
+            if (joint.ConnectedEntity != 0)
+            {
+                Entity other = m_Context->GetEntityWithUUID(joint.ConnectedEntity);
+                current = other ? other.GetComponent<TagComponent>().Tag : "(missing)";
+            }
+            if (ImGui::BeginCombo("##JointConnected", current.c_str()))
+            {
+                if (ImGui::Selectable("World", joint.ConnectedEntity == 0))
+                    joint.ConnectedEntity = 0;
+                auto bodies = m_Context->GetRegistry().view<RigidBody3DComponent, TagComponent, IDComponent>();
+                for (auto handle : bodies)
+                {
+                    const u64 uuid = bodies.get<IDComponent>(handle).ID;
+                    if (handle == static_cast<entt::entity>(m_SelectionContext))
+                        continue;
+                    ImGui::PushID(static_cast<int>(uuid & 0x7fffffff));
+                    if (ImGui::Selectable(bodies.get<TagComponent>(handle).Tag.c_str(), joint.ConnectedEntity == uuid))
+                        joint.ConnectedEntity = uuid;
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+
+            DrawVec3Control("Anchor", joint.Anchor);
+            if (joint.Type == Joint3DComponent::JointType::Hinge || joint.Type == Joint3DComponent::JointType::Slider)
+            {
+                DrawVec3Control("Axis", joint.Axis);
+                const bool hinge = joint.Type == Joint3DComponent::JointType::Hinge;
+                PropertyLabel("Limits");
+                ImGui::Checkbox("##JointLimits", &joint.LimitsEnabled);
+                if (joint.LimitsEnabled)
+                {
+                    PropertyLabel(hinge ? "Range (deg)" : "Range (m)");
+                    float range[2] = {hinge ? glm::degrees(joint.LimitMin) : joint.LimitMin,
+                                      hinge ? glm::degrees(joint.LimitMax) : joint.LimitMax};
+                    if (ImGui::DragFloat2("##JointRange", range, hinge ? 0.5f : 0.01f, hinge ? -180.0f : -100.0f,
+                                          hinge ? 180.0f : 100.0f, "%.2f"))
+                    {
+                        joint.LimitMin = hinge ? glm::radians(std::min(range[0], 0.0f)) : std::min(range[0], 0.0f);
+                        joint.LimitMax = hinge ? glm::radians(std::max(range[1], 0.0f)) : std::max(range[1], 0.0f);
+                    }
+                }
+                PropertyLabel(hinge ? "Friction (N m)" : "Friction (N)");
+                ImGui::DragFloat("##JointFriction", &joint.Friction, 0.01f, 0.0f, 10000.0f);
+
+                static constexpr const char* kMotors[] = {"Off", "Velocity", "Position"};
+                PropertyLabel("Motor", "Scripts drive it with SetJointMotor; read back with GetJointPosition.");
+                int motor = static_cast<int>(joint.Motor);
+                if (ImGui::Combo("##JointMotor", &motor, kMotors, IM_ARRAYSIZE(kMotors)))
+                    joint.Motor = static_cast<Joint3DComponent::MotorMode>(motor);
+                if (joint.Motor != Joint3DComponent::MotorMode::Off)
+                {
+                    const bool velocity = joint.Motor == Joint3DComponent::MotorMode::Velocity;
+                    PropertyLabel(velocity ? (hinge ? "Target (rad/s)" : "Target (m/s)")
+                                           : (hinge ? "Target (rad)" : "Target (m)"));
+                    ImGui::DragFloat("##JointTarget", &joint.MotorTarget, 0.01f);
+                    PropertyLabel(hinge ? "Max Torque" : "Max Force");
+                    ImGui::DragFloat("##JointMaxForce", &joint.MotorMaxForce, 0.5f, 0.0f, 1e6f);
+                    if (!velocity)
+                    {
+                        PropertyLabel("Stiffness (Hz)");
+                        ImGui::DragFloat("##JointFrequency", &joint.MotorFrequency, 0.05f, 0.0f, 100.0f);
+                        PropertyLabel("Damping");
+                        ImGui::DragFloat("##JointDamping", &joint.MotorDamping, 0.01f, 0.0f, 10.0f);
+                    }
+                }
+                if (joint.RuntimeConstraint != nullptr)
+                {
+                    // In Play: the encoder, read the way a script reads it.
+                    PropertyLabel("Encoder");
+                    if (hinge)
+                        ImGui::Text("%.1f deg, %.2f rad/s", glm::degrees(joint.RuntimePosition), joint.RuntimeVelocity);
+                    else
+                        ImGui::Text("%.3f m, %.3f m/s", joint.RuntimePosition, joint.RuntimeVelocity);
+                }
+            }
         });
 
     ::UHE::DrawComponents<BoxCollider3DComponent>(

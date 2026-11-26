@@ -476,6 +476,22 @@ void DrawWindSection(WindSettings& wind)
 }
 } // namespace
 
+void DrawPhysicsSection(PhysicsSettings& physics)
+{
+    const SectionState section = SectionHeader("Physics", nullptr);
+    if (section.Reset)
+        physics = PhysicsSettings{};
+    if (!section.Open || !BeginSection("##PhysicsProperties", true))
+        return;
+    SliderRow("Tick Rate", physics.TickRate, 0.0f, 1000.0f, physics.TickRate > 0.0f ? "%.0f Hz" : "engine (120 Hz)",
+              "Simulation ticks per second, applied when Play starts. Stiff robot joints want 240-1000 Hz.");
+    PropertyLabel("Collision Steps", "Sub-steps per tick (1-8): more for stiff joint chains and fast bodies.");
+    ImGui::SliderInt("##CollisionSteps", &physics.CollisionSteps, 1, 8, "%d", kClamp);
+    PropertyLabel("Gravity", "m/s^2, world space.");
+    ImGui::DragFloat3("##Gravity", &physics.Gravity.x, 0.05f, -100.0f, 100.0f, "%.2f");
+    EndSection();
+}
+
 void EnvironmentPanel::OnImGuiRender(bool& open)
 {
     UHE_PROFILE_FUNCTION();
@@ -510,6 +526,7 @@ void EnvironmentPanel::OnImGuiRender(bool& open)
     DrawSSAOSection(settings.SSAO);
     DrawBloomSection(settings.Bloom);
     DrawWindSection(settings.Wind);
+    DrawPhysicsSection(m_Scene->GetPhysicsSettings());
 
     ImGui::End();
 }
