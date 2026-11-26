@@ -195,7 +195,16 @@ static vk::SamplerAddressMode ToVkAddressMode(SamplerDesc::Wrap wrap)
 // every sample, which corrupts them.
 static vk::Format ToVkTextureFormat(SamplerDesc::ColorSpace colorSpace)
 {
-    return colorSpace == SamplerDesc::ColorSpace::Linear ? vk::Format::eR8G8B8A8Unorm : vk::Format::eR8G8B8A8Srgb;
+    switch (colorSpace)
+    {
+        case SamplerDesc::ColorSpace::Linear:
+            return vk::Format::eR8G8B8A8Unorm;
+        case SamplerDesc::ColorSpace::HalfFloat:
+            return vk::Format::eR16G16B16A16Sfloat;
+        case SamplerDesc::ColorSpace::SRGB:
+            break;
+    }
+    return vk::Format::eR8G8B8A8Srgb;
 }
 
 void VulkanTexture::CreateTexture(VulkanDevice& device, const void* pixelData, u32 width, u32 height, size_t dataSize)

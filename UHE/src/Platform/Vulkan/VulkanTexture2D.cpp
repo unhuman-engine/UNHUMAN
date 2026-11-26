@@ -1,7 +1,10 @@
 #include "uhepch.h"
 #include "VulkanTexture2D.h"
+#include <algorithm>
 #include <fstream>
+#include <glm/gtc/packing.hpp>
 #include <stb_image.h>
+#include <vector>
 #include "Platform/Vulkan/VulkanDevice.h"
 #include "UHE/Renderer/KTX2.h"
 #include "UHE/Renderer/Renderer.h"
@@ -80,6 +83,33 @@ VulkanTexture2D::VulkanTexture2D(const std::string& path, const RHI::SamplerDesc
 
     int width, height, channels;
     stbi_set_flip_vertically_on_load(1);
+
+    // Radiance .hdr: floats, kept above 1 (a sky's sun is thousands), as half
+    // floats. stbi_load would tone them down to bytes.
+    if (stbi_is_hdr(path.c_str()))
+    {
+        float* pixels = stbi_loadf(path.c_str(), &width, &height, &channels, 4);
+        if (pixels)
+        {
+            m_Width = width;
+            m_Height = height;
+            const size_t count = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+            std::vector<u16> halves(count);
+            for (size_t i = 0; i < count; ++i)
+                halves[i] = glm::packHalf1x16(std::min(pixels[i], 65000.0f));
+            stbi_image_free(pixels);
+            RHI::SamplerDesc hdrSampler = sampler;
+            hdrSampler.colorSpace = RHI::SamplerDesc::ColorSpace::HalfFloat;
+            m_VulkanTexture = CreateRef<RHI::VULKAN::VulkanTexture>();
+            m_VulkanTexture->SetSamplerDesc(hdrSampler);
+            auto* vulkanDevice = static_cast<RHI::VULKAN::VulkanDevice*>(&Renderer::GetDevice());
+            m_VulkanTexture->CreateTexture(*vulkanDevice, halves.data(), m_Width, m_Height,
+                                           halves.size() * sizeof(u16));
+            return;
+        }
+        UHE_CORE_ERROR("Failed to load HDR image: {0}", path);
+    }
+
     stbi_uc* data = stbi_load(path.c_str(), &width, &height, &channels, 4);
 
     if (data)
