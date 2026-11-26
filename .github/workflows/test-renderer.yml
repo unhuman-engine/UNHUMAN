@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      renderdoc_capture:
+        description: "Also capture Sandbox frame 30 with RenderDoc and upload the .rdc"
+        type: boolean
+        default: false
 
 jobs:
   test-asan:
@@ -182,4 +187,52 @@ jobs:
           name: golden-image
           path: golden-results/
           retention-days: 14
+          if-no-files-found: ignore
+
+      # Optional, manual runs only: the same deterministic frame the golden
+      # image checks, as a RenderDoc capture to open with qrenderdoc. Every
+      # frame graph pass is a labelled region and resources carry their names
+      # (VK_EXT_debug_utils). Never gates the job: RenderDoc inside an ASan
+      # process is not a supported combination.
+      - name: RenderDoc capture (Sandbox frame 30)
+        if: github.event_name == 'workflow_dispatch' && inputs.renderdoc_capture
+        continue-on-error: true
+        shell: bash
+        run: |
+          OUT_DIR="$PWD/bin/Debug-linux-x64-address"
+          RESULTS="$PWD/renderdoc-capture"
+          mkdir -p "$RESULTS"
+          RD_VERSION=1.46
+          if curl -fsSL "https://renderdoc.org/stable/${RD_VERSION}/renderdoc_${RD_VERSION}.tar.gz" -o /tmp/renderdoc.tar.gz; then
+            tar -xzf /tmp/renderdoc.tar.gz -C /tmp
+          else
+            sudo apt-get install -y renderdoc
+          fi
+          RD_LIB=$(find /tmp/renderdoc_* /usr/lib -name librenderdoc.so 2>/dev/null | head -n 1)
+          [ -n "$RD_LIB" ] || { echo "librenderdoc.so not found"; exit 1; }
+          export LD_LIBRARY_PATH="$(dirname "$RD_LIB"):${LD_LIBRARY_PATH:-}"
+
+          export VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          export UHE_FIXED_TIMESTEP=0.016666667
+          export UHE_CAPTURE_FRAME=40
+          export UHE_CAPTURE_PATH="$RESULTS/frame40.png"
+          export ASAN_OPTIONS="detect_leaks=0"
+          Xvfb :97 -screen 0 1920x1080x24 &
+          XVFB_PID=$!
+          trap 'kill $XVFB_PID 2>/dev/null || true' EXIT
+          export DISPLAY=:97
+          for i in $(seq 1 50); do [ -S /tmp/.X11-unix/X97 ] && break; sleep 0.2; done
+
+          (cd "$OUT_DIR" && timeout 300s ./Sandbox -renderdoc -renderdoc-frame 30 \
+            -renderdoc-out "$RESULTS/sandbox" > "$RESULTS/sandbox.log" 2>&1) || true
+          grep -E "RenderDoc" "$RESULTS/sandbox.log" || true
+          ls "$RESULTS"/*.rdc
+
+      - name: Upload RenderDoc capture
+        if: github.event_name == 'workflow_dispatch' && inputs.renderdoc_capture
+        uses: actions/upload-artifact@v4
+        with:
+          name: renderdoc-capture
+          path: renderdoc-capture/
+          retention-days: 7
           if-no-files-found: ignore
