@@ -94,6 +94,12 @@ here. Follow them; if a rule is wrong, change it here first.
   support; shadows, ambient, occlusion and wind are one storage buffer read
   through `frameDataIndex`. `Basic3D.slang` and `Water.slang` each declare its
   layout, so a field added to the C++ struct is added to both.
+- **A cutout is decided by `MaskAlpha`, in every pass that draws it.** The
+  depth prepass, the shadow maps and the colour pass of `Basic3D.slang` all
+  discard a MASK pixel through it: a pass that tests the raw alpha disagrees
+  with the others and leaves holes or halos. It scales alpha by the sampled
+  mip level, because mips average thin cutouts (needles, blades) below the
+  cutoff and distant foliage thinned out into dots.
 - **Every write is followed by a barrier.** Two passes rendering into one
   attachment in a row are separate rendering scopes; the compiler orders them
   even when the layout does not change, and attachment access includes the

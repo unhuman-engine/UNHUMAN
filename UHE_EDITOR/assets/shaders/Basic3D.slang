@@ -206,6 +206,25 @@ float4 SampleSlot(MaterialGPU m, int slot, float2 uv)
     return u_Textures[s.index.x].Sample(t);
 }
 
+/// Alpha of a MASK material, kept at its full-resolution coverage in the distance.
+/// Mip levels average the alpha of thin cutouts (needles, grass blades) down
+/// below the cutoff, so foliage thinned out into dots the farther it was. The
+/// alpha is scaled up by the mip level the hardware samples (Golus's
+/// "anti-aliased alpha test"), which keeps the silhouette as dense as up close.
+float MaskAlpha(MaterialGPU m, float alpha, float2 uv)
+{
+    GPUSlot s = m.slots[0];
+    if (s.index.x < 0)
+        return alpha;
+    uint w, h;
+    u_Textures[s.index.x].GetDimensions(w, h);
+    const float2 texel = uv * s.rotationScale.zw * float2(w, h);
+    const float2 dx = ddx(texel);
+    const float2 dy = ddy(texel);
+    const float mip = max(0.5 * log2(max(dot(dx, dx), dot(dy, dy))), 0.0);
+    return alpha * (1.0 + mip * 0.25);
+}
+
 // Schlick fresnel with the glTF F0/F90 split.
 float3 FresnelSchlick(float cosTheta, float3 F0, float3 F90)
 {
@@ -564,7 +583,7 @@ void fragmentMain(VertexOutput input)
             alpha *= SampleSlot(m, 0, input.v_TexCoord).a;
         if (pc.useVertexColor == 1)
             alpha *= input.v_Color.a;
-        if (alpha < m.alphaCutoff)
+        if (MaskAlpha(m, alpha, input.v_TexCoord) < m.alphaCutoff)
             discard;
     }
 }
@@ -600,7 +619,7 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
     // BLEND draws in the sorted transparent pass without writing depth, so it
     // keeps its alpha; only a fully invisible pixel is dropped, so it does not
     // take the picking ID of what lies behind it.
-    if (m.flags.x == 1 && baseColor.a < m.alphaCutoff)
+    if (m.flags.x == 1 && MaskAlpha(m, baseColor.a, input.v_TexCoord) < m.alphaCutoff)
         discard;
     if (m.flags.x == 2 && baseColor.a < 1.0 / 255.0)
         discard;
