@@ -202,6 +202,23 @@ public:
         manifest.ProjectFiles.assign(m_Files[kProject].begin(), m_Files[kProject].end());
         manifest.EngineFiles.assign(m_Files[kEngine].begin(), m_Files[kEngine].end());
         manifest.Warnings = std::move(m_Warnings);
+        // Every model, with the dependencies nothing but models uses.
+        for (const int root : {kProject, kEngine})
+        {
+            auto& models = root == kProject ? manifest.ProjectModelFiles : manifest.EngineModelFiles;
+            for (const fs::path& file : m_Files[root])
+            {
+                const std::string extension = Lower(file.extension().string());
+                if (extension != ".gltf" && extension != ".glb")
+                    continue;
+                std::vector<fs::path>& only = models[file];
+                for (const fs::path& dependency : m_ModelDependencies[root][file])
+                {
+                    if (!m_Direct[root].contains(dependency))
+                        only.push_back(dependency);
+                }
+            }
+        }
         return manifest;
     }
 
@@ -210,7 +227,9 @@ private:
     static constexpr int kEngine = 1;
 
     /// Queues \p relative under root \p root (and the licences beside it) unless it is already in.
-    void Add(int root, const fs::path& path)
+    /// \p fromModel: a glTF's buffer or image; anything else is used directly and
+    /// ships even when every model is cooked.
+    void Add(int root, const fs::path& path, bool fromModel = false)
     {
         // Relative to its root and inside it: the export writes it to out / root / path,
         // and a path climbing out (a symlink resolved to its target) would land outside.
@@ -222,6 +241,8 @@ private:
         }
         const fs::path relative = *inside;
         std::error_code ec;
+        if (!fromModel)
+            m_Direct[root].insert(relative);
         if (!fs::is_regular_file(m_Roots[root] / relative, ec) || !m_Files[root].insert(relative).second)
             return;
         m_Pending.emplace_back(root, relative);
@@ -331,7 +352,10 @@ private:
                 const std::optional<fs::path> dependency = Inside(relative.parent_path() / DecodeUri(uri));
                 std::error_code ec;
                 if (dependency && fs::is_regular_file(m_Roots[root] / *dependency, ec))
-                    Add(root, *dependency);
+                {
+                    Add(root, *dependency, true);
+                    m_ModelDependencies[root][relative].push_back(*dependency);
+                }
                 else
                     Warn(relative, "points at '" + uri + "', which is missing");
             }
@@ -363,6 +387,8 @@ private:
     std::array<std::set<fs::path>, 2> m_Files;
     std::array<std::set<fs::path>, 2> m_LicenceFolders;
     std::vector<std::pair<int, fs::path>> m_Pending;
+    std::set<fs::path> m_Direct[2]; ///< referenced by something other than a model
+    std::map<fs::path, std::vector<fs::path>> m_ModelDependencies[2];
     std::vector<fs::path> m_ExternalScenes;
     std::vector<std::string> m_Warnings;
 };
@@ -599,11 +625,63 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
         AssetManifest manifest =
             CollectAssets(project.AssetPath, options.EngineAssets,
                           startOutsideAssets ? std::vector<fs::path>{startScene} : std::vector<fs::path>{});
-        for (const fs::path& file : manifest.EngineFiles)
-            copy.File(options.EngineAssets / file, out / "assets" / file);
-        for (const fs::path& file : manifest.ProjectFiles)
-            copy.File(project.AssetPath / file, out / Project::kAssetFolderName / file);
         report.Warnings = std::move(manifest.Warnings);
+        // Models ship cooked: the cook replaces the glTF and the files only
+        // models use, unless a model that also uses one could not be cooked.
+        std::set<fs::path> skipped[2];
+        if (options.CookModel)
+        {
+            const auto cookRoot = [&](int root, const std::map<fs::path, std::vector<fs::path>>& models,
+                                      const fs::path& from, const fs::path& to)
+            {
+                std::map<fs::path, int> uncookedUsers;
+                std::set<fs::path> cooked;
+                for (const auto& [model, files] : models)
+                {
+                    // Model::CookedPathFor: the source name plus ".uhemodel".
+                    const fs::path target = to / (model.string() + ".uhemodel");
+                    std::error_code ec;
+                    fs::create_directories(target.parent_path(), ec);
+                    std::string why;
+                    if (options.CookModel(from / model, target, why))
+                    {
+                        cooked.insert(model);
+                        ++report.ModelsCooked;
+                        report.BytesCopied += fs::file_size(target, ec);
+                    }
+                    else
+                    {
+                        report.Warnings.push_back(model.generic_string() + " was not cooked (" + why +
+                                                  "); it ships as glTF");
+                        for (const fs::path& file : files)
+                            ++uncookedUsers[file];
+                    }
+                }
+                for (const auto& [model, files] : models)
+                {
+                    if (!cooked.contains(model))
+                        continue;
+                    skipped[root].insert(model);
+                    for (const fs::path& file : files)
+                    {
+                        if (uncookedUsers[file] == 0)
+                            skipped[root].insert(file);
+                    }
+                }
+            };
+            cookRoot(0, manifest.ProjectModelFiles, project.AssetPath, out / Project::kAssetFolderName);
+            cookRoot(1, manifest.EngineModelFiles, options.EngineAssets, out / "assets");
+        }
+        for (const fs::path& file : manifest.EngineFiles)
+        {
+            if (!skipped[1].contains(file))
+                copy.File(options.EngineAssets / file, out / "assets" / file);
+        }
+        for (const fs::path& file : manifest.ProjectFiles)
+        {
+            if (!skipped[0].contains(file))
+                copy.File(project.AssetPath / file, out / Project::kAssetFolderName / file);
+        }
     }
 
     {

@@ -1606,6 +1606,7 @@ void Editor::ExportGame()
     // The runtime is built next to the editor, into the same folder.
     options.RuntimeDir = CommandLine::GetExecutablePath().parent_path();
     options.EngineAssets = FileSystem::Get().GetRootPath() / "assets";
+    options.CookModel = RD3d::CookModelFile; // the game loads cooked models, never glTF
     const ExportReport report = GameExporter::Export(*m_Project, options);
     for (const std::string& warning : report.Warnings)
         UHE_CORE_WARN("Export: {0}", warning);

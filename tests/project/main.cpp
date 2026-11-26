@@ -451,6 +451,37 @@ int main()
         report = GameExporter::Export(pond, options);
         Check(report.Ok, "export: exporting again over a previous export works");
 
+        // Cooking: a model ships as <model>.uhemodel, and the files only it
+        // used do not; a model that fails to cook ships as it is, with its files.
+        {
+            ExportOptions cooking = options;
+            cooking.OutputDir = sandbox / "out_cooked";
+            cooking.CookModel = [](const fs::path& source, const fs::path& cooked, std::string& why)
+            {
+                if (source.filename() == "hero.glb")
+                {
+                    why = "a fake failure";
+                    return false;
+                }
+                WriteFile(cooked, "cooked " + source.filename().string());
+                return true;
+            };
+            const ExportReport cookedReport = GameExporter::Export(pond, cooking);
+            const fs::path game = cooking.OutputDir;
+            Check(cookedReport.Ok && cookedReport.ModelsCooked == 1 &&
+                      fs::exists(game / "Assets/Models/Ground.gltf.uhemodel") &&
+                      !fs::exists(game / "Assets/Models/Ground.gltf"),
+                  "export: a cooked model ships as its cook, not as glTF");
+            Check(!fs::exists(game / "Assets/Models/Ground Mesh.bin") &&
+                      !fs::exists(game / "Assets/Textures/grass.png"),
+                  "export: the buffer and image only the cooked model used do not ship");
+            Check(fs::exists(game / "Assets/Textures/rock.png"), "export: an image a script names still ships");
+            Check(fs::exists(game / "assets/model/hero.glb") && !fs::exists(game / "assets/model/hero.glb.uhemodel") &&
+                      std::any_of(cookedReport.Warnings.begin(), cookedReport.Warnings.end(), [](const std::string& w)
+                                  { return w.find("hero.glb was not cooked") != std::string::npos; }),
+                  "export: a model that fails to cook ships as glTF, with a warning");
+        }
+
         WriteFile(sandbox / "notes/todo.txt", "mine");
         options.OutputDir = sandbox / "notes";
         report = GameExporter::Export(pond, options);

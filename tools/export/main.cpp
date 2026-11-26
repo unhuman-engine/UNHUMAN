@@ -1,7 +1,11 @@
 // uhe_export: writes a project out as a standalone game, without the editor.
 //
 //   uhe_export --project <dir> --out <dir> [--runtime-dir <dir>] [--engine-assets <dir>] [--all-assets]
+//              [--no-cook]
 //
+// Models ship cooked (`<model>.uhemodel`, Model::SaveCooked) in place of the
+// glTF and the files only it uses, so the game never parses glTF; --no-cook
+// ships them as they are.
 // Only the assets the project's scenes and scripts reference are copied;
 // --all-assets copies every file, for a game that builds asset paths at run time.
 // The same GameExporter as the editor's File > Export Game. Defaults: the
@@ -13,19 +17,22 @@
 #include <string>
 #include "UHE/AssetsManager/GameExporter.h"
 #include "UHE/AssetsManager/Project.h"
+#include "UHE/Renderer3D/LoadModel.h"
 
 namespace fs = std::filesystem;
 
 int main(int argc, char** argv)
 {
     std::string project, out, runtimeDir, engineAssets;
-    bool allAssets = false, usage = false;
+    bool allAssets = false, usage = false, cook = true;
     for (int i = 1; i < argc; ++i)
     {
         const std::string key = argv[i];
         const bool hasValue = i + 1 < argc;
         if (key == "--all-assets")
             allAssets = true;
+        else if (key == "--no-cook")
+            cook = false;
         else if (key == "--project" && hasValue)
             project = argv[++i];
         else if (key == "--out" && hasValue)
@@ -40,7 +47,7 @@ int main(int argc, char** argv)
     if (usage || project.empty() || out.empty())
     {
         std::fprintf(stderr, "usage: uhe_export --project <dir> --out <dir> [--runtime-dir <dir>] "
-                             "[--engine-assets <dir>] [--all-assets]\n");
+                             "[--engine-assets <dir>] [--all-assets] [--no-cook]\n");
         return 2;
     }
 
@@ -65,6 +72,8 @@ int main(int argc, char** argv)
         options.EngineAssets = fs::is_directory(beside / "shaders", ec) ? beside : fs::path(UHE_ENGINE_ASSETS);
     }
     options.AllAssets = allAssets;
+    if (cook)
+        options.CookModel = UHE::RD3d::CookModelFile;
     const UHE::ExportReport report = UHE::GameExporter::Export(info, options);
     for (const std::string& message : report.Warnings)
         std::fprintf(stderr, "uhe_export: warning: %s\n", message.c_str());
@@ -72,7 +81,8 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "uhe_export: %s\n", message.c_str());
     if (!report.Ok)
         return 1;
-    std::printf("uhe_export: %s -> %s (%zu files, %ju MB)\n", info.Name.c_str(), report.Executable.string().c_str(),
-                report.FilesCopied, static_cast<std::uintmax_t>(report.BytesCopied / (std::uintmax_t{1024} * 1024)));
+    std::printf("uhe_export: %s -> %s (%zu files, %zu models cooked, %ju MB)\n", info.Name.c_str(),
+                report.Executable.string().c_str(), report.FilesCopied, report.ModelsCooked,
+                static_cast<std::uintmax_t>(report.BytesCopied / (std::uintmax_t{1024} * 1024)));
     return 0;
 }

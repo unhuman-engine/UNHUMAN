@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
 #include "UHE/AssetsManager/Project.h"
@@ -20,6 +22,14 @@ struct ExportOptions
     /// Copy every project and engine asset instead of what the scenes and
     /// scripts reference: for a game that builds asset paths at run time.
     bool AllAssets = false;
+    /**
+     * Cooks the glTF/GLB model at the first path into the cooked file at the
+     * second (Model::SaveCooked); false with a reason when it cannot. When
+     * set, each referenced model ships as `<model>.uhemodel` instead of the
+     * glTF and the buffers and images only it uses, and the game never parses
+     * glTF. Unset (tests, tools without a renderer): models ship as they are.
+     */
+    std::function<bool(const std::filesystem::path&, const std::filesystem::path&, std::string&)> CookModel;
 };
 
 /// @brief The files a game reads, found from its scenes and scripts (GameExporter::CollectAssets).
@@ -28,6 +38,9 @@ struct AssetManifest
     std::vector<std::filesystem::path> ProjectFiles; ///< relative to the project's Assets/, sorted
     std::vector<std::filesystem::path> EngineFiles;  ///< relative to the engine asset folder, sorted
     std::vector<std::string> Warnings;               ///< references the game will not be able to load
+    /// Per model (.gltf/.glb, as listed above): its buffers and images that nothing else references.
+    std::map<std::filesystem::path, std::vector<std::filesystem::path>> ProjectModelFiles;
+    std::map<std::filesystem::path, std::vector<std::filesystem::path>> EngineModelFiles;
 };
 
 /// @brief What an export did, or why it stopped.
@@ -38,6 +51,7 @@ struct ExportReport
     std::vector<std::string> Warnings; ///< the export finished, but these references will not load
     std::size_t FilesCopied = 0;
     std::uintmax_t BytesCopied = 0;
+    std::size_t ModelsCooked = 0;     ///< shipped as .uhemodel (ExportOptions::CookModel)
     std::filesystem::path Executable; ///< the game's executable, when Ok
 };
 
