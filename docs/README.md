@@ -17,7 +17,8 @@ working tree.
 | [architecture/](architecture/) | Designs for subsystems that are not fully implemented |
 | [backlog/renderer.md](backlog/renderer.md) | Vulkan renderer status, mirroring issue #7 |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Code style, workflow and commit conventions |
-| [../readme.md](../readme.md) | Public overview and build instructions |
+| [../readme.md](../readme.md) | Public overview |
+| [BUILDING.md](BUILDING.md) | Build instructions |
 
 ## Architecture documents
 
