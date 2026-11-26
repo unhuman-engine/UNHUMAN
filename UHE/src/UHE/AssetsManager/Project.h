@@ -21,8 +21,8 @@ namespace UHE
  * @brief The window an exported game opens (the `Window` block of the manifest).
  *
  * The runtime creates its window from these; the player can still override
- * the mode and size on the command line (-windowed, -borderless, -fullscreen,
- * -width, -height).
+ * the mode, size and VSync on the command line (-windowed, -borderless,
+ * -fullscreen, -width, -height, -vsync on|off).
  */
 struct UHE_API ProjectWindowSettings
 {
@@ -62,6 +62,25 @@ public:
     // Accepts either a project directory or the manifest path itself.
     [[nodiscard]] static std::filesystem::path ManifestPath(const std::filesystem::path& path);
     [[nodiscard]] static bool IsProject(const std::filesystem::path& path);
+
+    /**
+     * @brief The one spelling of a project folder: absolute, normalized, with
+     *        no trailing separator and without the manifest's file name.
+     *
+     * Recent lists and comparisons use it, so "projects/Snake",
+     * "/repo/projects/Snake/" and ".../Snake/Project.uheproject" are one project.
+     */
+    [[nodiscard]] static std::filesystem::path NormalizeRoot(const std::filesystem::path& path);
+
+    /**
+     * @brief Why a new project called \p name cannot be created in \p parent,
+     *        or an empty string when it can.
+     *
+     * The name becomes a folder: it must not be empty, ".", "..", start or end
+     * with a space, or hold a path separator or a character Windows forbids in
+     * file names. The folder must not exist yet, or be empty.
+     */
+    [[nodiscard]] static std::string CheckNewProject(const std::filesystem::path& parent, const std::string& name);
 
     // Writes <root>/Project.uheproject and creates <root>/Assets. Fails when a
     // manifest is already there or the directories cannot be created.

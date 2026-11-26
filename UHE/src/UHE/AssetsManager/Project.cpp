@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <string_view>
 #include <system_error>
 #include <yaml-cpp/yaml.h>
 #include "UHE/AssetsManager/VfsSystem.h"
@@ -39,6 +40,52 @@ bool Project::IsProject(const std::filesystem::path& path)
     return !manifest.empty() && std::filesystem::is_regular_file(manifest, ec);
 }
 
+std::filesystem::path Project::NormalizeRoot(const std::filesystem::path& path)
+{
+    if (path.empty())
+        return {};
+    std::filesystem::path root = path;
+    if (root.filename() == kManifestName)
+        root = root.parent_path();
+    std::error_code ec;
+    root = std::filesystem::absolute(root, ec).lexically_normal();
+    // lexically_normal keeps a trailing separator ("a/b/"): drop it, so the
+    // two spellings of a folder compare equal.
+    if (!root.has_filename() && root.has_relative_path())
+        root = root.parent_path();
+    return root;
+}
+
+std::string Project::CheckNewProject(const std::filesystem::path& parent, const std::string& name)
+{
+    if (name.empty())
+        return "Enter a name";
+    if (name == "." || name == "..")
+        return "'" + name + "' is not a folder name";
+    if (name.front() == ' ' || name.back() == ' ' || name.back() == '.')
+        return "The name cannot start or end with a space, or end with a dot";
+    for (const char c : name)
+    {
+        if (std::string_view("/\\:*?\"<>|").find(c) != std::string_view::npos || static_cast<unsigned char>(c) < 32)
+            return std::string("The name cannot contain '") + c + "'";
+    }
+    if (parent.empty())
+        return "Choose a folder to create the project in";
+
+    std::error_code ec;
+    const std::filesystem::path root = NormalizeRoot(parent / name);
+    if (std::filesystem::exists(root, ec))
+    {
+        if (!std::filesystem::is_directory(root, ec))
+            return "'" + root.string() + "' is a file";
+        if (IsProject(root))
+            return "'" + root.string() + "' is already a project; open it instead";
+        if (std::filesystem::directory_iterator(root, ec) != std::filesystem::directory_iterator())
+            return "'" + root.string() + "' already has files in it";
+    }
+    return {};
+}
+
 bool Project::EnsureAssetFolder(const ProjectInfo& info, std::string* error)
 {
     if (info.RootPath.empty())
@@ -71,7 +118,7 @@ bool Project::Create(const std::filesystem::path& root, const std::string& name,
     }
 
     std::error_code ec;
-    const std::filesystem::path absoluteRoot = std::filesystem::absolute(root, ec).lexically_normal();
+    const std::filesystem::path absoluteRoot = NormalizeRoot(root);
     const std::filesystem::path manifest = ManifestPath(absoluteRoot);
 
     if (std::filesystem::exists(manifest, ec))
@@ -129,7 +176,9 @@ bool Project::Load(const std::filesystem::path& path, ProjectInfo& out, std::str
     }
 
     ProjectInfo info;
-    info.RootPath = manifest.parent_path();
+    // Absolute: a relative root ("projects/Snake" from -project) would follow
+    // the working directory and end up in the recent list that way.
+    info.RootPath = NormalizeRoot(manifest.parent_path());
     info.AssetPath = info.RootPath / kAssetFolderName;
     // A manifest without a name still opens: fall back to the folder name.
     info.Name = project["Name"] ? project["Name"].as<std::string>() : info.RootPath.filename().string();

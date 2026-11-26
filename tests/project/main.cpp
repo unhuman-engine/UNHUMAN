@@ -83,6 +83,44 @@ int main()
               fallback.Window.Mode == WindowMode::Windowed && fallback.Window.VSync && fallback.Window.Title.empty(),
           "window: a manifest without a Window block gets the defaults");
 
+    // ── one spelling per project folder ─────────────────────────────────────
+    {
+        const fs::path root = Project::NormalizeRoot(gameRoot);
+        Check(root.is_absolute(), "normalize: absolute");
+        Check(Project::NormalizeRoot(gameRoot.string() + "/") == root, "normalize: a trailing slash is dropped");
+        Check(Project::NormalizeRoot(gameRoot / Project::kManifestName) == root, "normalize: the manifest path too");
+        Check(Project::NormalizeRoot(gameRoot / "Assets" / "..") == root, "normalize: dot-dot is resolved");
+        const fs::path previous = fs::current_path();
+        fs::current_path(sandbox);
+        ProjectInfo relative;
+        Check(Project::Load("GameSnake", relative, &error) && relative.RootPath == root &&
+                  relative.AssetPath == root / Project::kAssetFolderName,
+              "load: a relative path gives an absolute root");
+        Check(Project::NormalizeRoot("GameSnake") == root, "normalize: relative to the working directory");
+        fs::current_path(previous);
+    }
+
+    // ── checking a new project's name and folder ────────────────────────────
+    {
+        const fs::path parent = sandbox / "new_projects";
+        fs::create_directories(parent);
+        Check(Project::CheckNewProject(parent, "My Game").empty(), "new: a plain name in an empty spot is fine");
+        Check(!Project::CheckNewProject(parent, "").empty(), "new: an empty name is refused");
+        Check(!Project::CheckNewProject(parent, "a/b").empty() && !Project::CheckNewProject(parent, "a\\b").empty(),
+              "new: separators are refused");
+        Check(!Project::CheckNewProject(parent, "What?").empty() && !Project::CheckNewProject(parent, "x:y").empty(),
+              "new: characters Windows forbids are refused");
+        Check(!Project::CheckNewProject(parent, "..").empty() && !Project::CheckNewProject(parent, " pad").empty() &&
+                  !Project::CheckNewProject(parent, "dot.").empty(),
+              "new: '..', leading spaces and a trailing dot are refused");
+        Check(!Project::CheckNewProject({}, "Game").empty(), "new: no folder is refused");
+        WriteFile(parent / "Busy" / "notes.txt", "mine");
+        Check(!Project::CheckNewProject(parent, "Busy").empty(), "new: a folder with files in it is refused");
+        fs::create_directories(parent / "Empty");
+        Check(Project::CheckNewProject(parent, "Empty").empty(), "new: an existing empty folder is fine");
+        Check(!Project::CheckNewProject(sandbox, "GameSnake").empty(), "new: an existing project is refused");
+    }
+
     // ── the game window ─────────────────────────────────────────────────────
     reloaded.Window = {.Title = "Snake!", .Width = 1600, .Height = 900, .Mode = WindowMode::Borderless, .VSync = false};
     Check(Project::Save(reloaded, &error), "window: saved with the manifest");
