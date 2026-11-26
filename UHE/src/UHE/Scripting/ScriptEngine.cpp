@@ -64,6 +64,7 @@ struct ScriptEngine::Impl
         sol::protected_function OnCreate;
         sol::protected_function OnUpdate;
         sol::protected_function OnDestroy;
+        sol::protected_function OnClick; ///< game UI: the entity's button was clicked
         bool Started = false;
         bool Errored = false;
         /// Released while a hook was running: stopped, invisible to every query,
@@ -482,6 +483,7 @@ bool LoadInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instan
     instance.OnCreate = HookOf(impl, env, "OnCreate");
     instance.OnUpdate = HookOf(impl, env, "OnUpdate");
     instance.OnDestroy = HookOf(impl, env, "OnDestroy");
+    instance.OnClick = HookOf(impl, env, "OnClick");
     instance.ResolvedPath = resolved;
     instance.SourceTime = ModificationTime(resolved);
     return true;
@@ -743,6 +745,115 @@ void BindApi(ScriptEngine::Impl& impl)
                              {
                                  entity.GetComponent<TransformComponent>().Translation = {x, y, z};
                              }
+                         });
+
+    // ── game UI ─────────────────────────────────────────────────────────────
+    // Every UI method resolves the entity through the registry like the rest,
+    // and does nothing (or returns nil) on an entity without that component.
+    const auto withEntity = [&impl](sol::table self, auto&& action)
+    {
+        Scene* scene = nullptr;
+        entt::entity handle = entt::null;
+        if (ResolveEntity(impl, self, scene, handle))
+            action(Entity{handle, scene});
+    };
+    methods.set_function("SetText",
+                         [withEntity](sol::table self, const std::string& text)
+                         {
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UITextComponent>())
+                                                entity.GetComponent<UITextComponent>().Text = text;
+                                        });
+                         });
+    methods.set_function("GetText",
+                         [withEntity](sol::table self) -> sol::object
+                         {
+                             sol::object out = sol::nil;
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UITextComponent>())
+                                                out = sol::make_object(self.lua_state(),
+                                                                       entity.GetComponent<UITextComponent>().Text);
+                                        });
+                             return out;
+                         });
+    methods.set_function("SetValue",
+                         [withEntity](sol::table self, float value)
+                         {
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIProgressBarComponent>())
+                                                entity.GetComponent<UIProgressBarComponent>().Value =
+                                                    std::clamp(value, 0.0f, 1.0f);
+                                        });
+                         });
+    methods.set_function("GetValue",
+                         [withEntity](sol::table self) -> sol::object
+                         {
+                             sol::object out = sol::nil;
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIProgressBarComponent>())
+                                                out = sol::make_object(
+                                                    self.lua_state(),
+                                                    entity.GetComponent<UIProgressBarComponent>().Value);
+                                        });
+                             return out;
+                         });
+    methods.set_function("SetVisible",
+                         [withEntity](sol::table self, bool visible)
+                         {
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIRectComponent>())
+                                                entity.GetComponent<UIRectComponent>().Visible = visible;
+                                        });
+                         });
+    methods.set_function("IsVisible",
+                         [withEntity](sol::table self)
+                         {
+                             bool visible = false;
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            visible = entity.HasComponent<UIRectComponent>() &&
+                                                      entity.GetComponent<UIRectComponent>().Visible;
+                                        });
+                             return visible;
+                         });
+    // Colours are 0..1 sRGB, as the inspector shows them; on a button this is its normal colour.
+    methods.set_function("SetColor",
+                         [withEntity](sol::table self, float r, float g, float b, sol::optional<float> a)
+                         {
+                             const glm::vec4 color(r, g, b, a.value_or(1.0f));
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIButtonComponent>())
+                                                entity.GetComponent<UIButtonComponent>().NormalColor = color;
+                                            else if (entity.HasComponent<UIImageComponent>())
+                                                entity.GetComponent<UIImageComponent>().Color = color;
+                                            else if (entity.HasComponent<UITextComponent>())
+                                                entity.GetComponent<UITextComponent>().Color = color;
+                                        });
+                         });
+    methods.set_function("GetClicks",
+                         [withEntity](sol::table self)
+                         {
+                             u32 clicks = 0;
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIButtonComponent>())
+                                                clicks = entity.GetComponent<UIButtonComponent>().Clicks;
+                                        });
+                             return clicks;
                          });
 
     methods.set_function("Translate",
@@ -1364,6 +1475,29 @@ void ScriptEngine::Update(Scene& scene, Timestep ts)
             }
         }
     }
+}
+
+void ScriptEngine::OnUIClick(Scene& scene, u32 entityId)
+{
+    if (!m_Impl->Initialized)
+        return;
+    const auto handle = static_cast<entt::entity>(entityId);
+    auto* component =
+        scene.GetRegistry().valid(handle) ? scene.GetRegistry().try_get<ScriptComponent>(handle) : nullptr;
+    if (component == nullptr || !component->Enabled)
+        return;
+    const auto it = m_Impl->Instances.find(component->RuntimeIndex);
+    if (it == m_Impl->Instances.end())
+        return;
+    Impl::Instance& instance = it->second;
+    if (instance.Dead || instance.Errored || !instance.Started || instance.Scene_ != &scene ||
+        !instance.OnClick.valid())
+        return;
+    m_Impl->ActiveScene = &scene;
+    HookScope scope(*m_Impl);
+    sol::protected_function_result result = instance.OnClick(instance.Self);
+    if (!result.valid())
+        MarkErrored(*m_Impl, instance, ReportFailure(*m_Impl, DescribeEntity(scene, handle) + " OnClick", result));
 }
 
 void ScriptEngine::OnSceneStop(Scene& scene)

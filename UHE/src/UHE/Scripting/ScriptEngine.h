@@ -69,6 +69,11 @@ public:
     /// since the last update. Call once per simulation step.
     void Update(Scene& scene, Timestep ts);
 
+    /// Calls `OnClick(self)` on the script of a game UI button that was clicked
+    /// (UI::Update). A script without the hook is skipped; a failing one is
+    /// disabled like any hook. \p entityId is an `entt::entity` as an integer.
+    void OnUIClick(Scene& scene, u32 entityId);
+
     /// Calls `OnDestroy` on every instance belonging to \p scene and forgets it.
     void OnSceneStop(Scene& scene);
 

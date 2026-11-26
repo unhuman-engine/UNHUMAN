@@ -22,6 +22,7 @@ add_executable(scripting_test
     ${SCENE_SRC_DIR}/Scene/Scene.cpp
     ${SCENE_SRC_DIR}/Scene/SceneCamera.cpp
     ${SCENE_SRC_DIR}/Scene/Terrain.cpp
+    ${SCENE_SRC_DIR}/UI/UISystem.cpp
     ${CMAKE_SOURCE_DIR}/UHE/vendor/stb_image/stb_image.cpp
     ${SCENE_SRC_DIR}/Scene/Entity.cpp
     ${SCENE_SRC_DIR}/Scene/SceneSerializer.cpp

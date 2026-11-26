@@ -268,6 +268,64 @@ end
         check(engine.InstanceCount() == 1, "the spawned entity has no script of its own");
     }
 
+    section("game UI");
+    {
+        // A button whose OnClick updates a label and a gauge, the way a game
+        // or a simulation dashboard reacts to its UI.
+        const std::string script = WriteScript("ui.lua", R"(
+function OnCreate(self)
+    self.count = 0
+end
+
+function OnClick(self)
+    self.count = self.count + 1
+    local label = Find("Label")
+    if label then label:SetText("Clicked " .. self.count) end
+    local gauge = Find("Gauge")
+    if gauge then gauge:SetValue(gauge:GetValue() + 0.25) end
+    if self.count == 2 then Find("Label"):SetVisible(false) end
+    self:SetColor(1, 0, 0)
+end
+)");
+
+        Scene scene;
+        Entity button = SpawnScripted(scene, "Button", script);
+        auto& rect = button.AddComponent<UIRectComponent>();
+        rect.Size = {100.0f, 40.0f}; // centred: 350..450 x 280..320 on an 800 x 600 screen
+        button.AddComponent<UIImageComponent>();
+        auto& buttonState = button.AddComponent<UIButtonComponent>();
+        Entity label = scene.CreateEntity("Label");
+        label.AddComponent<UIRectComponent>();
+        label.AddComponent<UITextComponent>().Text = "Idle";
+        Entity gauge = scene.CreateEntity("Gauge");
+        gauge.AddComponent<UIRectComponent>();
+        gauge.AddComponent<UIProgressBarComponent>().Value = 0.25f;
+        Start(scene);
+        Step(scene, 0.1f, 1); // OnCreate
+
+        const auto click = [&]
+        {
+            UI::Pointer pointer;
+            pointer.Active = true;
+            pointer.Position = {400.0f, 300.0f};
+            pointer.Down = pointer.Pressed = true;
+            scene.UpdateUI({800.0f, 600.0f}, pointer);
+            pointer.Down = pointer.Pressed = false;
+            pointer.Released = true;
+            scene.UpdateUI({800.0f, 600.0f}, pointer);
+        };
+        scene.GetRenderSettings().UI.ScaleWithScreen = false;
+        click();
+        check(label.GetComponent<UITextComponent>().Text == "Clicked 1", "OnClick ran and SetText reached the label");
+        check(std::abs(gauge.GetComponent<UIProgressBarComponent>().Value - 0.5f) < 1e-5f,
+              "GetValue and SetValue reached the gauge");
+        check(buttonState.NormalColor == glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), "SetColor on a button sets its colour");
+        click();
+        check(!label.GetComponent<UIRectComponent>().Visible && buttonState.Clicks == 2,
+              "a second click: SetVisible hid the label");
+        check(engine.ErroredInstanceCount() == 0, "nothing errored");
+    }
+
     section("controller loop");
     {
         // A stand-in for the robotics case: a script that steers an entity
