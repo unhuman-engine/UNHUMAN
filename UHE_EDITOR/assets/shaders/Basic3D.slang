@@ -448,12 +448,14 @@ float LocalShadowFactor(FrameData f, int lightIndex, int type, float3 lightPos, 
         const float slope = min(sqrt(1.0 - NoL * NoL) / max(NoL, 1e-3), 5.0);
         const float3 offsetPos = worldPos + normal * (f.localShadowBias.y * texel) +
                                  toLight * ((f.localShadowBias.x + 1.75 * slope) * texel);
+        // Outside this tile's view: the light's next tile may hold the point
+        // (the back of a two-sided area light); none left means unshadowed.
         const float4 clip = mul(tile.viewProj, float4(offsetPos, 1.0));
         if (clip.w <= 0.0)
-            return 1.0;
+            continue;
         const float3 ndc = clip.xyz / clip.w;
         if (any(abs(ndc.xy) > 1.0) || ndc.z >= 1.0 || ndc.z <= 0.0)
-            return 1.0;
+            continue;
 
         Sampler2D map = u_Textures[NonUniformResourceIndex(atlas)];
         uint width, height;
@@ -592,13 +594,14 @@ FragmentOutput fragmentMain(VertexOutput input, bool isFrontFace : SV_IsFrontFac
             transmission *= SampleSlot(m, 12, input.v_TexCoord).r;
     }
 
-    // Alpha MASK and BLEND: discard below alphaCutoff to prevent semi-transparent
-    // card borders from writing depth and creating edge outlines in forward rendering.
-    if (m.flags.x == 1 || m.flags.x == 2)
-    {
-        if (baseColor.a < m.alphaCutoff)
-            discard;
-    }
+    // MASK: a cutout, below alphaCutoff is a hole (as in the depth passes).
+    // BLEND draws in the sorted transparent pass without writing depth, so it
+    // keeps its alpha; only a fully invisible pixel is dropped, so it does not
+    // take the picking ID of what lies behind it.
+    if (m.flags.x == 1 && baseColor.a < m.alphaCutoff)
+        discard;
+    if (m.flags.x == 2 && baseColor.a < 1.0 / 255.0)
+        discard;
     // Editor view modes other than Lit: shape and data views, no materials.
     if (pc.viewMode != kViewModeLit)
     {

@@ -38,6 +38,10 @@ public:
     static void End();
 
     /// @brief Destroys the pipeline and shaders. Called at application shutdown.
+    /// @brief The shader loaded and the device can run it; when false the
+    ///        scene's water passes are left out and the opaque image is kept.
+    [[nodiscard]] static bool IsAvailable();
+
     static void Shutdown();
 };
 

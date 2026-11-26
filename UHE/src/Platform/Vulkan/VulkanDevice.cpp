@@ -1114,4 +1114,11 @@ void VulkanDevice::CollectFrameCapture()
         callback(frame);
 }
 
+u32 VulkanDevice::GetMaxPushConstantsSize() const
+{
+    if (m_Context.physicalDeviceHandle == nullptr)
+        return 128; // the guarantee, until a device exists
+    return m_Context.physicalDeviceHandle->getProperties().limits.maxPushConstantsSize;
+}
+
 } // namespace UHE::RHI::VULKAN

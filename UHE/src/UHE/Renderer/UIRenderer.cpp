@@ -46,7 +46,7 @@ constexpr u32 kFramesInFlight = 3;
 struct UIData
 {
     bool Loaded = false;
-    bool Failed = false;
+    bool Failed = false; ///< a failure was logged; retried after the next reload
     bool ListenerRegistered = false;
     ShaderCache::Handle Handle = 0;
     RHI::ShaderHandle Vertex = nullptr;
@@ -87,10 +87,33 @@ bool EnsureLoaded()
     ShaderCache& library = ShaderCache::Get();
     const std::filesystem::path path = FileSystem::Get().GetRootPath() / "assets/shaders/UI.slang";
     s_UI.Handle = library.Load(path.string());
+    if (!s_UI.ListenerRegistered)
+    {
+        s_UI.ListenerRegistered = true;
+        // 0 is ShaderCache::ReloadAll.
+        ShaderCache::Get().AddReloadListener(
+            [](ShaderCache::Handle handle)
+            {
+                if (handle != 0 && handle != s_UI.Handle)
+                    return;
+                s_UI.Failed = false;
+                if (!s_UI.Loaded)
+                    return;
+                Renderer::GetDevice().WaitIdle();
+                DestroyPipelines();
+            });
+    }
     const ShaderCache::Shader* shader = library.Get(s_UI.Handle);
     if (shader == nullptr)
     {
         UHE_CORE_ERROR("UI: UI.slang failed to load; the game UI is not drawn");
+        s_UI.Failed = true;
+        return false;
+    }
+    if (ReflectedPushConstantSize(*shader) != sizeof(UIPushConstants))
+    {
+        UHE_CORE_ERROR("UI: UI.slang push constants are {0} bytes, the host struct is {1}; the game UI is not drawn",
+                       ReflectedPushConstantSize(*shader), sizeof(UIPushConstants));
         s_UI.Failed = true;
         return false;
     }
@@ -101,10 +124,7 @@ bool EnsureLoaded()
     desc.vertexShader = s_UI.Vertex;
     desc.fragmentShader = s_UI.Fragment;
     desc.vertexLayout = ReflectedVertexLayout(*shader);
-    desc.pushConstantSize = ReflectedPushConstantSize(*shader);
-    if (desc.pushConstantSize != sizeof(UIPushConstants))
-        UHE_CORE_ERROR("UI: UI.slang push constants are {0} bytes, the host struct is {1}", desc.pushConstantSize,
-                       sizeof(UIPushConstants));
+    desc.pushConstantSize = sizeof(UIPushConstants);
     desc.colorAttachmentCount = 1;
     desc.depthTest = false;
     desc.depthWrite = false;
@@ -113,18 +133,6 @@ bool EnsureLoaded()
     desc.debugName = "UI";
     s_UI.Desc = desc;
 
-    if (!s_UI.ListenerRegistered)
-    {
-        s_UI.ListenerRegistered = true;
-        ShaderCache::Get().AddReloadListener(
-            [](ShaderCache::Handle handle)
-            {
-                if (handle != s_UI.Handle || !s_UI.Loaded)
-                    return;
-                Renderer::GetDevice().WaitIdle();
-                DestroyPipelines();
-            });
-    }
     s_UI.Loaded = s_UI.Vertex != nullptr && s_UI.Fragment != nullptr;
     return s_UI.Loaded;
 }

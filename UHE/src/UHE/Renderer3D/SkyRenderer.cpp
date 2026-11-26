@@ -36,14 +36,14 @@ static_assert(sizeof(SkyPushConstants) == 176, "SkyPushConstants must match Sky.
 struct SkyData
 {
     bool Loaded = false;
-    bool Failed = false; ///< the shader did not load; logged once, not every frame
+    bool Reported = false; ///< a failure was logged; again only after the next reload
     bool ListenerRegistered = false;
     ShaderCache::Handle Handle = 0;
     RHI::ShaderHandle Vertex = nullptr;
     RHI::ShaderHandle Fragment = nullptr;
     RHI::PipelineHandle Pipeline = nullptr;
 
-    std::string ImagePath; ///< the path Image was loaded from (or failed to load from)
+    std::string ImageKey; ///< the resolved file (and its time) Image was loaded from, or failed to load from
     Ref<Texture2D> Image;
 };
 
@@ -68,26 +68,48 @@ bool EnsureLoaded()
 {
     if (s_Sky.Loaded)
         return true;
-    if (s_Sky.Failed)
-        return false;
+    if (s_Sky.Reported)
+        return false; // retried after the next reload
     ShaderCache& library = ShaderCache::Get();
     const std::filesystem::path path = FileSystem::Get().GetRootPath() / "assets/shaders/Sky.slang";
     s_Sky.Handle = library.Load(path.string());
+    if (!s_Sky.ListenerRegistered)
+    {
+        s_Sky.ListenerRegistered = true;
+        // Rebuilt lazily on the next use; queued frames still use the old objects. 0 is ShaderCache::ReloadAll.
+        ShaderCache::Get().AddReloadListener(
+            [](ShaderCache::Handle handle)
+            {
+                if (handle != 0 && handle != s_Sky.Handle)
+                    return;
+                s_Sky.Reported = false;
+                if (!s_Sky.Loaded)
+                    return;
+                Renderer::GetDevice().WaitIdle();
+                DestroyPipeline();
+            });
+    }
     const ShaderCache::Shader* shader = library.Get(s_Sky.Handle);
     if (shader == nullptr)
     {
         UHE_CORE_ERROR("Sky: Sky.slang failed to load; the sky is the clear colour");
-        s_Sky.Failed = true;
+        s_Sky.Reported = true;
+        return false;
+    }
+    // Draw pushes the whole host struct; a smaller declared range would be overrun.
+    const u32 pushConstantSize = ReflectedPushConstantSize(*shader);
+    if (pushConstantSize != sizeof(SkyPushConstants))
+    {
+        UHE_CORE_ERROR("Sky: Sky.slang push constants are {0} bytes, the host struct is {1}; the sky is the clear "
+                       "colour",
+                       pushConstantSize, sizeof(SkyPushConstants));
+        s_Sky.Reported = true;
         return false;
     }
 
     auto& device = Renderer::GetDevice();
     s_Sky.Vertex = CreateStageShader(device, *shader, RHI::ShaderStage::Vertex, "Sky.vertex");
     s_Sky.Fragment = CreateStageShader(device, *shader, RHI::ShaderStage::Fragment, "Sky.fragment");
-    const u32 pushConstantSize = ReflectedPushConstantSize(*shader);
-    if (pushConstantSize != sizeof(SkyPushConstants))
-        UHE_CORE_ERROR("Sky: Sky.slang push constants are {0} bytes, the host struct is {1}", pushConstantSize,
-                       sizeof(SkyPushConstants));
 
     RHI::GraphicsPipelineDesc desc{};
     desc.vertexShader = s_Sky.Vertex;
@@ -102,19 +124,6 @@ bool EnsureLoaded()
     desc.debugName = "Sky";
     s_Sky.Pipeline = device.CreateGraphicsPipeline(desc);
 
-    if (!s_Sky.ListenerRegistered)
-    {
-        s_Sky.ListenerRegistered = true;
-        // Rebuilt lazily on the next use; queued frames still use the old objects.
-        ShaderCache::Get().AddReloadListener(
-            [](ShaderCache::Handle handle)
-            {
-                if (handle != s_Sky.Handle || !s_Sky.Loaded)
-                    return;
-                Renderer::GetDevice().WaitIdle();
-                DestroyPipeline();
-            });
-    }
     s_Sky.Loaded = s_Sky.Vertex != nullptr && s_Sky.Fragment != nullptr && s_Sky.Pipeline != nullptr;
     return s_Sky.Loaded;
 }
@@ -138,16 +147,27 @@ bool SkyRenderer::Draws(const SkySettings& settings)
 void SkyRenderer::PrepareImage(const SkySettings& settings)
 {
     const std::string path = settings.Mode == SkySettings::SkyMode::Image ? settings.ImagePath : std::string();
-    if (path == s_Sky.ImagePath)
+    // Keyed by the file the path resolves to, and its time: the same relative
+    // path in another project (or a repainted image) is another image.
+    std::string key;
+    std::filesystem::path resolved;
+    if (!path.empty())
+    {
+        resolved = ResolveAssetPath(path);
+        std::error_code ec;
+        const auto written = std::filesystem::last_write_time(resolved, ec);
+        key = resolved.string() + "|" +
+              (ec ? std::string("missing") : std::to_string(written.time_since_epoch().count()));
+    }
+    if (key == s_Sky.ImageKey)
         return;
-    s_Sky.ImagePath = path;
+    s_Sky.ImageKey = key;
     // The previous image may still be read by a frame in flight; the texture
     // defers its own destruction until that frame is done.
     s_Sky.Image.reset();
     if (path.empty())
         return;
 
-    const std::filesystem::path resolved = ResolveAssetPath(path);
     std::error_code ec;
     if (!std::filesystem::is_regular_file(resolved, ec))
     {
@@ -206,8 +226,8 @@ void SkyRenderer::Shutdown()
 {
     DestroyPipeline();
     s_Sky.Image.reset();
-    s_Sky.ImagePath.clear();
-    s_Sky.Failed = false;
+    s_Sky.ImageKey.clear();
+    s_Sky.Reported = false;
 }
 
 } // namespace UHE

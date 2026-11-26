@@ -121,6 +121,8 @@ struct Renderer3DData
     std::map<std::pair<RHI::TextureFormat, bool>, RHI::PipelineHandle> DepthPipelines;
     RHI::GraphicsPipelineDesc DepthDesc{};
     bool ShaderResourcesReady = false;
+    bool GridAvailable =
+        false; ///< Grid.slang loaded; without it the grid pipelines are null and DrawGrid draws nothing
     /// Undefined: the editor's two-attachment set; otherwise a single-target format.
     RHI::TextureFormat TargetFormat = RHI::TextureFormat::Undefined;
 
@@ -218,7 +220,7 @@ static const Renderer3DData::SingleTargetPipelines* SingleTargetFor(RHI::Texture
     RHI::GraphicsPipelineDesc grid = s_Data3D.SingleTargetGridDesc;
     grid.colorFormats[0] = format;
     grid.debugName = "GridPipeline.SingleTarget";
-    set.Grid = device.CreateGraphicsPipeline(grid);
+    set.Grid = s_Data3D.GridAvailable ? device.CreateGraphicsPipeline(grid) : nullptr;
     return &s_Data3D.SingleTargets.emplace(format, set).first->second;
 }
 
@@ -258,7 +260,7 @@ static Renderer3DData::SingleTargetPipelines EntityTargetSet()
     RHI::GraphicsPipelineDesc grid = s_Data3D.EntityTargetGridDesc;
     grid.colorFormats[0] = format;
     grid.debugName = "GridPipeline.EntityTarget";
-    set.Grid = device.CreateGraphicsPipeline(grid);
+    set.Grid = s_Data3D.GridAvailable ? device.CreateGraphicsPipeline(grid) : nullptr;
     return s_Data3D.EntityTargets.emplace(format, set).first->second;
 }
 
@@ -384,11 +386,15 @@ void Renderer3D::CreateShaderResources()
     const ShaderCache::Shader* modelDepth = library.Get(modelDepthHandle);
     const ShaderCache::Shader* grid = library.Get(gridHandle);
     const ShaderCache::Shader* gridNoId = library.Get(gridNoIdHandle);
-    if (model == nullptr || modelNoId == nullptr || grid == nullptr || gridNoId == nullptr)
+    if (model == nullptr || modelNoId == nullptr)
     {
         UHE_CORE_ERROR("Renderer3D: a scene shader failed to load; the scene will not draw");
         return;
     }
+    // The grid is an editor guide: without it models still draw, the grid does not.
+    const bool gridAvailable = grid != nullptr && gridNoId != nullptr;
+    if (!gridAvailable)
+        UHE_CORE_ERROR("Renderer3D: Grid.slang failed to load; the editor grid will not draw");
 
     s_Data3D.VertexShader = CreateStageShader(device, *model, RHI::ShaderStage::Vertex, "Basic3D.vertex");
     s_Data3D.FragmentShader = CreateStageShader(device, *model, RHI::ShaderStage::Fragment, "Basic3D.fragment");
@@ -399,10 +405,13 @@ void Renderer3D::CreateShaderResources()
         modelDepth != nullptr
             ? CreateStageShader(device, *modelDepth, RHI::ShaderStage::Fragment, "Basic3D.fragment.depthOnly")
             : nullptr;
-    s_Data3D.GridVertexShader = CreateStageShader(device, *grid, RHI::ShaderStage::Vertex, "Grid.vertex");
-    s_Data3D.GridFragmentShader = CreateStageShader(device, *grid, RHI::ShaderStage::Fragment, "Grid.fragment");
-    s_Data3D.GridFragmentShaderNoId =
-        CreateStageShader(device, *gridNoId, RHI::ShaderStage::Fragment, "Grid.fragment.noEntityId");
+    if (gridAvailable)
+    {
+        s_Data3D.GridVertexShader = CreateStageShader(device, *grid, RHI::ShaderStage::Vertex, "Grid.vertex");
+        s_Data3D.GridFragmentShader = CreateStageShader(device, *grid, RHI::ShaderStage::Fragment, "Grid.fragment");
+        s_Data3D.GridFragmentShaderNoId =
+            CreateStageShader(device, *gridNoId, RHI::ShaderStage::Fragment, "Grid.fragment.noEntityId");
+    }
 
     RHI::GraphicsPipelineDesc pipeDesc{};
     pipeDesc.vertexShader = s_Data3D.VertexShader;
@@ -453,8 +462,11 @@ void Renderer3D::CreateShaderResources()
     gridPipeDesc.fragmentShader = s_Data3D.GridFragmentShader;
     // The grid generates its vertices from gl_VertexIndex, so the module declares
     // no vertex inputs and reflection returns an empty layout.
-    gridPipeDesc.vertexLayout = ReflectedVertexLayout(*grid);
-    gridPipeDesc.pushConstantSize = ReflectedPushConstantSize(*grid);
+    if (gridAvailable)
+    {
+        gridPipeDesc.vertexLayout = ReflectedVertexLayout(*grid);
+        gridPipeDesc.pushConstantSize = ReflectedPushConstantSize(*grid);
+    }
     gridPipeDesc.blendMode = RHI::BlendMode::Alpha;
     // Drawn after the scene: tested against it, so geometry hides the grid,
     // but never written, so the translucent plane cannot hide what follows.
@@ -465,7 +477,8 @@ void Renderer3D::CreateShaderResources()
     gridPipeDesc.colorFormats[0] = RHI::TextureFormat::RGBA8_SRGB;
     gridPipeDesc.colorFormats[1] = RHI::TextureFormat::R32_SINT;
 
-    s_Data3D.GridPipeline = device.CreateGraphicsPipeline(gridPipeDesc);
+    s_Data3D.GridAvailable = gridAvailable;
+    s_Data3D.GridPipeline = gridAvailable ? device.CreateGraphicsPipeline(gridPipeDesc) : nullptr;
 
     // Single-target variants: one colour attachment. The fragment shader is
     // the no_entity_id variant: an output with no matching attachment is invalid.
@@ -734,7 +747,10 @@ void Renderer3D::DrawGrid(const GridOptions& options)
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
 
     const auto* single = SingleTargetFor(s_Data3D.TargetFormat);
-    cmd.BindPipeline(single != nullptr ? single->Grid : EntityTargetSet().Grid);
+    const RHI::PipelineHandle gridPipeline = single != nullptr ? single->Grid : EntityTargetSet().Grid;
+    if (gridPipeline == nullptr)
+        return;
+    cmd.BindPipeline(gridPipeline);
 
     // MUST match PushConstants in Grid.slang.
     struct GridPushConstants
@@ -798,6 +814,19 @@ Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Model& model,
     return {};
 }
 
+Renderer3D::BoneBinding Renderer3D::PrepareSkinBinding(const RD3d::Model& model, const RD3d::Animator* animator,
+                                                       int skinIndex)
+{
+    if (skinIndex < 0)
+        return {};
+    if (animator != nullptr && animator->HasAnimation() && animator->GetSkinIndex() == skinIndex)
+        return UploadBones(animator->GetFinalBoneMatrices());
+    const RD3d::Skin* skin = model.GetSkin(skinIndex);
+    if (skin != nullptr && !skin->RestPalette.empty())
+        return UploadBones(skin->RestPalette);
+    return {};
+}
+
 Renderer3D::MaterialBinding Renderer3D::PrepareMaterialBinding(const RD3d::Model& model)
 {
     MaterialBinding binding;
@@ -839,13 +868,22 @@ void Renderer3D::SubmitModel(const RD3d::Model& model, const glm::mat4& transfor
                              const RD3d::Animator* animator)
 {
     UHE_PROFILE_FUNCTION();
-    // Upload bone matrices and material parameters once per model, then
-    // forward the buffer locations to every sub-mesh.
-    BoneBinding bones = PrepareBoneBinding(model, animator);
+    // Material parameters once per model; bone matrices once per skin the
+    // meshes use, each mesh drawn with its own skin's (rigid meshes with none).
     MaterialBinding materials = PrepareMaterialBinding(model);
-
+    std::vector<std::pair<int, BoneBinding>> palettes;
     for (const auto& mesh : model.GetMesh())
     {
+        BoneBinding bones;
+        if (mesh.skinIndex >= 0)
+        {
+            const auto it = std::find_if(palettes.begin(), palettes.end(),
+                                         [&](const auto& entry) { return entry.first == mesh.skinIndex; });
+            bones =
+                it != palettes.end()
+                    ? it->second
+                    : palettes.emplace_back(mesh.skinIndex, PrepareSkinBinding(model, animator, mesh.skinIndex)).second;
+        }
         SubmitMesh(mesh, transform, entityID, model, materials, bones.BufferIndex, bones.Offset);
     }
 }
@@ -956,7 +994,15 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh& mesh, const glm::mat4& transform, 
             draw.VertexBuffer = prim.VertexBuffer;
             draw.IndexBuffer = prim.IndexBuffer;
             draw.IndexCount = prim.IndexCount;
-            draw.Distance = glm::length(glm::vec3(pc.model[3]) - s_Data3D.CameraPosition);
+            // From the middle of the geometry, not the node's pivot: a quad
+            // whose pivot sits far from it would sort out of place.
+            glm::vec3 centre(0.0f);
+            if (mesh.geometryIndex < model.GetGeometry().size() && model.GetGeometry()[mesh.geometryIndex].hasBounds)
+            {
+                const RD3d::Geometry& geometry = model.GetGeometry()[mesh.geometryIndex];
+                centre = (geometry.boundsMin + geometry.boundsMax) * 0.5f;
+            }
+            draw.Distance = glm::length(glm::vec3(pc.model * glm::vec4(centre, 1.0f)) - s_Data3D.CameraPosition);
             s_Data3D.Transparent.push_back(draw);
             continue;
         }

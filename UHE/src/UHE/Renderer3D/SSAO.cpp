@@ -32,6 +32,7 @@ static_assert(sizeof(SSAOPushConstants) == 160, "SSAOPushConstants must match SS
 struct SSAOData
 {
     bool Loaded = false;
+    bool Reported = false; ///< a failure was logged; again only after the next reload
     bool ListenerRegistered = false;
     ShaderCache::Handle Handle = 0;
     RHI::ShaderHandle Vertex = nullptr;
@@ -64,20 +65,46 @@ bool EnsureLoaded()
     ShaderCache& library = ShaderCache::Get();
     const std::filesystem::path path = FileSystem::Get().GetRootPath() / "assets/shaders/SSAO.slang";
     s_SSAO.Handle = library.Load(path.string());
+    if (!s_SSAO.ListenerRegistered)
+    {
+        s_SSAO.ListenerRegistered = true;
+        // Rebuilt lazily on the next use; queued frames still use the old objects.
+        // 0 is ShaderCache::ReloadAll.
+        ShaderCache::Get().AddReloadListener(
+            [](ShaderCache::Handle handle)
+            {
+                if (handle != 0 && handle != s_SSAO.Handle)
+                    return;
+                s_SSAO.Reported = false;
+                if (!s_SSAO.Loaded)
+                    return;
+                Renderer::GetDevice().WaitIdle();
+                DestroyResources();
+            });
+    }
     const ShaderCache::Shader* shader = library.Get(s_SSAO.Handle);
     if (shader == nullptr)
     {
-        UHE_CORE_ERROR("SSAO: SSAO.slang failed to load; the scene draws without occlusion");
+        if (!s_SSAO.Reported)
+            UHE_CORE_ERROR("SSAO: SSAO.slang failed to load; the scene draws without occlusion");
+        s_SSAO.Reported = true;
+        return false;
+    }
+    // Draw pushes the whole host struct; a smaller declared range would be overrun.
+    const u32 pushConstantSize = ReflectedPushConstantSize(*shader);
+    if (pushConstantSize != sizeof(SSAOPushConstants))
+    {
+        if (!s_SSAO.Reported)
+            UHE_CORE_ERROR("SSAO: SSAO.slang push constants are {0} bytes, the host struct is {1}; the scene draws "
+                           "without occlusion",
+                           pushConstantSize, sizeof(SSAOPushConstants));
+        s_SSAO.Reported = true;
         return false;
     }
 
     auto& device = Renderer::GetDevice();
     s_SSAO.Vertex = CreateStageShader(device, *shader, RHI::ShaderStage::Vertex, "SSAO.vertex");
     s_SSAO.Fragment = CreateStageShader(device, *shader, RHI::ShaderStage::Fragment, "SSAO.fragment");
-    const u32 pushConstantSize = ReflectedPushConstantSize(*shader);
-    if (pushConstantSize != sizeof(SSAOPushConstants))
-        UHE_CORE_ERROR("SSAO: SSAO.slang push constants are {0} bytes, the host struct is {1}", pushConstantSize,
-                       sizeof(SSAOPushConstants));
 
     RHI::GraphicsPipelineDesc desc{};
     desc.vertexShader = s_SSAO.Vertex;
@@ -92,19 +119,6 @@ bool EnsureLoaded()
     desc.debugName = "SSAO";
     s_SSAO.Pipeline = device.CreateGraphicsPipeline(desc);
 
-    if (!s_SSAO.ListenerRegistered)
-    {
-        s_SSAO.ListenerRegistered = true;
-        // Rebuilt lazily on the next use; queued frames still use the old objects.
-        ShaderCache::Get().AddReloadListener(
-            [](ShaderCache::Handle handle)
-            {
-                if (handle != s_SSAO.Handle || !s_SSAO.Loaded)
-                    return;
-                Renderer::GetDevice().WaitIdle();
-                DestroyResources();
-            });
-    }
     s_SSAO.Loaded = s_SSAO.Vertex != nullptr && s_SSAO.Fragment != nullptr && s_SSAO.Pipeline != nullptr;
     return s_SSAO.Loaded;
 }
@@ -132,6 +146,10 @@ RHI::FGHandle<RHI::FGTexture> SSAO::AddPasses(RHI::FrameGraph& graph, RHI::FGHan
                                               u32 height, const glm::mat4& projection, const SSAOSettings& settings)
 {
     using namespace RHI;
+    // No shader, no passes: an occlusion image nothing drew into would be
+    // cleared to 0 and take all ambient light away with it.
+    if (!EnsureLoaded())
+        return {};
     // Half resolution: occlusion is soft, and the colour pass upsamples it.
     const u32 halfWidth = std::max((width + 1) / 2, 1u);
     const u32 halfHeight = std::max((height + 1) / 2, 1u);

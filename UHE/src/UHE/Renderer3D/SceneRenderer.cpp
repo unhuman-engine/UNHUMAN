@@ -58,8 +58,9 @@ bool HasLocalShadowCaster(const std::vector<RD3d::LightData>& lights)
 /**
  * @brief Gives the shadow-casting local lights nearest the camera their tiles of the local atlas.
  *
- * A spot or area light takes one tile, a point light six (one per cube face,
- * a little wider than 90 degrees so faces overlap at their seams). Lights
+ * A spot or one-sided area light takes one tile, a two-sided area light two
+ * (one per emitting side), a point light six (one per cube face, a little
+ * wider than 90 degrees so faces overlap at their seams). Lights
  * that no longer fit are skipped: they light without shadows this frame.
  */
 void FitLocalShadows(FrameState& state, const std::vector<RD3d::LightData>& lights)
@@ -105,7 +106,8 @@ void FitLocalShadows(FrameState& state, const std::vector<RD3d::LightData>& ligh
     {
         const RD3d::LightData& light = lights[static_cast<size_t>(candidate.Index)];
         const int type = static_cast<int>(light.Type_Radius_Pad.x);
-        const int need = type == 1 ? 6 : 1;
+        const bool twoSided = type == 3 && light.Direction_Pad.w > 0.5f;
+        const int need = type == 1 ? 6 : (twoSided ? 2 : 1);
         if (static_cast<int>(state.LocalTiles.size()) + need > maxTiles)
             continue;
         const glm::vec3 position(light.PositionOrDirection);
@@ -126,6 +128,9 @@ void FitLocalShadows(FrameState& state, const std::vector<RD3d::LightData>& ligh
                 type == 2 ? std::min(2.0f * std::acos(std::clamp(light.Type_Radius_Pad.w, -1.0f, 1.0f)) + 0.1f, 2.9f)
                           : 2.4f;
             addTile(candidate.Index, -1, position, direction, fov, range);
+            // The back of a two-sided panel lights the other half-space too.
+            if (twoSided)
+                addTile(candidate.Index, -1, position, -direction, fov, range);
         }
     }
 }
@@ -608,7 +613,9 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
     }
 
     // ── Water: the opaque scene copied into a new HDR image, surfaces over it ──
-    if (desc.SceneData != nullptr && desc.SceneData->HasWater())
+    // Without a water shader the passes are left out: a copy pass that drew
+    // nothing would replace the opaque scene with an empty image.
+    if (desc.SceneData != nullptr && desc.SceneData->HasWater() && WaterRenderer::IsAvailable())
     {
         // The surfaces sample the opaque colour, so they cannot draw into it:
         // a copy first, then the water over the copy.
@@ -680,10 +687,11 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
     // ── Editor overlays (the grid): after the water, tested against the opaque depth ──
     if (desc.DrawOverlays)
     {
+        // Colour and depth only: the grid must not write the entity IDs (it
+        // would put -1 over the water and its lines would stop picking it).
         struct OverlayData
         {
             FGHandle<FGTexture> Color;
-            FGHandle<FGTexture> Entity;
             FGHandle<FGTexture> Depth;
         };
         const OverlayData& overlays = graph.AddPass<OverlayData>(
@@ -693,7 +701,6 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
                 FGAttachment keep;
                 keep.Load = LoadOp::Load;
                 d.Color = builder.Write(hdr, FGWrite::RenderTarget, keep);
-                d.Entity = builder.Write(entity, FGWrite::RenderTarget, keep);
                 d.Depth = builder.Write(scene.Depth, FGWrite::DepthTarget, keep);
             },
             [state](const OverlayData&, FGContext& context)
@@ -701,12 +708,11 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
                 RHICommandBuffer& cmd = context.Cmd();
                 cmd.SetViewport(0.0f, 0.0f, static_cast<f32>(context.Width()), static_cast<f32>(context.Height()));
                 cmd.SetScissor(0, 0, context.Width(), context.Height());
-                Renderer3D::SetEntityTargetFormat(TextureFormat::RGBA16F);
+                Renderer3D::SetColorTarget(TextureFormat::RGBA16F); // one attachment: the grid's no_entity_id variant
                 state->Desc.DrawOverlays(context);
-                Renderer3D::SetEntityTargetFormat(TextureFormat::RGBA8_SRGB);
+                Renderer3D::SetColorTarget(TextureFormat::Undefined);
             });
         hdr = overlays.Color;
-        entity = overlays.Entity;
     }
     output.Entity = entity;
 

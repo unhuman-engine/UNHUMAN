@@ -21,12 +21,21 @@ namespace
 // mip chain uploads level by level and the GPU generator stays idle
 // (recomputing would discard the author's filter); an empty chain is
 // the plain mip-0 upload with GPU generation.
+/// The sampler for 8-bit pixels: HalfFloat is for the .hdr path only (8 bytes
+/// a texel), so a byte image asked for it is uploaded as linear bytes instead.
+RHI::SamplerDesc ByteSampler(RHI::SamplerDesc sampler)
+{
+    if (sampler.colorSpace == RHI::SamplerDesc::ColorSpace::HalfFloat)
+        sampler.colorSpace = RHI::SamplerDesc::ColorSpace::Linear;
+    return sampler;
+}
+
 void UploadRGBA8(Ref<RHI::VULKAN::VulkanTexture>& target, const void* pixels, u32 width, u32 height,
                  const RHI::SamplerDesc& sampler, std::span<const UHE::MipLevel> mipChain = {})
 {
     target = CreateRef<RHI::VULKAN::VulkanTexture>();
     // Must precede CreateTexture: the sampler is built inside it.
-    target->SetSamplerDesc(sampler);
+    target->SetSamplerDesc(ByteSampler(sampler));
     auto& rhiDevice = Renderer::GetDevice();
     auto* vulkanDevice = static_cast<RHI::VULKAN::VulkanDevice*>(&rhiDevice);
 
@@ -182,7 +191,7 @@ VulkanTexture2D::VulkanTexture2D(u32 width, u32 height, const RHI::SamplerDesc& 
 {
     m_VulkanTexture = CreateRef<RHI::VULKAN::VulkanTexture>();
     // Must precede CreateTexture: the sampler is built inside it.
-    m_VulkanTexture->SetSamplerDesc(sampler);
+    m_VulkanTexture->SetSamplerDesc(ByteSampler(sampler));
     auto& rhiDevice = Renderer::GetDevice();
     auto* vulkanDevice = static_cast<RHI::VULKAN::VulkanDevice*>(&rhiDevice);
 

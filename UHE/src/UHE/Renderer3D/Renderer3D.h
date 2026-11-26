@@ -117,6 +117,16 @@ public:
      */
     static BoneBinding PrepareBoneBinding(const RD3d::Model& model, const RD3d::Animator* animator);
 
+    /**
+     * @brief The bone matrices for the meshes of \p model that use skin \p skinIndex.
+     *
+     * The animator's matrices while it plays a clip on that skin, the skin's
+     * rest pose otherwise; nothing for a rigid mesh (\p skinIndex < 0), which
+     * the shader would otherwise skin with zero weights and collapse to the
+     * origin. A model with several skins needs one binding per skin.
+     */
+    static BoneBinding PrepareSkinBinding(const RD3d::Model& model, const RD3d::Animator* animator, int skinIndex);
+
     // Uploads the model's material parameters once per frame and returns the
     // buffer location; pass the result to every SubmitMesh of that model.
     static MaterialBinding PrepareMaterialBinding(const RD3d::Model& model);

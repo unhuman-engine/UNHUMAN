@@ -141,6 +141,8 @@ public:
     [[nodiscard]] inline VulkanSwapChain& getSwapChainClass() { return m_SwapChain; }
     /// \copydoc RHIDevice::GetSwapchainFormat
     [[nodiscard]] TextureFormat GetSwapchainFormat() override { return m_SwapChain.GetSwapchainFormat(); }
+    /// \copydoc RHIDevice::GetMaxPushConstantsSize
+    [[nodiscard]] u32 GetMaxPushConstantsSize() const override;
     [[nodiscard]] bool SupportsWireframe() const override { return m_ExtensionCheck.SupportsWireframe(); }
     [[nodiscard]] inline const u32& ImageIndex() { return m_ImageIndex; }
     [[nodiscard]] inline VulkanDescriptorManager* GetDescriptorManager() { return &m_DescriptorManager; }

@@ -25,7 +25,9 @@ struct WaterPushConstants
     glm::vec4 Deep{0.0f};      ///< a: foam
     glm::vec4 Wave{0.0f};      ///< height, length, speed, choppiness
     glm::vec4 WaveDir{0.0f};   ///< xy: direction, z: cells, w: mode
-    glm::vec4 Size{0.0f};
+    glm::vec2 Size{0.0f};
+    i32 EntityID = -1; ///< an integer: a float loses entt handles above 2^24
+    f32 Padding = 0.0f;
     glm::vec4 Projection{0.0f};
     i32 FrameData = -1;
     i32 LightBuffer = -1;
@@ -40,6 +42,7 @@ constexpr int kMaxCells = 512;
 struct WaterData
 {
     bool Loaded = false;
+    bool Reported = false; ///< a failure was logged; again only after the next reload
     bool ListenerRegistered = false;
     ShaderCache::Handle Handle = 0;
     RHI::ShaderHandle Vertex = nullptr;
@@ -85,24 +88,48 @@ bool EnsureLoaded()
     // move what an earlier Get pointed at.
     s_Water.Handle = library.Load(path.string());
     const ShaderCache::Handle copyHandle = library.Load(path.string(), "no_entity_id");
+    if (!s_Water.ListenerRegistered)
+    {
+        s_Water.ListenerRegistered = true;
+        // 0 is ShaderCache::ReloadAll; the copy variant reloads with the main one.
+        ShaderCache::Get().AddReloadListener(
+            [copyHandle](ShaderCache::Handle handle)
+            {
+                if (handle != 0 && handle != s_Water.Handle && handle != copyHandle)
+                    return;
+                s_Water.Reported = false;
+                if (!s_Water.Loaded)
+                    return;
+                Renderer::GetDevice().WaitIdle();
+                DestroyResources();
+            });
+    }
+    const auto fail = [](const std::string& why)
+    {
+        if (!s_Water.Reported)
+            UHE_CORE_ERROR("WaterRenderer: {0}; water will not draw", why);
+        s_Water.Reported = true;
+        return false;
+    };
+    // The pipelines declare and the draws push all 256 bytes: a device that
+    // allows less (Vulkan only guarantees 128) cannot run them.
+    auto& device = Renderer::GetDevice();
+    if (device.GetMaxPushConstantsSize() < sizeof(WaterPushConstants))
+        return fail("the device allows " + std::to_string(device.GetMaxPushConstantsSize()) +
+                    " bytes of push constants, the water shader needs " + std::to_string(sizeof(WaterPushConstants)));
     const ShaderCache::Shader* shader = library.Get(s_Water.Handle);
     const ShaderCache::Shader* copyShader = library.Get(copyHandle);
     if (shader == nullptr || copyShader == nullptr)
-    {
-        UHE_CORE_ERROR("WaterRenderer: Water.slang failed to load; water will not draw");
-        return false;
-    }
+        return fail("Water.slang failed to load");
+    const u32 pushConstantSize = ReflectedPushConstantSize(*shader);
+    if (pushConstantSize != sizeof(WaterPushConstants) || ReflectedPushConstantSize(*copyShader) != pushConstantSize)
+        return fail("Water.slang push constants are " + std::to_string(pushConstantSize) +
+                    " bytes, the host struct is " + std::to_string(sizeof(WaterPushConstants)));
 
-    auto& device = Renderer::GetDevice();
     s_Water.Vertex = CreateStageShader(device, *shader, RHI::ShaderStage::Vertex, "Water.vertex");
     s_Water.Fragment = CreateStageShader(device, *shader, RHI::ShaderStage::Fragment, "Water.fragment");
     s_Water.FragmentCopy =
         CreateStageShader(device, *copyShader, RHI::ShaderStage::Fragment, "Water.fragment.noEntityId");
-    const u32 pushConstantSize = ReflectedPushConstantSize(*shader);
-    if (pushConstantSize != sizeof(WaterPushConstants))
-        UHE_CORE_ERROR("WaterRenderer: Water.slang push constants are {0} bytes, the host struct is {1}",
-                       pushConstantSize, sizeof(WaterPushConstants));
-
     RHI::GraphicsPipelineDesc desc{};
     desc.vertexShader = s_Water.Vertex;
     desc.fragmentShader = s_Water.Fragment;
@@ -122,18 +149,6 @@ bool EnsureLoaded()
     desc.debugName = "Water.Copy";
     s_Water.CopyPipeline = device.CreateGraphicsPipeline(desc);
 
-    if (!s_Water.ListenerRegistered)
-    {
-        s_Water.ListenerRegistered = true;
-        ShaderCache::Get().AddReloadListener(
-            [](ShaderCache::Handle handle)
-            {
-                if (handle != s_Water.Handle || !s_Water.Loaded)
-                    return;
-                Renderer::GetDevice().WaitIdle();
-                DestroyResources();
-            });
-    }
     s_Water.Loaded = s_Water.Vertex != nullptr && s_Water.Fragment != nullptr && s_Water.Pipeline != nullptr &&
                      s_Water.CopyPipeline != nullptr;
     return s_Water.Loaded;
@@ -200,8 +215,8 @@ void WaterRenderer::Submit(const glm::mat4& transform, const WaterComponent& wat
     pc.Wave = glm::vec4(std::max(water.WaveHeight, 0.0f), std::max(water.WaveLength, 0.1f),
                         std::max(water.WaveSpeed, 0.0f), std::clamp(water.Choppiness, 0.0f, 1.0f));
     pc.WaveDir = glm::vec4(glm::normalize(direction), static_cast<float>(cells), 1.0f);
-    pc.Size =
-        glm::vec4(std::max(water.Size.x, 0.01f), std::max(water.Size.y, 0.01f), static_cast<float>(entityID), 0.0f);
+    pc.Size = glm::vec2(std::max(water.Size.x, 0.01f), std::max(water.Size.y, 0.01f));
+    pc.EntityID = entityID;
 
     auto& cmd = Renderer::GetDevice().GetCurrentCommandBuffer();
     cmd.BindPipeline(s_Water.Pipeline);
@@ -212,6 +227,11 @@ void WaterRenderer::Submit(const glm::mat4& transform, const WaterComponent& wat
 void WaterRenderer::End()
 {
     s_Water.Active = false;
+}
+
+bool WaterRenderer::IsAvailable()
+{
+    return EnsureLoaded();
 }
 
 void WaterRenderer::Shutdown()

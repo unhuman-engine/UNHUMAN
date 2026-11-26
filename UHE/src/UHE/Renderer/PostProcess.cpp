@@ -59,6 +59,7 @@ struct Program
     RHI::ShaderHandle Fragment = nullptr;
     u32 PushConstantSize = 0;
     bool Loaded = false;
+    bool Reported = false; ///< a failure was logged; again only after the next reload
 };
 
 struct PostProcessData
@@ -116,15 +117,24 @@ void RegisterReloadListener()
     ShaderCache::Get().AddReloadListener(
         [](ShaderCache::Handle handle)
         {
-            if (handle == s_Post.Tonemap.Handle && s_Post.Tonemap.Loaded)
+            // 0 is ShaderCache::ReloadAll: every program is stale.
+            if (handle == 0 || handle == s_Post.Tonemap.Handle)
             {
-                Renderer::GetDevice().WaitIdle();
-                DestroyTonemap();
+                if (s_Post.Tonemap.Loaded)
+                {
+                    Renderer::GetDevice().WaitIdle();
+                    DestroyTonemap();
+                }
+                s_Post.Tonemap.Reported = false;
             }
-            else if (handle == s_Post.Bloom.Handle && s_Post.Bloom.Loaded)
+            if (handle == 0 || handle == s_Post.Bloom.Handle)
             {
-                Renderer::GetDevice().WaitIdle();
-                DestroyBloom();
+                if (s_Post.Bloom.Loaded)
+                {
+                    Renderer::GetDevice().WaitIdle();
+                    DestroyBloom();
+                }
+                s_Post.Bloom.Reported = false;
             }
         });
 }
@@ -141,10 +151,25 @@ bool EnsureLoaded(Program& program, const char* name, u32 hostPushConstantSize)
     ShaderCache& library = ShaderCache::Get();
     const std::filesystem::path path = FileSystem::Get().GetRootPath() / "assets/shaders" / name;
     program.Handle = library.Load(path.string());
+    RegisterReloadListener();
     const ShaderCache::Shader* shader = library.Get(program.Handle);
     if (shader == nullptr)
     {
-        UHE_CORE_ERROR("PostProcess: {0} failed to load; its passes will not draw", name);
+        if (!program.Reported)
+            UHE_CORE_ERROR("PostProcess: {0} failed to load; its passes will not draw", name);
+        program.Reported = true;
+        return false;
+    }
+    // The passes push the whole host struct: a module declaring a different
+    // range would have it pushed past its end. Refused until the next reload.
+    const u32 pushConstantSize = ReflectedPushConstantSize(*shader);
+    if (pushConstantSize != hostPushConstantSize)
+    {
+        if (!program.Reported)
+            UHE_CORE_ERROR("PostProcess: {0} push constants are {1} bytes, the host struct is {2}; its passes will "
+                           "not draw",
+                           name, pushConstantSize, hostPushConstantSize);
+        program.Reported = true;
         return false;
     }
 
@@ -152,12 +177,7 @@ bool EnsureLoaded(Program& program, const char* name, u32 hostPushConstantSize)
     const std::string stem = std::filesystem::path(name).stem().string();
     program.Vertex = CreateStageShader(device, *shader, RHI::ShaderStage::Vertex, (stem + ".vertex").c_str());
     program.Fragment = CreateStageShader(device, *shader, RHI::ShaderStage::Fragment, (stem + ".fragment").c_str());
-    program.PushConstantSize = ReflectedPushConstantSize(*shader);
-    if (program.PushConstantSize != hostPushConstantSize)
-        UHE_CORE_ERROR("PostProcess: {0} push constants are {1} bytes, the host struct is {2}", name,
-                       program.PushConstantSize, hostPushConstantSize);
-
-    RegisterReloadListener();
+    program.PushConstantSize = pushConstantSize;
     program.Loaded = program.Vertex != nullptr && program.Fragment != nullptr;
     // A half-built program is retried on the next use: release the stage that did build so it does not leak.
     if (!program.Loaded)

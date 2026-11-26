@@ -34,7 +34,9 @@ struct PushConstants
     float4 deep;         // rgb: deep colour (linear), a: foam
     float4 wave;         // x: height, y: length, z: speed, w: choppiness
     float4 waveDir;      // xy: main direction on x/z, z: grid cells per side, w: mode (0 copy, 1 water)
-    float4 size;         // xy: extent on local x/z, z: entity ID (picking)
+    float2 size;         // extent on local x/z
+    int entityID;        // picking; an int, a float would lose entt handles above 2^24
+    float padding;
     float4 projection;   // depth to view z: P[2][2], P[3][2], P[2][3], P[3][3]
     int frameData;       // SceneFrameData buffer (-1 none)
     int lightBuffer;     // light buffer
@@ -189,7 +191,7 @@ FSOutput Output(float3 color)
     FSOutput output;
     output.color = float4(color, 1.0);
 #ifndef UHE_NO_ENTITY_ID
-    output.entityID = int(pc.size.z);
+    output.entityID = pc.entityID;
 #endif
     return output;
 }

@@ -75,6 +75,9 @@ public:
     /// this format, and a pipeline has to be created for the pass it is bound
     /// in, so a scene pipeline that also serves such a pass needs it.
     [[nodiscard]] virtual TextureFormat GetSwapchainFormat() = 0;
+    /// @brief The device's maxPushConstantsSize. Vulkan guarantees only 128 bytes;
+    ///        desktop GPUs report 256, some mobile ones 128.
+    [[nodiscard]] virtual u32 GetMaxPushConstantsSize() const { return 256; }
     /// @brief Whether a pipeline can rasterize edges only (GraphicsPipelineDesc::wireframe).
     [[nodiscard]] virtual bool SupportsWireframe() const { return false; }
 
