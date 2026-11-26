@@ -17,6 +17,8 @@ namespace
 RENDERDOC_API_1_6_0* s_Api = nullptr;
 u64 s_CaptureFrame = 0; ///< -renderdoc-frame; 0 for none
 u32 s_LoggedCaptures = 0;
+std::string s_PendingNote; ///< written into the comments of the next capture
+u64 s_FrameIndex = 0;
 
 bool Requested()
 {
@@ -69,6 +71,10 @@ void Init()
     s_Api->SetCaptureFilePathTemplate(prefix.c_str());
     // The engine draws its own overlay; RenderDoc's only covers the game.
     s_Api->MaskOverlayBits(eRENDERDOC_Overlay_None, eRENDERDOC_Overlay_None);
+    // F12 captures in every app (the default also has PrintScreen, which
+    // desktop screenshot tools take first).
+    RENDERDOC_InputButton keys[] = {eRENDERDOC_Key_F12};
+    s_Api->SetCaptureKeys(keys, 1);
     const std::string frame = CommandLine::GetValue("renderdoc-frame");
     if (!frame.empty())
         s_CaptureFrame = std::strtoull(frame.c_str(), nullptr, 10);
@@ -82,10 +88,11 @@ bool Available()
     return s_Api != nullptr;
 }
 
-void TriggerCapture()
+void TriggerCapture(const std::string& note)
 {
     if (s_Api == nullptr)
         return;
+    s_PendingNote = note;
     s_Api->TriggerCapture();
     UHE_CORE_INFO("RenderDoc: capturing the next frame");
 }
@@ -94,8 +101,9 @@ void OnFrame(u64 frameIndex)
 {
     if (s_Api == nullptr)
         return;
+    s_FrameIndex = frameIndex;
     if (s_CaptureFrame != 0 && frameIndex == s_CaptureFrame)
-        TriggerCapture();
+        TriggerCapture("-renderdoc-frame " + std::to_string(frameIndex));
     // Written asynchronously: report each capture once it exists.
     const u32 count = s_Api->GetNumCaptures();
     for (; s_LoggedCaptures < count; ++s_LoggedCaptures)
@@ -103,8 +111,15 @@ void OnFrame(u64 frameIndex)
         char path[1024] = {};
         u32 length = sizeof(path);
         u64 timestamp = 0;
-        if (s_Api->GetCapture(s_LoggedCaptures, path, &length, &timestamp) == 1)
-            UHE_CORE_INFO("RenderDoc: wrote {0}", path);
+        if (s_Api->GetCapture(s_LoggedCaptures, path, &length, &timestamp) != 1)
+            continue;
+        // Annotated once written: RenderDoc shows the comments when it opens the file.
+        std::string comments = "UHE, written around frame " + std::to_string(s_FrameIndex);
+        if (!s_PendingNote.empty())
+            comments += "\n" + s_PendingNote;
+        s_Api->SetCaptureFileComments(path, comments.c_str());
+        s_PendingNote.clear();
+        UHE_CORE_INFO("RenderDoc: wrote {0}", path);
     }
 }
 

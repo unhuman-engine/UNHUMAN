@@ -22,8 +22,11 @@ UHE_API void Init();
 /// @brief RenderDoc is loaded and hooked into this process.
 [[nodiscard]] UHE_API bool Available();
 
-/// @brief Captures the next presented frame.
-UHE_API void TriggerCapture();
+/**
+ * @brief Captures the next presented frame. F12 does the same from the keyboard.
+ * @param note Saved in the capture's comments (what was being looked at), shown when RenderDoc opens it.
+ */
+UHE_API void TriggerCapture(const std::string& note = {});
 
 /// @brief Call once per frame: triggers the `-renderdoc-frame` capture and logs captures as they are written.
 UHE_API void OnFrame(u64 frameIndex);
