@@ -378,6 +378,30 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::EndMap;
     }
 
+    // Terrain (colours in sRGB; the mesh and heights are rebuilt on load)
+    if (entity.HasComponent<TerrainComponent>())
+    {
+        auto& tc = entity.GetComponent<TerrainComponent>();
+        out << YAML::Key << "TerrainComponent" << YAML::BeginMap;
+        out << YAML::Key << "HeightmapPath" << YAML::Value << tc.HeightmapPath;
+        out << YAML::Key << "Size" << YAML::Value << tc.Size;
+        out << YAML::Key << "Height" << YAML::Value << tc.Height;
+        out << YAML::Key << "Resolution" << YAML::Value << tc.Resolution;
+        out << YAML::Key << "Seed" << YAML::Value << tc.Seed;
+        out << YAML::Key << "FeatureSize" << YAML::Value << tc.FeatureSize;
+        out << YAML::Key << "Octaves" << YAML::Value << tc.Octaves;
+        out << YAML::Key << "Roughness" << YAML::Value << tc.Roughness;
+        out << YAML::Key << "SandColor" << YAML::Value << tc.SandColor;
+        out << YAML::Key << "GrassColor" << YAML::Value << tc.GrassColor;
+        out << YAML::Key << "RockColor" << YAML::Value << tc.RockColor;
+        out << YAML::Key << "SnowColor" << YAML::Value << tc.SnowColor;
+        out << YAML::Key << "SandLevel" << YAML::Value << tc.SandLevel;
+        out << YAML::Key << "SnowLevel" << YAML::Value << tc.SnowLevel;
+        out << YAML::Key << "RockSlope" << YAML::Value << tc.RockSlope;
+        out << YAML::Key << "Collider" << YAML::Value << tc.Collider;
+        out << YAML::EndMap;
+    }
+
     // Wind zone (its direction is the entity's local -Z, so only the strengths are stored)
     if (entity.HasComponent<WindComponent>())
     {
@@ -1128,6 +1152,30 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             ReadOptional(waterNode, "Foam", wc.Foam);
             // The grid is Resolution^2 cells: a hand-edited 0 or 100000 must not reach the mesh builder.
             wc.Resolution = std::clamp(wc.Resolution, 1, 512);
+        }
+
+        // Terrain: every field optional
+        if (auto terrainNode = entityNode["TerrainComponent"])
+        {
+            auto& tc = entity.AddComponent<TerrainComponent>();
+            ReadOptional(terrainNode, "HeightmapPath", tc.HeightmapPath);
+            ReadOptional(terrainNode, "Size", tc.Size);
+            ReadOptional(terrainNode, "Height", tc.Height);
+            ReadOptional(terrainNode, "Resolution", tc.Resolution);
+            ReadOptional(terrainNode, "Seed", tc.Seed);
+            ReadOptional(terrainNode, "FeatureSize", tc.FeatureSize);
+            ReadOptional(terrainNode, "Octaves", tc.Octaves);
+            ReadOptional(terrainNode, "Roughness", tc.Roughness);
+            ReadOptional(terrainNode, "SandColor", tc.SandColor);
+            ReadOptional(terrainNode, "GrassColor", tc.GrassColor);
+            ReadOptional(terrainNode, "RockColor", tc.RockColor);
+            ReadOptional(terrainNode, "SnowColor", tc.SnowColor);
+            ReadOptional(terrainNode, "SandLevel", tc.SandLevel);
+            ReadOptional(terrainNode, "SnowLevel", tc.SnowLevel);
+            ReadOptional(terrainNode, "RockSlope", tc.RockSlope);
+            ReadOptional(terrainNode, "Collider", tc.Collider);
+            // Resolution^2 quads are built: a hand-edited value must not reach the builder unclamped.
+            tc.Resolution = std::clamp(tc.Resolution, 8, 1024);
         }
 
         // Wind zone: every field optional, as for the area light

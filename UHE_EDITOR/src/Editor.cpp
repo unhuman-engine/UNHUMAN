@@ -2175,6 +2175,8 @@ void Editor::DrawMainMenuBar()
             CreateEntityFromMenu("Water", 8);
         if (ImGui::MenuItem("Wind"))
             CreateEntityFromMenu("Wind", 9);
+        if (ImGui::MenuItem("Terrain"))
+            CreateEntityFromMenu("Terrain", 10);
         ImGui::EndDisabled();
         ImGui::EndMenu();
     }
@@ -2807,6 +2809,10 @@ void Editor::CreateEntityFromMenu(const char* name, int componentKind)
             // Raised off the ground so its viewport gizmo is not buried in the floor.
             entity.AddComponent<WindComponent>();
             entity.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, 2.0f, 0.0f);
+            break;
+        // Terrain is centred on the origin; its lowest point is the entity's height.
+        case 10:
+            entity.AddComponent<TerrainComponent>();
             break;
         default: break;
     }

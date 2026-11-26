@@ -486,6 +486,8 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             AddComponentMenuItem<WaterComponent>(m_SelectionContext, "Water");
         if (match("Wind"))
             AddComponentMenuItem<WindComponent>(m_SelectionContext, "Wind");
+        if (match("Terrain"))
+            AddComponentMenuItem<TerrainComponent>(m_SelectionContext, "Terrain");
         ImGui::EndPopup();
     }
 
@@ -1121,6 +1123,81 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             ImGui::EndDisabled();
             PropertyLabel("Foam", "Shoreline and crest foam.");
             ImGui::SliderFloat("##Foam", &water.Foam, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        });
+
+    ::UHE::DrawComponents<TerrainComponent>(
+        "Terrain", entity,
+        [](TerrainComponent& terrain)
+        {
+            PropertyLabel("Heightmap", "A grayscale image in the project's assets: white is Height. Empty: "
+                                       "generated noise. Drop an image here.");
+            char path[512];
+            std::snprintf(path, sizeof(path), "%s", terrain.HeightmapPath.c_str());
+            if (ImGui::InputTextWithHint("##Heightmap", "generated", path, sizeof(path),
+                                         ImGuiInputTextFlags_EnterReturnsTrue))
+                terrain.HeightmapPath = path;
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("Content_Browser_item"))
+                {
+                    // Stored relative to the mount it is under, as scenes store paths.
+                    const std::filesystem::path dropped(static_cast<const char*>(payload->Data));
+                    std::string stored = dropped.generic_string();
+                    std::error_code ec;
+                    for (const auto& [scheme, root] : Vfs::Get().GetMounts())
+                    {
+                        const std::filesystem::path relative =
+                            std::filesystem::weakly_canonical(dropped, ec)
+                                .lexically_relative(std::filesystem::weakly_canonical(root, ec));
+                        if (!relative.empty() && *relative.begin() != "..")
+                        {
+                            stored = relative.generic_string();
+                            break;
+                        }
+                    }
+                    terrain.HeightmapPath = stored;
+                }
+                ImGui::EndDragDropTarget();
+            }
+            PropertyLabel("Size", "Width and depth in metres, centred on the entity.");
+            ImGui::DragFloat("##TerrainSize", &terrain.Size, 0.5f, 1.0f, 10000.0f, "%.1f m",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Height", "Metres between the lowest and the highest point.");
+            ImGui::DragFloat("##TerrainHeight", &terrain.Height, 0.1f, 0.0f, 2000.0f, "%.1f m",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Resolution", "Quads per side. Higher is smoother and slower to rebuild.");
+            ImGui::DragInt("##TerrainResolution", &terrain.Resolution, 1.0f, 8, 1024, "%d",
+                           ImGuiSliderFlags_AlwaysClamp);
+
+            ImGui::BeginDisabled(!terrain.HeightmapPath.empty());
+            PropertyLabel("Seed", "Another seed, other hills.");
+            ImGui::DragInt("##TerrainSeed", &terrain.Seed, 1.0f);
+            PropertyLabel("Feature Size", "Metres across the largest hills.");
+            ImGui::DragFloat("##FeatureSize", &terrain.FeatureSize, 0.2f, 1.0f, 2000.0f, "%.1f m",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Octaves", "Layers of finer detail.");
+            ImGui::SliderInt("##Octaves", &terrain.Octaves, 1, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Roughness", "How much each finer layer adds.");
+            ImGui::SliderFloat("##Roughness", &terrain.Roughness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::EndDisabled();
+
+            PropertyLabel("Sand");
+            ImGui::ColorEdit3("##Sand", glm::value_ptr(terrain.SandColor));
+            PropertyLabel("Grass");
+            ImGui::ColorEdit3("##Grass", glm::value_ptr(terrain.GrassColor));
+            PropertyLabel("Rock");
+            ImGui::ColorEdit3("##Rock", glm::value_ptr(terrain.RockColor));
+            PropertyLabel("Snow");
+            ImGui::ColorEdit3("##Snow", glm::value_ptr(terrain.SnowColor));
+            PropertyLabel("Sand Level", "Below this fraction of the height: sand.");
+            ImGui::SliderFloat("##SandLevel", &terrain.SandLevel, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Snow Level", "Above this fraction of the height: snow.");
+            ImGui::SliderFloat("##SnowLevel", &terrain.SnowLevel, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Rock Slope", "Steeper than this: rock.");
+            ImGui::SliderFloat("##RockSlope", &terrain.RockSlope, 1.0f, 89.0f, "%.0f\xC2\xB0",
+                               ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Collider", "A static heightfield body in Play: bodies rest and drive on it.");
+            ImGui::Checkbox("##TerrainCollider", &terrain.Collider);
         });
 
     ::UHE::DrawComponents<WindComponent>(
