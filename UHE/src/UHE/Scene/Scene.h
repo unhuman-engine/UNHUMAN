@@ -202,6 +202,12 @@ private:
     void FlushPendingReparents();
     void FlushPendingCollapses();
     void FlushPendingModelOps();
+    /// Rebuilds the mesh and heights of every TerrainComponent whose fields
+    /// changed. Between frames only: the upload records into the frame's
+    /// command buffer, outside any render pass.
+    void UpdateTerrains();
+    /// Adds a static Jolt heightfield body for every terrain with a collider (OnRuntimeStart).
+    void CreateTerrainBodies();
     // Attach 'child' under 'parent' WITHOUT preserving its world transform:
     // the local transform is kept as-is (new entities appear at the parent's
     // origin). ReparentEntity is the world-preserving variant.

@@ -6,7 +6,11 @@
 // under the ASan preset this is the regression net for the entt lifetime
 // crashes: script instances, parent/child links, deferred mutations, and the
 // play-mode scene copy.
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include "UHE/Core/SimulationClock.h"
 #include "UHE/Math/Math.h"
@@ -16,6 +20,7 @@
 #include "UHE/Scene/Entity.h"
 #include "UHE/Scene/Scene.h"
 #include "UHE/Scene/ScriptableEntity.h"
+#include "UHE/Scene/Terrain.h"
 
 using namespace UHE;
 
@@ -409,6 +414,121 @@ static void TestSceneCameraClipPlanes()
           "a real far plane is kept");
 }
 
+// --- terrain: heights, mesh, and a body that things land on ---
+static void TestTerrain()
+{
+    std::cout << "[terrain]\n";
+    TerrainComponent terrain;
+    terrain.Size = 32.0f;
+    terrain.Height = 6.0f;
+    terrain.Resolution = 32;
+
+    const Terrain::Heightfield a = Terrain::BuildHeightfield(terrain);
+    const Terrain::Heightfield b = Terrain::BuildHeightfield(terrain);
+    CHECK(a.Samples == 33 && a.Heights.size() == 33u * 33u, "a 32-quad grid has 33 x 33 samples");
+    CHECK(a.Heights == b.Heights, "the same seed builds the same ground");
+    const auto [low, high] = std::minmax_element(a.Heights.begin(), a.Heights.end());
+    CHECK(std::fabs(*low) < 1e-4f && std::fabs(*high - 6.0f) < 1e-3f, "noise spans 0 to Height");
+    terrain.Seed = 2;
+    CHECK(Terrain::BuildHeightfield(terrain).Heights != a.Heights, "another seed builds other ground");
+    terrain.Seed = 1;
+
+    // HeightAt hits the samples exactly, and interpolates between them.
+    const float step = a.Size / 32.0f;
+    const float corner = Terrain::HeightAt(a, -16.0f, -16.0f);
+    CHECK(std::fabs(corner - a.Heights[0]) < 1e-5f, "HeightAt reads the corner sample");
+    const float mid = Terrain::HeightAt(a, -16.0f + step * 0.5f, -16.0f);
+    CHECK(std::fabs(mid - (a.Heights[0] + a.Heights[1]) * 0.5f) < 1e-4f, "HeightAt interpolates between samples");
+    CHECK(std::fabs(Terrain::HeightAt(a, -100.0f, -100.0f) - corner) < 1e-5f, "outside the edge clamps");
+
+    const RD3d::Primitive prim = Terrain::BuildPrimitive(a, terrain);
+    CHECK(prim.vertices.size() == 33u * 33u && prim.indices.size() == 32u * 32u * 6u, "one vertex per sample");
+    bool upward = true;
+    for (const auto& v : prim.vertices)
+        upward &= v.normal.y > 0.0f && std::fabs(glm::length(v.normal) - 1.0f) < 1e-4f;
+    CHECK(upward, "normals are unit length and face up");
+    // Triangle winding faces up (counter-clockwise from above), like the normals.
+    const glm::vec3 p0 = prim.vertices[prim.indices[0]].position;
+    const glm::vec3 p1 = prim.vertices[prim.indices[1]].position;
+    const glm::vec3 p2 = prim.vertices[prim.indices[2]].position;
+    CHECK(glm::cross(p1 - p0, p2 - p0).y > 0.0f, "triangles are front-facing from above");
+
+    // A flat field: grass everywhere, normals straight up; a cliff is rock.
+    Terrain::Heightfield flat;
+    flat.Samples = 9;
+    flat.Size = 8.0f;
+    flat.Heights.assign(81, 3.0f);
+    const RD3d::Primitive flatPrim = Terrain::BuildPrimitive(flat, terrain);
+    CHECK(glm::length(flatPrim.vertices[40].normal - glm::vec3(0.0f, 1.0f, 0.0f)) < 1e-5f, "flat ground faces up");
+    Terrain::Heightfield cliff = flat;
+    for (u32 z = 0; z < 9; ++z)
+        for (u32 x = 5; x < 9; ++x)
+            cliff.Heights[z * 9 + x] = 6.0f; // a 3 m step over one metre
+    const RD3d::Primitive cliffPrim = Terrain::BuildPrimitive(cliff, terrain);
+    const glm::vec3 rock = glm::vec3(cliffPrim.vertices[4 * 9 + 4].color);
+    const glm::vec3 grass = glm::vec3(flatPrim.vertices[40].color);
+    CHECK(rock.g < grass.g * 0.8f, "steep ground takes the rock colour");
+
+    // A heightmap image: white is Height, black is 0, rows run along +Z.
+    const std::filesystem::path map = std::filesystem::temp_directory_path() / "uhe_terrain_map.pgm";
+    {
+        std::ofstream file(map, std::ios::binary);
+        file << "P5\n4 4\n255\n";
+        for (int z = 0; z < 4; ++z)
+            for (int x = 0; x < 4; ++x)
+                file.put(static_cast<char>(z == 0 ? 255 : 0));
+    }
+    terrain.Resolution = 8;
+    const Terrain::Heightfield image = Terrain::BuildHeightfield(terrain, map.string());
+    CHECK(std::fabs(Terrain::HeightAt(image, 0.0f, -16.0f) - 6.0f) < 1e-3f, "the image's top row is the -Z edge");
+    CHECK(std::fabs(Terrain::HeightAt(image, 0.0f, 16.0f)) < 1e-3f, "and its bottom row the +Z edge");
+    std::filesystem::remove(map);
+    const Terrain::Heightfield missing = Terrain::BuildHeightfield(terrain, "/no/such/heightmap.png");
+    CHECK(missing.Samples == 9 && !missing.Heights.empty(), "a missing heightmap falls back to noise");
+
+    CHECK(Terrain::Resample(a, 34).Samples == 34, "resampling gives the asked sample count");
+
+    // In a scene: built on the first update, rebuilt only when a field changes,
+    // and solid ground in Play.
+    auto scene = CreateRef<Scene>();
+    Entity ground = scene->CreateEntity("Ground");
+    TerrainComponent& tc = ground.AddComponent<TerrainComponent>();
+    tc.Size = 40.0f;
+    tc.Height = 4.0f;
+    tc.Resolution = 64;
+    Entity ball = scene->CreateEntity("Ball");
+    ball.GetComponent<TransformComponent>().Translation = {3.0f, 10.0f, -2.0f};
+    auto& rb = ball.AddComponent<RigidBody3DComponent>();
+    rb.Type = RigidBody3DComponent::BodyType::Dynamic;
+    ball.AddComponent<SphereCollider3DComponent>().Radius = 0.5f;
+
+    scene->OnUpdateEditorSimulation(Timestep(0.016f));
+    CHECK(tc.Mesh != nullptr && tc.Heights != nullptr && tc.Heights->size() == 65u * 65u, "built on first update");
+    const Ref<RD3d::Model> firstMesh = tc.Mesh;
+    scene->OnUpdateEditorSimulation(Timestep(0.016f));
+    CHECK(tc.Mesh == firstMesh, "not rebuilt while nothing changed");
+    tc.Height = 5.0f;
+    scene->OnUpdateEditorSimulation(Timestep(0.016f));
+    CHECK(tc.Mesh != firstMesh, "rebuilt when a field changes");
+
+    Terrain::Heightfield built;
+    built.Samples = 65;
+    built.Size = 40.0f;
+    built.Heights = *tc.Heights;
+
+    scene->OnRuntimeStart();
+    for (int i = 0; i < 240; ++i)
+        scene->OnUpdateRuntime(Timestep(1.0f / 60.0f));
+    // The ball rolls downhill: compare with the ground where it ended up.
+    const glm::vec3 at = ball.GetComponent<TransformComponent>().Translation;
+    const float groundY = Terrain::HeightAt(built, at.x, at.z);
+    std::cout << "  ball at (" << at.x << ", " << at.y << ", " << at.z << "), ground there " << groundY << " m\n";
+    CHECK(at.y > groundY - 0.1f, "the ball does not fall through the terrain");
+    CHECK(at.y < groundY + 1.0f, "it rests on the ground, not above it");
+    CHECK(at.y < 9.0f, "the ball fell from where it started");
+    scene->OnRuntimeStop();
+}
+
 int main()
 {
     Scene::GetEditorOverlays().LightIcons = false; // no texture loading in headless tests
@@ -416,6 +536,7 @@ int main()
 
     TestCreationAndIndex();
     TestSceneCameraClipPlanes();
+    TestTerrain();
     TestHierarchy();
     TestRecursiveDestroy();
     TestScriptLifetime();

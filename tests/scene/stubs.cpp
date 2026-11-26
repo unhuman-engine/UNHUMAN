@@ -123,6 +123,17 @@ float Animator::GetNormalizedTime() const
     return 0.0f;
 }
 std::vector<LightData> LightSystem::ExtractLights(entt::registry&) { return {}; }
+// Terrain meshes: kept on the CPU only (no device to upload to).
+bool Model::LoadFromPrimitives(const std::string& name, std::vector<Primitive> primitives,
+                               std::vector<Material> materials)
+{
+    m_LoadedMaterials = std::move(materials);
+    Mesh mesh;
+    mesh.name = name;
+    mesh.primitive = std::move(primitives);
+    m_LoadedMeshes.push_back(std::move(mesh));
+    return !m_LoadedMeshes.back().primitive.empty();
+}
 Model::~Model()
 {
     // Real dtor destroys GPU buffers via the device; headless tests never

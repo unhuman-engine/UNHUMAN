@@ -18,6 +18,9 @@ add_executable(scene_test
     # until a test calls Init(), which this harness does not.
     ${SCENE_SRC_DIR}/Scripting/ScriptEngine.cpp
     ${SCENE_SRC_DIR}/Scene/SceneCamera.cpp
+    # Terrain heights, mesh and heightfield body are CPU work; stb reads heightmaps.
+    ${SCENE_SRC_DIR}/Scene/Terrain.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/vendor/stb_image/stb_image.cpp
     ${SCENE_SRC_DIR}/Scene/Entity.cpp
     ${SCENE_SRC_DIR}/Core/UUID.cpp
     ${SCENE_SRC_DIR}/Core/SimulationClock.cpp

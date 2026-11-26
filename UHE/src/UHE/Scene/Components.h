@@ -372,6 +372,49 @@ struct UHE_API WaterComponent
     WaterComponent(const WaterComponent&) = default;
 };
 
+/**
+ * @brief Ground made from a heightfield: a grayscale heightmap image, or
+ *        generated noise when there is none.
+ *
+ * A grid of Resolution x Resolution quads, Size metres on a side, centred on
+ * the entity; white (or the highest noise) is Height metres up. It draws
+ * through the ordinary 3D path (shadows, occlusion, picking), coloured in
+ * layers by height and slope, and in Play it is a static Jolt heightfield
+ * that bodies rest and drive on. Editing a field rebuilds it on the next frame.
+ */
+struct UHE_API TerrainComponent
+{
+    std::string HeightmapPath; ///< grayscale image (8 or 16 bit); empty: generated noise
+    float Size = 64.0f;        ///< width and depth, metres
+    float Height = 8.0f;       ///< metres between the lowest and the highest point
+    int Resolution = 128;      ///< quads per side, 8..1024
+
+    // Generated terrain.
+    int Seed = 1;
+    float FeatureSize = 24.0f; ///< metres across the largest hills
+    int Octaves = 5;           ///< layers of finer detail, 1..8
+    float Roughness = 0.5f;    ///< how much each finer layer adds, 0..1
+
+    // Colour layers, sRGB as a picker shows them.
+    glm::vec3 SandColor{0.76f, 0.70f, 0.50f};
+    glm::vec3 GrassColor{0.27f, 0.45f, 0.17f};
+    glm::vec3 RockColor{0.42f, 0.40f, 0.37f};
+    glm::vec3 SnowColor{0.94f, 0.95f, 0.97f};
+    float SandLevel = 0.06f; ///< below this fraction of Height: sand
+    float SnowLevel = 0.85f; ///< above this fraction of Height: snow
+    float RockSlope = 35.0f; ///< steeper than this many degrees: rock
+
+    bool Collider = true; ///< a static heightfield body in Play
+
+    // Built from the fields above; not saved.
+    Ref<RD3d::Model> Mesh;
+    std::shared_ptr<const std::vector<float>> Heights; ///< (Resolution+1)^2 metres, row-major along +Z
+    u64 BuiltKey = 0;
+
+    TerrainComponent() = default;
+    TerrainComponent(const TerrainComponent&) = default;
+};
+
 struct UHE_API BoxColliderComponent
 {
     glm::vec2 Offset{0.0f, 0.0f};

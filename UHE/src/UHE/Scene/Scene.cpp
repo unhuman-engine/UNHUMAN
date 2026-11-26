@@ -21,12 +21,14 @@
 
 // Jolt Physics
 #include <Jolt/Jolt.h>
-#include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
-#include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
+#include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include "UHE/Scene/Terrain.h"
 
 namespace UHE
 {
@@ -53,6 +55,7 @@ Scene::Scene()
     m_registry.storage<CapsuleCollider3DComponent>();
     m_registry.storage<ModelNodeComponent>();
     m_registry.storage<RelationshipComponent>();
+    m_registry.storage<TerrainComponent>();
 }
 
 Scene::~Scene()
@@ -285,6 +288,9 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
             newEntity.AddComponent<AreaLightComponent>() = srcRegistry.get<AreaLightComponent>(srcEntity);
         if (srcRegistry.all_of<WaterComponent>(srcEntity))
             newEntity.AddComponent<WaterComponent>() = srcRegistry.get<WaterComponent>(srcEntity);
+        // The built mesh and heights are shared, not rebuilt: they are immutable once built.
+        if (srcRegistry.all_of<TerrainComponent>(srcEntity))
+            newEntity.AddComponent<TerrainComponent>() = srcRegistry.get<TerrainComponent>(srcEntity);
 
         // Copy PointLightComponent
         if (srcRegistry.all_of<PointLightComponent>(srcEntity))
@@ -915,6 +921,7 @@ void Scene::OnUpdateEditorSimulation(Timestep ts)
     FlushPendingReparents();
     FlushPendingCollapses();
     FlushPendingModelOps();
+    UpdateTerrains();
 
     m_registry.view<NativeScriptComponent>().each(
         [=, this](auto entity, auto& nsc)
@@ -1386,6 +1393,16 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
         Renderer3D::SubmitModel(*model.ModelData, GetWorldFromCache(worldTransforms, entity), (int)entity, animator);
     }
 
+    auto terrainView = m_registry.view<TerrainComponent>();
+    for (auto entity : terrainView)
+    {
+        const auto& terrain = terrainView.get<TerrainComponent>(entity);
+        if (!terrain.Mesh)
+            continue;
+        Renderer3D::SetFoliage(0.0f, 1.0f);
+        Renderer3D::SubmitModel(*terrain.Mesh, GetWorldFromCache(worldTransforms, entity), (int)entity, nullptr);
+    }
+
     // Issue #17: leaf nodes of expanded glTF trees submit their sub-mesh with
     // the accumulated world transform so every part is individually placed.
     // NOTE: group nodes with their own mesh are drawn here too — only nodes
@@ -1474,6 +1491,7 @@ void Scene::OnUpdateRuntimeSimulation(Timestep frame)
     FlushPendingReparents();
     FlushPendingCollapses();
     FlushPendingModelOps();
+    UpdateTerrains();
 
     // Hot reload is polled per frame, not per tick: it watches the disk.
     ScriptEngine::Get().Tick(*this);
@@ -1802,6 +1820,9 @@ void Scene::OnRuntimeStart()
     // --- 3D Physics (Jolt) ---
     m_PhysicsSystem3D.InitializeScene();
     JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface();
+    // A scene started without a frame before it (the game runtime) has not built its terrains yet.
+    UpdateTerrains();
+    CreateTerrainBodies();
 
     auto view3d = m_registry.view<TransformComponent, RigidBody3DComponent>();
     for (auto entity : view3d)
@@ -1885,6 +1906,88 @@ void Scene::OnRuntimeStart()
     }
 }
 
+void Scene::UpdateTerrains()
+{
+    auto view = m_registry.view<TerrainComponent>();
+    for (auto entity : view)
+    {
+        auto& terrain = view.get<TerrainComponent>(entity);
+        std::string heightmap;
+        u64 key = Terrain::BuildKey(terrain);
+        if (!terrain.HeightmapPath.empty())
+        {
+            const std::filesystem::path resolved = ResolveAssetPath(terrain.HeightmapPath);
+            std::error_code ec;
+            const auto written = std::filesystem::last_write_time(resolved, ec);
+            if (!ec)
+            {
+                heightmap = resolved.string();
+                const auto ticks = written.time_since_epoch().count();
+                key ^= static_cast<u64>(ticks) * 0x9E3779B97F4A7C15ull; // a repainted heightmap rebuilds too
+            }
+            else
+            {
+                heightmap = resolved.string(); // missing: BuildHeightfield logs it and falls back to noise
+            }
+        }
+        if (key == terrain.BuiltKey)
+            continue;
+        terrain.BuiltKey = key;
+
+        Terrain::Heightfield field = Terrain::BuildHeightfield(terrain, heightmap);
+        RD3d::Material material;
+        material.RoughnessFactor = 0.92f;
+        std::vector<RD3d::Primitive> primitives;
+        primitives.push_back(Terrain::BuildPrimitive(field, terrain));
+        // A new model each time: the previous one may still be drawn by a
+        // frame in flight, and its buffers are freed only after that frame.
+        auto mesh = CreateRef<RD3d::Model>();
+        if (mesh->LoadFromPrimitives("Terrain", std::move(primitives), {material}))
+            terrain.Mesh = mesh;
+        terrain.Heights = std::make_shared<const std::vector<float>>(std::move(field.Heights));
+    }
+}
+
+void Scene::CreateTerrainBodies()
+{
+    JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface();
+    if (bodyInterface == nullptr)
+        return;
+    auto view = m_registry.view<TransformComponent, TerrainComponent>();
+    for (auto entity : view)
+    {
+        auto [transform, terrain] = view.get<TransformComponent, TerrainComponent>(entity);
+        if (!terrain.Collider || !terrain.Heights || terrain.Heights->empty())
+            continue;
+        Terrain::Heightfield field;
+        field.Samples = static_cast<u32>(std::lround(std::sqrt(static_cast<double>(terrain.Heights->size()))));
+        field.Size = std::max(terrain.Size, 0.1f);
+        field.Heights = *terrain.Heights;
+        // Jolt needs a sample count its block size (2) divides; the grid has
+        // Resolution + 1, so an even Resolution gets one more sample.
+        if (field.Samples % 2 != 0)
+            field = Terrain::Resample(field, field.Samples + 1);
+
+        const glm::vec3 scale = transform.Scale;
+        const float spacing = field.Size / static_cast<float>(field.Samples - 1);
+        JPH::HeightFieldShapeSettings settings(
+            field.Heights.data(), JPH::Vec3(-field.Size * 0.5f * scale.x, 0.0f, -field.Size * 0.5f * scale.z),
+            JPH::Vec3(spacing * scale.x, scale.y, spacing * scale.z), field.Samples);
+        JPH::ShapeSettings::ShapeResult shape = settings.Create();
+        if (shape.HasError())
+        {
+            UHE_CORE_ERROR("Terrain: no collider ({0})", shape.GetError().c_str());
+            continue;
+        }
+        const glm::quat q = glm::quat(transform.Rotation);
+        JPH::BodyCreationSettings body(
+            shape.Get(), JPH::Vec3(transform.Translation.x, transform.Translation.y, transform.Translation.z),
+            JPH::Quat(q.x, q.y, q.z, q.w), JPH::EMotionType::Static, 0);
+        body.mFriction = 0.8f;
+        bodyInterface->CreateAndAddBody(body, JPH::EActivation::DontActivate);
+    }
+}
+
 void Scene::OnRuntimeStop()
 {
     m_PreviousTickPose.clear();
@@ -1953,6 +2056,7 @@ template <> void Scene::OnComponentAdded<PointLightComponent>(Entity entity, Poi
 template <> void Scene::OnComponentAdded<SpotLightComponent>(Entity entity, SpotLightComponent& component) {};
 template <> void Scene::OnComponentAdded<FoliageComponent>(Entity entity, FoliageComponent& component) {};
 template <> void Scene::OnComponentAdded<WaterComponent>(Entity entity, WaterComponent& component) {};
+template <> void Scene::OnComponentAdded<TerrainComponent>(Entity entity, TerrainComponent& component) {};
 template <> void Scene::OnComponentAdded<AreaLightComponent>(Entity entity, AreaLightComponent& component) {};
 template <> void Scene::OnComponentAdded<WindComponent>(Entity entity, WindComponent& component) {};
 template <> void Scene::OnComponentAdded<AnimatorComponent>(Entity entity, AnimatorComponent& component) {};
