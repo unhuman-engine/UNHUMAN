@@ -11,6 +11,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "EditorDebugSettings.h"
 #include "EditorTheme.h"
 #include "EditorUI.h"
 #include "ImGuizmo.h"
@@ -2756,6 +2757,9 @@ void Editor::DrawPreferencesContent()
         EditorTheme::SetCustomAccentEnabled(customEnabled);
     if (customEnabled && ImGui::Button("Reset Accent"))
         EditorTheme::SetCustomAccentEnabled(false);
+
+    EditorUI::SectionHeader("GPU Debugging");
+    EditorDebugSettings::Draw();
 
     EditorUI::SectionHeader("Layout");
     if (ImGui::Button("Reset Layout"))

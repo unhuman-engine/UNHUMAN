@@ -6,6 +6,7 @@
 #include "Platform/Vulkan/ValidationGate.h"
 #include "Platform/Vulkan/VulkanDebugUtils.h"
 #include "UHE/Core/CommandLine.h"
+#include "UHE/Debug/GpuDebugOptions.h"
 
 std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 #ifdef NDEBUG
@@ -109,8 +110,12 @@ void VulkanInstance::initialize()
         .enabledValidationFeatureCount = 1,
         .pEnabledValidationFeatures = &syncValidation,
     };
-    const bool sync = enableValidationLayers && (Validation::ParseEnabledFlag(std::getenv("UHE_SYNC_VALIDATION")) ||
-                                                 CommandLine::HasFlag("sync-validation"));
+    GpuDebugOptions& debugOptions = GetGpuDebugOptions();
+    const bool sync =
+        enableValidationLayers && (Validation::ParseEnabledFlag(std::getenv("UHE_SYNC_VALIDATION")) ||
+                                   CommandLine::HasFlag("sync-validation") || debugOptions.RequestSyncValidation);
+    debugOptions.ValidationActive = enableValidationLayers;
+    debugOptions.SyncValidationActive = sync;
     if (sync)
     {
         validationFeatures.pNext = &debugCreateInfo;

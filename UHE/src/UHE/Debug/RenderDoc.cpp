@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <renderdoc_app.h>
 #include "UHE/Core/CommandLine.h"
+#include "UHE/Debug/GpuDebugOptions.h"
 #if defined(_WIN32)
     #include <Windows.h>
 #else
@@ -24,7 +25,8 @@ bool Requested()
 {
     const char* env = std::getenv("UHE_RENDERDOC");
     const bool envOn = env != nullptr && *env != '\0' && std::string(env) != "0";
-    return envOn || CommandLine::HasFlag("renderdoc") || !CommandLine::GetValue("renderdoc-frame").empty();
+    return envOn || CommandLine::HasFlag("renderdoc") || !CommandLine::GetValue("renderdoc-frame").empty() ||
+           GetGpuDebugOptions().RequestRenderDoc;
 }
 
 /// RenderDoc's GetAPI from the library already in the process, or loaded now when \p load.
