@@ -537,7 +537,7 @@ static void TestUI()
     std::cout << "[ui]\n";
     auto scene = CreateRef<Scene>();
     const glm::vec2 screen(800.0f, 600.0f);
-    const auto near = [](glm::vec2 a, glm::vec2 b) { return glm::length(a - b) < 1e-3f; };
+    const auto closeTo = [](glm::vec2 a, glm::vec2 b) { return glm::length(a - b) < 1e-3f; };
 
     // Pinned to the top-right corner, 20 px in from both edges.
     Entity corner = scene->CreateEntity("Corner");
@@ -573,15 +573,15 @@ static void TestUI()
 
     UI::Pointer idle;
     std::vector<UI::DrawCommand> list = UI::Update(*scene, screen, idle);
-    CHECK(near(cr.ComputedMin, {680.0f, 20.0f}) && near(cr.ComputedMax, {780.0f, 50.0f}),
+    CHECK(closeTo(cr.ComputedMin, {680.0f, 20.0f}) && closeTo(cr.ComputedMax, {780.0f, 50.0f}),
           "a corner anchor keeps its distance from that corner");
-    CHECK(near(br.ComputedMin, {10.0f, 540.0f}) && near(br.ComputedMax, {790.0f, 590.0f}),
+    CHECK(closeTo(br.ComputedMin, {10.0f, 540.0f}) && closeTo(br.ComputedMax, {790.0f, 590.0f}),
           "stretched anchors follow the screen's width, minus the margins");
-    CHECK(near(pr.ComputedMin, {250.0f, 200.0f}), "a centre anchor centres");
-    CHECK(near(bt.ComputedMin, {340.0f, 350.0f}) && near(bt.ComputedMax, {460.0f, 390.0f}),
+    CHECK(closeTo(pr.ComputedMin, {250.0f, 200.0f}), "a centre anchor centres");
+    CHECK(closeTo(bt.ComputedMin, {340.0f, 350.0f}) && closeTo(bt.ComputedMax, {460.0f, 390.0f}),
           "a child is laid out inside its parent");
     UI::Update(*scene, {1000.0f, 600.0f}, idle);
-    CHECK(near(cr.ComputedMin, {880.0f, 20.0f}), "and moves with the corner when the screen resizes");
+    CHECK(closeTo(cr.ComputedMin, {880.0f, 20.0f}), "and moves with the corner when the screen resizes");
     list = UI::Update(*scene, screen, idle);
     CHECK(list.size() == 4 && list.back().Type == UI::DrawCommand::Kind::Text && list.back().Text == "Go",
           "the draw list is back to front: bar, panel, button, its text");
@@ -656,10 +656,10 @@ static void TestUI()
     CHECK(UI::Scale(true, 720.0f, {3440.0f, 1440.0f}) == 2.0f, "a wider screen is fitted by its height");
     CHECK(UI::Scale(true, 720.0f, {640.0f, 1440.0f}) == 0.5f, "a portrait screen is fitted by its width");
     list = UI::Update(*scene, {1600.0f, 1200.0f}, idle, nullptr, 2.0f);
-    CHECK(near(cr.ComputedMin, {680.0f, 20.0f}), "rects stay in UI pixels");
+    CHECK(closeTo(cr.ComputedMin, {680.0f, 20.0f}), "rects stay in UI pixels");
     const auto cornerBox = std::find_if(list.begin(), list.end(), [&](const UI::DrawCommand& c)
                                         { return c.Entity == static_cast<entt::entity>(button); });
-    CHECK(cornerBox != list.end() && near(cornerBox->Min, {680.0f, 700.0f}) && cornerBox->CornerRadius == 12.0f,
+    CHECK(cornerBox != list.end() && closeTo(cornerBox->Min, {680.0f, 700.0f}) && cornerBox->CornerRadius == 12.0f,
           "the draw list is scaled to the screen");
     UI::Pointer scaled;
     scaled.Active = true;
