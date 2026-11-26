@@ -14,6 +14,7 @@
 #include "Panel/ProjectLauncherPanel.h"
 #include "Panel/SceneHierachyPanel.h"
 #include "Panel/ScriptsPanel.h"
+#include "Panel/SequencerPanel.h"
 #include "UHE.h"
 #include "UHE/Renderer/EditorCamera.h"
 #include "UHE/Renderer3D/Renderer3D.h"
@@ -161,6 +162,7 @@ private:
 
     SceneHierarchyPanel m_SceneHireacyPanel;
     AnimationGraphPanel m_AnimationGraphPanel;
+    SequencerPanel m_SequencerPanel;
     AudioPanel m_AudioPanel;
     ContentBrowserPanel m_ContentBrowserPanel;
     EnvironmentPanel m_EnvironmentPanel; ///< the active scene's RenderSettings, a tab beside Properties
@@ -196,6 +198,8 @@ private:
     bool m_ShowProfiler = true;
     bool m_ShowScripts = true;
     bool m_ShowAnimationGraph = true;
+    bool m_ShowSequencer = true;
+    std::string m_PendingPanelFocus; ///< view.panel: focused once that window exists
     bool m_ShowAudio = true;
     bool m_ShowSettings = true;
     bool m_ShowViewport = true;

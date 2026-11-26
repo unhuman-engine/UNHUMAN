@@ -488,6 +488,8 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             AddComponentMenuItem<WindComponent>(m_SelectionContext, "Wind");
         if (match("Terrain"))
             AddComponentMenuItem<TerrainComponent>(m_SelectionContext, "Terrain");
+        if (match("Sequencer"))
+            AddComponentMenuItem<SequencerComponent>(m_SelectionContext, "Sequencer");
         if (match("UI Rect"))
             AddComponentMenuItem<UIRectComponent>(m_SelectionContext, "UI Rect");
         if (match("UI Image"))
@@ -1369,6 +1371,26 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
                                ImGuiSliderFlags_AlwaysClamp);
             PropertyLabel("Collider", "A static heightfield body in Play: bodies rest and drive on it.");
             ImGui::Checkbox("##TerrainCollider", &terrain.Collider);
+        });
+
+    ::UHE::DrawComponents<SequencerComponent>(
+        "Sequencer", entity,
+        [](SequencerComponent& sequencer)
+        {
+            PropertyLabel("Length", "Seconds; playback ends (or loops) here.");
+            ImGui::DragFloat("##SeqLength", &sequencer.Data.Duration, 0.05f, 0.1f, 3600.0f, "%.2f s",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Loop", "Start over at the end instead of stopping.");
+            ImGui::Checkbox("##SeqLoop", &sequencer.Data.Loop);
+            PropertyLabel("Play on Start", "Plays from 0 when Play starts; otherwise a script calls PlaySequence.");
+            ImGui::Checkbox("##SeqPlayOnStart", &sequencer.PlayOnStart);
+            PropertyLabel("Speed", "Playback rate; negative plays backwards without events.");
+            ImGui::DragFloat("##SeqSpeed", &sequencer.Speed, 0.01f, -4.0f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+            std::size_t keys = 0;
+            for (const SequenceTrack& track : sequencer.Data.Tracks)
+                keys += track.Keys.size();
+            ImGui::TextDisabled("%zu tracks, %zu keys. Edit them in View > Sequencer.", sequencer.Data.Tracks.size(),
+                                keys);
         });
 
     ::UHE::DrawComponents<WindComponent>(

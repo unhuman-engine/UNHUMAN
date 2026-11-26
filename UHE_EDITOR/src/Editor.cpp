@@ -193,8 +193,9 @@ void Editor::OnDetach()
 namespace
 {
 /// @brief Every console entry the editor owns, so OnDetach removes exactly these.
-constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "gpu.capture", "view.shading",
-                                                 "view.buffer",   "scene.stats",  "clear"};
+constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "gpu.capture",
+                                                 "view.shading",  "view.buffer",  "scene.stats",
+                                                 "scene.select",  "view.panel",   "clear"};
 } // namespace
 
 void Editor::RegisterConsoleEntries()
@@ -284,6 +285,39 @@ void Editor::RegisterConsoleEntries()
                                 const auto entities = m_ActiveScene->GetRegistry().view<TagComponent>().size();
                                 return std::to_string(entities) + " entities, tick " +
                                        std::to_string(m_ActiveScene->GetSimulationClock().GetTickIndex());
+                            });
+
+    console.RegisterCommand("scene.select", "scene.select <name>: select the first entity with that name",
+                            [this](const std::vector<std::string>& args) -> std::string
+                            {
+                                if (!m_ActiveScene || args.empty())
+                                    return "usage: scene.select <name>";
+                                std::string name;
+                                for (const std::string& word : args)
+                                    name += (name.empty() ? "" : " ") + word;
+                                auto view = m_ActiveScene->GetRegistry().view<TagComponent>();
+                                for (auto handle : view)
+                                {
+                                    if (view.get<TagComponent>(handle).Tag == name)
+                                    {
+                                        m_SceneHireacyPanel.SetSelectedEntity(Entity{handle, m_ActiveScene.get()});
+                                        return "selected " + name;
+                                    }
+                                }
+                                return "no entity named " + name;
+                            });
+
+    console.RegisterCommand("view.panel", "view.panel <name>: bring a panel's tab to the front (e.g. Sequencer)",
+                            [this](const std::vector<std::string>& args) -> std::string
+                            {
+                                if (args.empty())
+                                    return "usage: view.panel <name>";
+                                std::string name;
+                                for (const std::string& word : args)
+                                    name += (name.empty() ? "" : " ") + word;
+                                // Applied once the window exists: -exec runs before the first frame.
+                                m_PendingPanelFocus = name;
+                                return "focusing " + name;
                             });
 
     console.RegisterCommand("clear", "clear the console log",
@@ -631,6 +665,8 @@ void Editor::OnScreenPlay()
 {
     if (m_SceneState == SceneState::Edit)
     {
+        // The running copy starts from the scene as saved, not as previewed.
+        m_SequencerPanel.EndPreview();
         m_HoverdEntity = {};
         m_EditorScene = m_ActiveScene;
         m_ActiveScene = Scene::Copy(m_EditorScene);
@@ -1010,6 +1046,7 @@ bool Editor::onKeyPressed(KeyPressedEvent& e)
 
 void Editor::NewScene(bool notify)
 {
+    m_SequencerPanel.EndPreview();
     OnSceneStop();
     m_ActiveScene = CreateRef<Scene>();
     m_ActiveScene->OnViewportResize((u32)m_ViewPortSize.x, (u32)m_ViewPortSize.y);
@@ -1034,6 +1071,7 @@ void Editor::OpenScene()
 
 void Editor::OpenScene(const std::filesystem::path& path, bool notify)
 {
+    m_SequencerPanel.EndPreview();
     std::string filepath = path.string();
 
     if (!filepath.empty())
@@ -1171,6 +1209,7 @@ bool Editor::WriteStarterScene(ProjectInfo& project)
 
 void Editor::CloseProject()
 {
+    m_SequencerPanel.EndPreview();
     // Nothing of the project keeps running behind the manager: Play stops
     // (scripts, physics, audio) and its scene is let go.
     OnSceneStop();
@@ -1590,6 +1629,8 @@ void Editor::ExportGame()
 
 void Editor::SaveSceneAs()
 {
+    // A preview's poses are not the scene: put them back before writing it.
+    m_SequencerPanel.EndPreview();
     std::string filepath = FileDialogs::SaveFile("UHE Scene (*.unhuman)\0.unhuman\0", ProjectAssetPath().string());
 
     if (!filepath.empty())
@@ -1638,6 +1679,7 @@ namespace
         ImGui::DockBuilderDockWindow("Profiler", bottomRight);
         ImGui::DockBuilderDockWindow("Scripts", bottomRight);
         ImGui::DockBuilderDockWindow("Audio", bottomRight);
+        ImGui::DockBuilderDockWindow("Sequencer", bottomRight);
         // The graph needs canvas space: share the central node with the
         // viewport rather than squeezing into a bottom tab.
         ImGui::DockBuilderDockWindow("Animation Graph", centerTop);
@@ -1745,6 +1787,11 @@ void Editor::OnImGuiRender()
 
     if (m_ShowAnimationGraph)
         m_AnimationGraphPanel.OnImGuiRender(m_ShowAnimationGraph, m_SceneHireacyPanel.GetSelectedEntity());
+    if (m_ShowSequencer)
+        m_SequencerPanel.OnImGuiRender(m_ShowSequencer, m_ActiveScene.get(), m_SceneHireacyPanel.GetSelectedEntity(),
+                                       m_SceneState == SceneState::Edit);
+    else
+        m_SequencerPanel.EndPreview(); // a closed panel leaves no preview behind
 
     if (m_ShowAudio)
         m_AudioPanel.OnImGuiRender(m_ShowAudio);
@@ -1929,7 +1976,17 @@ void Editor::OnImGuiRender()
 
     // Record the finished edit after the gizmo and inspector have run, then
     // draw the editor-level overlays on top of every docked panel.
-    PollTransformUndo();
+    if (!m_PendingPanelFocus.empty() && ImGui::FindWindowByName(m_PendingPanelFocus.c_str()) != nullptr)
+    {
+        ImGui::SetWindowFocus(m_PendingPanelFocus.c_str());
+        m_PendingPanelFocus.clear();
+    }
+
+    // The sequencer's preview moves transforms: those are not edits to undo.
+    if (m_SequencerPanel.IsPreviewing())
+        ResetTransformBaseline();
+    else
+        PollTransformUndo();
     m_Notifications.Draw();
     m_CommandPalette.OnImGuiRender(BuildCommands());
 }
@@ -2113,6 +2170,7 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
     add("Toggle Profiler", "View", "", true, [this] { m_ShowProfiler = !m_ShowProfiler; });
     add("Toggle Scripts", "View", "", true, [this] { m_ShowScripts = !m_ShowScripts; });
     add("Toggle Animation Graph", "View", "", true, [this] { m_ShowAnimationGraph = !m_ShowAnimationGraph; });
+    add("Toggle Sequencer", "View", "", true, [this] { m_ShowSequencer = !m_ShowSequencer; });
     add("Toggle Audio", "View", "", true, [this] { m_ShowAudio = !m_ShowAudio; });
     add("Toggle Settings", "View", "", true, [this] { m_ShowSettings = !m_ShowSettings; });
     add("Toggle Viewport", "View", "", true, [this] { m_ShowViewport = !m_ShowViewport; });
@@ -2269,6 +2327,8 @@ void Editor::DrawMainMenuBar()
             CreateEntityFromMenu("Wind", 9);
         if (ImGui::MenuItem("Terrain"))
             CreateEntityFromMenu("Terrain", 10);
+        if (ImGui::MenuItem("Sequence"))
+            CreateEntityFromMenu("Sequence", 11);
         ImGui::Separator();
         if (ImGui::BeginMenu("UI"))
         {
@@ -2299,6 +2359,7 @@ void Editor::DrawMainMenuBar()
         EditorUI::ToggleMenuItem("Profiler", &m_ShowProfiler);
         EditorUI::ToggleMenuItem("Scripts", &m_ShowScripts);
         EditorUI::ToggleMenuItem("Animation Graph", &m_ShowAnimationGraph);
+        EditorUI::ToggleMenuItem("Sequencer", &m_ShowSequencer);
         EditorUI::ToggleMenuItem("Audio", &m_ShowAudio);
         EditorUI::ToggleMenuItem("Settings", &m_ShowSettings);
         EditorUI::ToggleMenuItem("Viewport", &m_ShowViewport);
@@ -2950,6 +3011,11 @@ void Editor::CreateEntityFromMenu(const char* name, int componentKind)
         // Terrain is centred on the origin; its lowest point is the entity's height.
         case 10:
             entity.AddComponent<TerrainComponent>();
+            break;
+        // A director entity: its timeline moves the others (Sequencer panel).
+        case 11:
+            entity.AddComponent<SequencerComponent>();
+            m_ShowSequencer = true;
             break;
         default: break;
     }
