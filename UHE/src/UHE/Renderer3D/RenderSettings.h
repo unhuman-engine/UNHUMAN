@@ -52,6 +52,12 @@ struct SkySettings
     bool AmbientFromSky = false;
 };
 
+/// @brief Edge smoothing of the final image.
+struct AntiAliasingSettings
+{
+    bool FXAA = true; ///< fast approximate anti-aliasing, in the tonemap pass
+};
+
 /// @brief How the game UI scales with the screen.
 struct UISettings
 {
@@ -123,6 +129,7 @@ struct RenderSettings
     EnvironmentSettings Environment;
     SkySettings Sky;
     UISettings UI;
+    AntiAliasingSettings AntiAliasing;
     ShadowSettings Shadows;
     LocalShadowSettings LocalShadows;
     SSAOSettings SSAO;

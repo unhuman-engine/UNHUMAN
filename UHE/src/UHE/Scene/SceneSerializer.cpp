@@ -527,6 +527,10 @@ static void SerializeRenderSettings(YAML::Emitter& out, const RenderSettings& se
     out << YAML::Key << "AmbientFromSky" << YAML::Value << sky.AmbientFromSky;
     out << YAML::EndMap;
 
+    out << YAML::Key << "AntiAliasing" << YAML::BeginMap;
+    out << YAML::Key << "FXAA" << YAML::Value << settings.AntiAliasing.FXAA;
+    out << YAML::EndMap;
+
     out << YAML::Key << "UI" << YAML::BeginMap;
     out << YAML::Key << "ScaleWithScreen" << YAML::Value << settings.UI.ScaleWithScreen;
     out << YAML::Key << "ReferenceHeight" << YAML::Value << settings.UI.ReferenceHeight;
@@ -626,6 +630,8 @@ static void DeserializeRenderSettings(const YAML::Node& node, RenderSettings& se
     ReadOptional(skyNode, "ImagePath", sky.ImagePath);
     ReadOptional(skyNode, "ImageRotation", sky.ImageRotation);
     ReadOptional(skyNode, "AmbientFromSky", sky.AmbientFromSky);
+
+    ReadOptional(node["AntiAliasing"], "FXAA", settings.AntiAliasing.FXAA);
 
     const YAML::Node uiNode = node["UI"];
     ReadOptional(uiNode, "ScaleWithScreen", settings.UI.ScaleWithScreen);

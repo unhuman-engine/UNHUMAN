@@ -723,6 +723,7 @@ SceneRenderer::Output SceneRenderer::AddPasses(FrameGraph& graph, const Desc& de
     tonemap.BloomIntensity = std::clamp(settings.Bloom.Intensity, 0.0f, 1.0f);
 
     tonemap.FlipY = desc.Target.IsValid() && desc.FlipTarget;
+    tonemap.Fxaa = settings.AntiAliasing.FXAA;
     if (desc.Target.IsValid())
         output.Color = PostProcess::AddTonemapPass(graph, hdr, desc.Target, desc.TargetFormat, tonemap, bloom);
     else

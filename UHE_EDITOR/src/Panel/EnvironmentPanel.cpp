@@ -319,6 +319,17 @@ void DrawSkySection(SkySettings& sky)
     EndSection();
 }
 
+void DrawAntiAliasingSection(AntiAliasingSettings& aa)
+{
+    const SectionState section = SectionHeader("Anti-Aliasing", &aa.FXAA);
+    if (section.Reset)
+        aa = AntiAliasingSettings{};
+    if (!section.Open || !BeginSection("##AntiAliasingProperties", aa.FXAA))
+        return;
+    NoteRow("FXAA smooths geometry edges in the tonemap pass, at the cost of a little sharpness.");
+    EndSection();
+}
+
 void DrawUISection(UISettings& ui)
 {
     const SectionState section = SectionHeader("Game UI", nullptr);
@@ -493,6 +504,7 @@ void EnvironmentPanel::OnImGuiRender(bool& open)
     DrawEnvironmentSection(settings.Environment);
     DrawSkySection(settings.Sky);
     DrawUISection(settings.UI);
+    DrawAntiAliasingSection(settings.AntiAliasing);
     DrawShadowSection(settings.Shadows);
     DrawLocalShadowSection(settings.LocalShadows);
     DrawSSAOSection(settings.SSAO);

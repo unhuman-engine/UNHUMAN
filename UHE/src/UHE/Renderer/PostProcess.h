@@ -16,6 +16,8 @@ struct TonemapSettings
     /// space and no flip in the projection; the editor flips when it displays
     /// the viewport image, a game drawing into the backbuffer flips here.
     bool FlipY = false;
+    /// FXAA on the tonemapped result, in the same pass (each tap is tonemapped first).
+    bool Fxaa = false;
 };
 
 /**
