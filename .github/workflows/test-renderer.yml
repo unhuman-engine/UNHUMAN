@@ -214,8 +214,10 @@ jobs:
 
           export VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
           export UHE_FIXED_TIMESTEP=0.016666667
-          export UHE_CAPTURE_FRAME=40
-          export UHE_CAPTURE_PATH="$RESULTS/frame40.png"
+          # The run ends at frame 120: a capture on lavapipe under ASan takes a
+          # while to write, and frame 40 ended the process before it existed.
+          export UHE_CAPTURE_FRAME=120
+          export UHE_CAPTURE_PATH="$RESULTS/frame120.png"
           export ASAN_OPTIONS="detect_leaks=0"
           Xvfb :97 -screen 0 1920x1080x24 &
           XVFB_PID=$!
@@ -226,6 +228,8 @@ jobs:
           (cd "$OUT_DIR" && timeout 300s ./Sandbox -renderdoc -renderdoc-frame 30 \
             -renderdoc-out "$RESULTS/sandbox" > "$RESULTS/sandbox.log" 2>&1) || true
           grep -E "RenderDoc" "$RESULTS/sandbox.log" || true
+          # RenderDoc's own log says why a capture failed.
+          cp /tmp/RenderDoc/*.log "$RESULTS/" 2>/dev/null || true
           ls "$RESULTS"/*.rdc
 
       - name: Upload RenderDoc capture
