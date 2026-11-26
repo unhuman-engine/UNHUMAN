@@ -178,6 +178,60 @@ float FoamPattern(float2 xz, float t)
     return saturate(a * 0.5 + b * 0.5 + 0.35);
 }
 
+/**
+ * Screen-space reflection: marches the reflected ray through the opaque scene's
+ * depth and returns the colour it hits, with how much to trust it in alpha.
+ * Steps grow along the ray, so the far shore is reached in a few dozen steps;
+ * a ray that leaves the screen or never passes behind a surface returns 0 and
+ * the caller keeps the sky.
+ */
+float4 TraceReflection(float3 origin, float3 dir, Sampler2D color, Sampler2D depth, float2 size)
+{
+    float stepLength = 0.2;
+    float3 previous = origin;
+    for (int i = 0; i < 64; ++i)
+    {
+        const float3 p = previous + dir * stepLength;
+        const float4 clip = mul(pc.viewProj, float4(p, 1.0));
+        if (clip.w <= 0.0)
+            break;
+        const float2 ndc = clip.xy / clip.w;
+        if (any(abs(ndc) > 1.0))
+            break;
+        const float sceneDistance = ViewDistance(depth.Load(int3(int2((ndc * 0.5 + 0.5) * size), 0)).r);
+        // Behind a surface, but not so far behind that the ray passed under it.
+        if (clip.w > sceneDistance && clip.w - sceneDistance < max(stepLength * 2.0, 0.5))
+        {
+            // Refine between the last point in front and this one.
+            float3 lo = previous;
+            float3 hi = p;
+            for (int k = 0; k < 5; ++k)
+            {
+                const float3 mid = (lo + hi) * 0.5;
+                const float4 c = mul(pc.viewProj, float4(mid, 1.0));
+                const float d = ViewDistance(depth.Load(int3(int2((c.xy / c.w * 0.5 + 0.5) * size), 0)).r);
+                if (c.w > d)
+                    hi = mid;
+                else
+                    lo = mid;
+            }
+            const float4 c = mul(pc.viewProj, float4(hi, 1.0));
+            const float2 uv = c.xy / c.w * 0.5 + 0.5;
+            const float2 edge = saturate((1.0 - abs(c.xy / c.w)) * 6.0);
+            // Four taps: a ray through a gap in thin foliage would otherwise sparkle pixel to pixel.
+            const float2 texel = 1.0 / size;
+            float3 hit = color.SampleLevel(uv + texel * float2(-1.0, -1.0), 0.0).rgb;
+            hit += color.SampleLevel(uv + texel * float2(1.0, -1.0), 0.0).rgb;
+            hit += color.SampleLevel(uv + texel * float2(-1.0, 1.0), 0.0).rgb;
+            hit += color.SampleLevel(uv + texel * float2(1.0, 1.0), 0.0).rgb;
+            return float4(hit * 0.25, edge.x * edge.y);
+        }
+        previous = p;
+        stepLength *= 1.09;
+    }
+    return float4(0.0, 0.0, 0.0, 0.0);
+}
+
 struct FSOutput
 {
     float4 color : SV_Target0;
@@ -226,6 +280,10 @@ FSOutput fragmentMain(VSOutput input)
     N = normalize(N + float3(0.80, 0.0, 0.60) * cos(r1) * 0.035 + float3(-0.47, 0.0, 0.88) * cos(r2) * 0.03 +
                   float3(0.26, 0.0, -0.97) * cos(r3) * 0.02);
 
+    // Far away the ripples are smaller than a pixel and only alias into sparkle: calm them with distance.
+    const float viewDistance = length(pc.cameraPos.xyz - input.worldPos);
+    N = normalize(lerp(N, float3(0.0, 1.0, 0.0), smoothstep(6.0, 45.0, viewDistance) * 0.9));
+
     const float3 V = normalize(pc.cameraPos.xyz - input.worldPos);
     const float NoV = saturate(dot(N, V));
     const float fresnel = 0.02 + 0.98 * pow(1.0 - NoV, 5.0);
@@ -271,7 +329,10 @@ FSOutput fragmentMain(VSOutput input)
         }
     }
     const float3 R = reflect(-V, N);
-    const float3 reflection = lerp(pc.deep.rgb * 0.5 + ambient, skyColor, smoothstep(-0.05, 0.25, R.y));
+    float3 reflection = lerp(pc.deep.rgb * 0.5 + ambient, skyColor, smoothstep(-0.05, 0.25, R.y));
+    // What stands on the shore (trees, rocks) is mirrored where the screen holds it; the sky elsewhere.
+    const float4 mirrored = TraceReflection(input.worldPos, R, sceneColor, sceneDepth, screenSize);
+    reflection = lerp(reflection, mirrored.rgb, mirrored.a);
 
     float3 color = lerp(underwater, reflection, fresnel);
     // The deep colour still catches some sky light from above.
@@ -281,7 +342,9 @@ FSOutput fragmentMain(VSOutput input)
     const float3 H = normalize(V + sunDirection);
     const float NoH = saturate(dot(N, H));
     const float NoL = saturate(dot(N, sunDirection));
-    color += sunColor * (pow(NoH, 600.0) * 6.0 + pow(NoH, 60.0) * 0.12) * NoL;
+    // The sharp glint fades with distance for the same reason the ripples do: sub-pixel sparkle.
+    const float glint = pow(NoH, 600.0) * 6.0 * (1.0 - smoothstep(10.0, 60.0, viewDistance) * 0.9);
+    color += sunColor * (glint + pow(NoH, 60.0) * 0.12) * NoL;
 
     // Foam: along the shore, where the water is thin, and on the sharpest crests.
     const float foamAmount = saturate(pc.deep.a);
