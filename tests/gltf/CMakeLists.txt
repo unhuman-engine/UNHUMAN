@@ -8,6 +8,9 @@
 set(GLTF_TEST_SOURCES
     main.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LoadModel.cpp
+    # Cooked models (issue #45): the container and the model sections, both GPU-free.
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/CookedModel.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/AssetsManager/CookedFile.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LoadModelGeometry.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LoadModelAnimation.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/MeshoptDecode.cpp

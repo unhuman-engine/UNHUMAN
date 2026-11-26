@@ -109,6 +109,22 @@ here. Follow them; if a rule is wrong, change it here first.
   it. `GetComponent` does not check: use it only right after a check, or use
   `TryGetComponent`. Never keep a raw `Scene*` or `entt::entity` instead.
 
+## Cooked assets
+
+- **A game loads cooked models, not glTF.** Exports cook every referenced
+  model to `<model>.uhemodel` (`Model::SaveCooked`, through
+  `ExportOptions::CookModel`) and drop the glTF with the files only it used;
+  `Model::loadModel` takes the cook when the source is missing or older.
+  `uhe_cook --inspect` shows what a cook holds.
+- **A model field is a cooked-format field.** `CookedModel.cpp` writes every
+  field of `Material`, `MaterialExtensions`, `Primitive`, `Mesh`, `ModelNode`,
+  the lights, skins and clips by name. A field added to one of them is added
+  there too, and `kModelVersion` goes up so an older cook is recooked instead
+  of misread; `tests/gltf` compares a cooked load with the glTF load.
+- **Cooking never touches the GPU.** It loads with `upload = false` and
+  `keepTextureSources = true`; `uhe_export` links stubs that abort on any
+  texture or buffer creation, so a change that makes cooking upload fails there.
+
 ## Scripting is a consumer of the engine
 
 - **The VM is main-thread only and never touched from a job.** A Lua state is not
