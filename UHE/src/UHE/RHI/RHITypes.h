@@ -429,6 +429,13 @@ struct GraphicsPipelineDesc
     RenderPassDesc renderPassDesc = {};
 };
 
+/// GPU time of one frame graph pass (RHIDevice::GetGpuPassTimings).
+struct GpuPassTiming
+{
+    std::string Name;
+    float Milliseconds = 0.0f;
+};
+
 /// Parameters for RHIDevice::CreateComputePipeline.
 struct ComputePipelineDesc
 {

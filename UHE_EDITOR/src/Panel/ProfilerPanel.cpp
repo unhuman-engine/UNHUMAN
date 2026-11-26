@@ -1,16 +1,15 @@
 #include "ProfilerPanel.h"
-
-#include "EditorTheme.h"
-#include "EditorUI.h"
-
-#include "imgui.h"
-#include "imgui_internal.h"
-
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include "EditorTheme.h"
+#include "EditorUI.h"
+#include "UHE/RHI/RHIDevice.h"
+#include "UHE/Renderer/Renderer.h"
+#include "imgui.h"
+#include "imgui_internal.h"
 
 namespace UHE
 {
@@ -122,6 +121,11 @@ namespace UHE
             if (ImGui::BeginTabItem("Threads"))
             {
                 DrawThreads();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("GPU"))
+            {
+                DrawGpuPasses();
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();
@@ -322,6 +326,45 @@ namespace UHE
             ImGui::Dummy(ImVec2(0.0f, height + 2.0f));
             ImGui::PopID();
         }
+    }
+
+    void ProfilerPanel::DrawGpuPasses()
+    {
+        EditorUI::SectionHeader("GPU Passes");
+        const std::vector<RHI::GpuPassTiming>& timings = Renderer::GetDevice().GetGpuPassTimings();
+        if (timings.empty())
+        {
+            ImGui::TextDisabled("No GPU timings (the device has no timestamp queries, or no frame has finished).");
+            return;
+        }
+        float total = 0.0f;
+        float longest = 0.0f;
+        for (const RHI::GpuPassTiming& timing : timings)
+        {
+            total += timing.Milliseconds;
+            longest = std::max(longest, timing.Milliseconds);
+        }
+        ImGui::Text("Total %.2f ms across %zu passes", total, timings.size());
+        const ImGuiTableFlags flags =
+            ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
+        if (!ImGui::BeginTable("##gpuPasses", 3, flags))
+            return;
+        ImGui::TableSetupColumn("Pass", ImGuiTableColumnFlags_WidthStretch, 0.45f);
+        ImGui::TableSetupColumn("Share", ImGuiTableColumnFlags_WidthStretch, 0.4f);
+        ImGui::TableSetupColumn("ms", ImGuiTableColumnFlags_WidthFixed, 56.0f);
+        ImGui::TableHeadersRow();
+        for (const RHI::GpuPassTiming& timing : timings)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(timing.Name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            // Relative to the slowest pass, so the expensive ones stand out.
+            ImGui::ProgressBar(longest > 0.0f ? timing.Milliseconds / longest : 0.0f, ImVec2(-1.0f, 0.0f), "");
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%.3f", timing.Milliseconds);
+        }
+        ImGui::EndTable();
     }
 
     void ProfilerPanel::DrawScopeTable()

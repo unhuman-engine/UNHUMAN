@@ -138,6 +138,8 @@ void VulkanDevice::InitVulkan(const SwapchainDesc& swapDesc)
     m_Context.graphicsQueue = &m_LogicalDevice.getGraphicsQueue();
     m_Context.surface = &m_LogicalDevice.getSurface();
     m_Context.graphicsQueueFamilyIndex = m_LogicalDevice.getGraphicsQueueFamilyIndex();
+    m_GpuTimer.Init(m_LogicalDevice.getLogicalDevice(), m_PhysicalDevice.getPhysicalDevice(),
+                    m_Context.graphicsQueueFamilyIndex);
 
     // Frame timelines (§9.1.1/D1 v1): one per frame slot, CPU-observable pacing.
     // On the Legacy tier these degrade to binary semaphores and the timeline
@@ -172,6 +174,7 @@ void VulkanDevice::CleanupVulkan()
     g_VulkanContext = nullptr;
 
     WaitIdle();
+    m_GpuTimer.Shutdown();
 
     // Pooled frame graph textures go the way of any texture: through the
     // deletion queues the frame cleanup below flushes.
@@ -456,6 +459,7 @@ void VulkanDevice::Begin()
                                                                        VK_TRUE, UINT64_MAX);
     UHE_CORE_ASSERT(waitResult == vk::Result::eSuccess, "Failed to wait for in-flight fence!");
     CollectPixelReadback(); // this slot's fence passed: its copy has landed
+    m_GpuTimer.Collect(m_CurrentFrame);
 
     // ── Acquire ONCE (§9.1.4): no retry loop. Out-of-date → recreate + skip
     // the frame; the fresh swapchain is acquired on the next Begin.
@@ -501,6 +505,17 @@ void VulkanDevice::Begin()
     m_Frames[m_CurrentFrame].GetDeletionQueue().Flush();
     m_Frames[m_CurrentFrame].GetCommandBuffer().Reset();
     m_Frames[m_CurrentFrame].GetCommandBuffer().BeginCommandBuffer(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+    m_GpuTimer.BeginFrame(*m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), m_CurrentFrame);
+}
+
+void VulkanDevice::BeginGpuPass(const std::string& name)
+{
+    m_GpuTimer.BeginPass(*m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), name);
+}
+
+void VulkanDevice::EndGpuPass()
+{
+    m_GpuTimer.EndPass(*m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle());
 }
 
 void VulkanDevice::End()

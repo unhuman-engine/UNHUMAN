@@ -10,6 +10,7 @@
 #include "Platform/Vulkan/VulkanDescriptorManager.h"
 #include "Platform/Vulkan/VulkanExtensionCheck.h"
 #include "Platform/Vulkan/VulkanFrameContext.h"
+#include "Platform/Vulkan/VulkanGpuTimer.h"
 #include "Platform/Vulkan/VulkanInstance.h"
 #include "Platform/Vulkan/VulkanLogicalDevice.h"
 #include "Platform/Vulkan/VulkanPhysicalDevice.h"
@@ -143,6 +144,11 @@ public:
     [[nodiscard]] TextureFormat GetSwapchainFormat() override { return m_SwapChain.GetSwapchainFormat(); }
     /// \copydoc RHIDevice::GetMaxPushConstantsSize
     [[nodiscard]] u32 GetMaxPushConstantsSize() const override;
+    /// \copydoc RHIDevice::GetGpuPassTimings
+    [[nodiscard]] const std::vector<GpuPassTiming>& GetGpuPassTimings() const override { return m_GpuTimer.Last(); }
+    /// @brief Timestamps around one frame graph pass's recording (the bridge calls these).
+    void BeginGpuPass(const std::string& name);
+    void EndGpuPass();
     [[nodiscard]] bool SupportsWireframe() const override { return m_ExtensionCheck.SupportsWireframe(); }
     [[nodiscard]] inline const u32& ImageIndex() { return m_ImageIndex; }
     [[nodiscard]] inline VulkanDescriptorManager* GetDescriptorManager() { return &m_DescriptorManager; }
@@ -207,6 +213,7 @@ private:
     // Render graph execution (§8.5/§8.6): resolves RG handles to the live
     // swapchain images each frame and encodes compiler-derived barriers.
     VulkanRenderGraphExecutor m_RenderGraphExecutor;
+    VulkanGpuTimer m_GpuTimer;
     VulkanBarrierEncoder m_BarrierEncoder;
 
     // Frame graph + TaskGraph mapping (§14 step 5): per-frame declare →

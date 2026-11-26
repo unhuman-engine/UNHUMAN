@@ -78,6 +78,14 @@ public:
     /// @brief The device's maxPushConstantsSize. Vulkan guarantees only 128 bytes;
     ///        desktop GPUs report 256, some mobile ones 128.
     [[nodiscard]] virtual u32 GetMaxPushConstantsSize() const { return 256; }
+    /// @brief GPU milliseconds of each frame graph pass of a recently completed
+    ///        frame (a few frames old), in recording order; empty when the device
+    ///        cannot time (no timestamp queries).
+    [[nodiscard]] virtual const std::vector<GpuPassTiming>& GetGpuPassTimings() const
+    {
+        static const std::vector<GpuPassTiming> none;
+        return none;
+    }
     /// @brief Whether a pipeline can rasterize edges only (GraphicsPipelineDesc::wireframe).
     [[nodiscard]] virtual bool SupportsWireframe() const { return false; }
 

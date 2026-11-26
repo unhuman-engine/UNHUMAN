@@ -213,6 +213,17 @@ void Application::OnFrameCaptured(const RHI::RHIDevice::CapturedFrame& frame)
     if (ok)
     {
         UHE_CORE_INFO("[CAPTURE] wrote {0} ({1}x{2})", m_Capture.CapturePath, frame.Width, frame.Height);
+        // The GPU cost of each pass, with the frame it describes (a few frames
+        // old): a capture run doubles as a per-pass performance record.
+        const auto& timings = Renderer::GetDevice().GetGpuPassTimings();
+        float total = 0.0f;
+        for (const RHI::GpuPassTiming& timing : timings)
+        {
+            total += timing.Milliseconds;
+            UHE_CORE_INFO("[CAPTURE] GPU {0}: {1:.3f} ms", timing.Name, timing.Milliseconds);
+        }
+        if (!timings.empty())
+            UHE_CORE_INFO("[CAPTURE] GPU total: {0:.3f} ms over {1} passes", total, timings.size());
     }
     else
     {

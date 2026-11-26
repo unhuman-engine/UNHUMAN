@@ -369,7 +369,9 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
             {
                 VulkanFGContext fgContext(name, frontend.Board(), m_Device.GetCurrentCommandBuffer(), context.Extent(),
                                           m_Textures, m_Buffers, declared);
+                m_Device.BeginGpuPass(name);
                 frontend.ExecutePass(index, fgContext);
+                m_Device.EndGpuPass();
             });
     }
 
