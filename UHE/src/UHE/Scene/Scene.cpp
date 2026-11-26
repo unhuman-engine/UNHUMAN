@@ -2,6 +2,8 @@
 #include "Scene.h"
 #include <box2d/box2d.h>
 #include <glm/glm.hpp>
+#include <map>
+#include <unordered_set>
 #include "Components.h"
 #include "Entity.h"
 #include "ScriptableEntity.h"
@@ -33,8 +35,26 @@
 namespace UHE
 {
 
-Scene::Scene()
+namespace
 {
+/// Scenes alive now, by instance id. Ids are never reused, so an Entity that
+/// outlived its scene cannot pass for one in a new scene at the same address.
+std::unordered_set<u64>& LiveScenes()
+{
+    static std::unordered_set<u64> live;
+    return live;
+}
+u64 g_NextSceneId = 1;
+} // namespace
+
+bool Scene::IsAlive(u64 instanceId)
+{
+    return instanceId != 0 && LiveScenes().contains(instanceId);
+}
+
+Scene::Scene() : m_InstanceId(g_NextSceneId++)
+{
+    LiveScenes().insert(m_InstanceId);
     // Initialize all component pools to prevent EnTT out-of-bounds asserts across DLL boundaries
     m_registry.storage<IDComponent>();
     m_registry.storage<TagComponent>();
@@ -74,6 +94,9 @@ Scene::~Scene()
         b2DestroyWorld(m_PhysicsWorldId);
         m_PhysicsWorldId = b2_nullWorldId;
     }
+    // Last: the teardown above (script OnDestroy) still reaches its entities;
+    // from here on every Entity of this scene reads as invalid.
+    LiveScenes().erase(m_InstanceId);
 }
 
 void Scene::DestroyScriptInstances()
@@ -498,6 +521,26 @@ void Scene::DestroyEntity(Entity entity)
                                          parentChildren.end());
                 }
             }
+        }
+
+        // Physics bodies go with their entity: left behind, an invisible
+        // collider would stay in the world until Play stops.
+        if (JPH::BodyInterface* bodies = m_PhysicsSystem3D.GetBodyInterface())
+        {
+            const auto removeBody = [bodies](uint32_t& id)
+            {
+                if (id == 0xFFFFFFFF)
+                    return;
+                const JPH::BodyID body(id);
+                if (bodies->IsAdded(body))
+                    bodies->RemoveBody(body);
+                bodies->DestroyBody(body);
+                id = 0xFFFFFFFF;
+            };
+            if (auto* rb = e.TryGetComponent<RigidBody3DComponent>())
+                removeBody(rb->RuntimeBodyID);
+            if (auto* terrain = e.TryGetComponent<TerrainComponent>())
+                removeBody(terrain->RuntimeBodyID);
         }
 
         UnindexEntity(uuid);
@@ -1422,7 +1465,8 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
     // per node and break the bone-offset contract).
     auto nodeView = m_registry.view<ModelNodeComponent>();
 
-    std::unordered_map<u64, Renderer3D::BoneBinding> boneCache;
+    // Keyed by model entity and skin: a model's meshes can use different skins.
+    std::map<std::pair<u64, int>, Renderer3D::BoneBinding> boneCache;
     // Same one-upload-per-model contract for material parameters: the whole
     // model's material list goes to the GPU buffer once, and every node mesh
     // references it by index.
@@ -1451,8 +1495,10 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
         if (meshIndex >= static_cast<int>(meshes.size()))
             continue;
 
-        // Use cached binding or prepare it once per model entity
-        auto cacheIt = boneCache.find(nodeComp.ModelEntity);
+        // One binding per model entity and skin, prepared on first use; none for a rigid mesh.
+        const int skinIndex = meshes[meshIndex].skinIndex;
+        const auto cacheKey = std::make_pair(nodeComp.ModelEntity, skinIndex);
+        auto cacheIt = boneCache.find(cacheKey);
         if (cacheIt == boneCache.end())
         {
             const RD3d::Animator* animator = nullptr;
@@ -1462,8 +1508,8 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
                 if (animComp.Animator)
                     animator = animComp.Animator.get();
             }
-            boneCache[nodeComp.ModelEntity] = Renderer3D::PrepareBoneBinding(*mc.ModelData, animator);
-            cacheIt = boneCache.find(nodeComp.ModelEntity);
+            cacheIt =
+                boneCache.emplace(cacheKey, Renderer3D::PrepareSkinBinding(*mc.ModelData, animator, skinIndex)).first;
         }
 
         auto materialIt = materialCache.find(nodeComp.ModelEntity);
@@ -1981,32 +2027,56 @@ void Scene::CreateTerrainBodies()
         auto [transform, terrain] = view.get<TransformComponent, TerrainComponent>(entity);
         if (!terrain.Collider || !terrain.Heights || terrain.Heights->empty())
             continue;
-        Terrain::Heightfield field;
-        field.Samples = static_cast<u32>(std::lround(std::sqrt(static_cast<double>(terrain.Heights->size()))));
-        field.Size = std::max(terrain.Size, 0.1f);
-        field.Heights = *terrain.Heights;
+        const u32 rendered = static_cast<u32>(std::lround(std::sqrt(static_cast<double>(terrain.Heights->size()))));
+        const float size = std::max(terrain.Size, 0.1f);
+        const float spacing = size / static_cast<float>(rendered - 1);
         // Jolt needs a sample count its block size (2) divides; the grid has
-        // Resolution + 1, so an even Resolution gets one more sample.
-        if (field.Samples % 2 != 0)
-            field = Terrain::Resample(field, field.Samples + 1);
+        // Resolution + 1. The drawn samples are kept as they are and, for an
+        // odd count, one more row and column repeat the far edges: a flat lip
+        // one cell wide outside the terrain, instead of a resampled surface
+        // that would sit below the drawn ridges.
+        const u32 samples = rendered % 2 != 0 ? rendered + 1 : rendered;
+        std::vector<float> heights(static_cast<size_t>(samples) * samples);
+        for (u32 z = 0; z < samples; ++z)
+            for (u32 x = 0; x < samples; ++x)
+                heights[static_cast<size_t>(z) * samples + x] =
+                    (*terrain.Heights)[static_cast<size_t>(std::min(z, rendered - 1)) * rendered +
+                                       std::min(x, rendered - 1)];
 
-        const glm::vec3 scale = transform.Scale;
-        const float spacing = field.Size / static_cast<float>(field.Samples - 1);
-        JPH::HeightFieldShapeSettings settings(
-            field.Heights.data(), JPH::Vec3(-field.Size * 0.5f * scale.x, 0.0f, -field.Size * 0.5f * scale.z),
-            JPH::Vec3(spacing * scale.x, scale.y, spacing * scale.z), field.Samples);
+        // Placed by the world transform, as the mesh is drawn: a terrain under
+        // a moved parent has its collider where it is seen.
+        glm::vec3 scale = transform.Scale;
+        glm::vec3 translation = transform.Translation;
+        glm::quat rotation = glm::quat(transform.Rotation);
+        {
+            glm::vec3 worldScale(1.0f);
+            glm::vec3 worldTranslation(0.0f);
+            glm::quat worldRotation(1.0f, 0.0f, 0.0f, 0.0f);
+            glm::vec3 skew(0.0f);
+            glm::vec4 perspective(0.0f);
+            if (glm::decompose(GetWorldSpaceTransformMatrix(Entity{entity, this}), worldScale, worldRotation,
+                               worldTranslation, skew, perspective))
+            {
+                scale = worldScale;
+                translation = worldTranslation;
+                rotation = worldRotation;
+            }
+        }
+        JPH::HeightFieldShapeSettings settings(heights.data(),
+                                               JPH::Vec3(-size * 0.5f * scale.x, 0.0f, -size * 0.5f * scale.z),
+                                               JPH::Vec3(spacing * scale.x, scale.y, spacing * scale.z), samples);
         JPH::ShapeSettings::ShapeResult shape = settings.Create();
         if (shape.HasError())
         {
             UHE_CORE_ERROR("Terrain: no collider ({0})", shape.GetError().c_str());
             continue;
         }
-        const glm::quat q = glm::quat(transform.Rotation);
-        JPH::BodyCreationSettings body(
-            shape.Get(), JPH::Vec3(transform.Translation.x, transform.Translation.y, transform.Translation.z),
-            JPH::Quat(q.x, q.y, q.z, q.w), JPH::EMotionType::Static, 0);
+        const glm::quat q = glm::normalize(rotation);
+        JPH::BodyCreationSettings body(shape.Get(), JPH::Vec3(translation.x, translation.y, translation.z),
+                                       JPH::Quat(q.x, q.y, q.z, q.w), JPH::EMotionType::Static, 0);
         body.mFriction = 0.8f;
-        bodyInterface->CreateAndAddBody(body, JPH::EActivation::DontActivate);
+        terrain.RuntimeBodyID =
+            bodyInterface->CreateAndAddBody(body, JPH::EActivation::DontActivate).GetIndexAndSequenceNumber();
     }
 }
 

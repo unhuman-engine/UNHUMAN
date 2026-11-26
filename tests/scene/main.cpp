@@ -414,6 +414,40 @@ static void TestSceneCameraClipPlanes()
           "a real far plane is kept");
 }
 
+// --- an Entity kept across frames: the scene or the entity may be gone ---
+static void TestStaleEntityHandles()
+{
+    std::cout << "[stale entity handles]\n";
+    Entity kept;
+    u64 deadSceneId = 0;
+    {
+        auto scene = CreateRef<Scene>();
+        kept = scene->CreateEntity("Hovered");
+        deadSceneId = scene->GetInstanceId();
+        CHECK(kept && kept.IsValid() && kept.HasComponent<TagComponent>(), "a live entity is valid");
+        CHECK(kept.TryGetComponent<TagComponent>() != nullptr && kept.TryGetComponent<CameraComponent>() == nullptr,
+              "TryGetComponent returns the component it has, null for one it lacks");
+        CHECK(Scene::IsAlive(deadSceneId), "the scene is alive while it exists");
+    } // the editor's Play/Stop: the scene the handle came from is destroyed
+    CHECK(!Scene::IsAlive(deadSceneId), "a destroyed scene is not alive");
+    // Each of these read the freed registry and crashed the status bar.
+    CHECK(!kept && !kept.IsValid(), "a handle into a destroyed scene is invalid");
+    CHECK(!kept.HasComponent<TagComponent>(), "and has no components");
+    CHECK(kept.TryGetComponent<TagComponent>() == nullptr && kept.GetScene() == nullptr,
+          "and gives no component and no scene");
+
+    // A new scene at, possibly, the same address does not revive the old handle.
+    auto next = CreateRef<Scene>();
+    next->CreateEntity("Other");
+    CHECK(next->GetInstanceId() != deadSceneId && !kept, "scene ids are never reused");
+
+    // The entity destroyed, the scene alive.
+    Entity doomed = next->CreateEntity("Doomed");
+    Entity copy = doomed;
+    next->DestroyEntity(doomed);
+    CHECK(!copy && copy.TryGetComponent<TagComponent>() == nullptr, "a destroyed entity is invalid");
+}
+
 // --- terrain: heights, mesh, and a body that things land on ---
 static void TestTerrain()
 {
@@ -489,6 +523,34 @@ static void TestTerrain()
 
     CHECK(Terrain::Resample(a, 34).Samples == 34, "resampling gives the asked sample count");
 
+    // A rectangular heightmap is stretched, not cropped: an 8 x 4 image whose
+    // right half is a plateau keeps the plateau on the +X side.
+    const std::filesystem::path wide = std::filesystem::temp_directory_path() / "uhe_terrain_wide.pgm";
+    {
+        std::ofstream file(wide, std::ios::binary);
+        file << "P5\n8 4\n255\n";
+        for (int z = 0; z < 4; ++z)
+            for (int x = 0; x < 8; ++x)
+                file.put(static_cast<char>(x >= 4 ? 255 : 0));
+    }
+    const Terrain::Heightfield wideField = Terrain::BuildHeightfield(terrain, wide.string());
+    CHECK(std::fabs(Terrain::HeightAt(wideField, 15.0f, 0.0f) - terrain.Height) < 1e-3f &&
+              std::fabs(Terrain::HeightAt(wideField, -15.0f, 0.0f)) < 1e-3f,
+          "a rectangular heightmap keeps its right half");
+    std::filesystem::remove(wide);
+
+    // A 45 degree ramp: the same slope at the edges as in the middle.
+    Terrain::Heightfield ramp;
+    ramp.Samples = 9;
+    ramp.Size = 8.0f;
+    for (u32 z = 0; z < 9; ++z)
+        for (u32 x = 0; x < 9; ++x)
+            ramp.Heights.push_back(static_cast<float>(x));
+    const RD3d::Primitive rampPrim = Terrain::BuildPrimitive(ramp, terrain);
+    const glm::vec3 edgeNormal = rampPrim.vertices[4 * 9 + 0].normal;
+    const glm::vec3 middleNormal = rampPrim.vertices[4 * 9 + 4].normal;
+    CHECK(glm::length(edgeNormal - middleNormal) < 1e-4f, "edge normals use the one cell they span");
+
     // In a scene: built on the first update, rebuilt only when a field changes,
     // and solid ground in Play.
     auto scene = CreateRef<Scene>();
@@ -528,6 +590,13 @@ static void TestTerrain()
     CHECK(at.y > groundY - 0.1f, "the ball does not fall through the terrain");
     CHECK(at.y < groundY + 1.0f, "it rests on the ground, not above it");
     CHECK(at.y < 9.0f, "the ball fell from where it started");
+
+    // The terrain destroyed in Play takes its collider with it.
+    scene->DestroyEntity(ground);
+    for (int i = 0; i < 120; ++i)
+        scene->OnUpdateRuntime(Timestep(1.0f / 60.0f));
+    CHECK(ball.GetComponent<TransformComponent>().Translation.y < groundY - 2.0f,
+          "a destroyed terrain's collider is removed: the ball falls through");
     scene->OnRuntimeStop();
 }
 
@@ -676,6 +745,7 @@ int main()
     TestCreationAndIndex();
     TestSceneCameraClipPlanes();
     TestTerrain();
+    TestStaleEntityHandles();
     TestUI();
     TestHierarchy();
     TestRecursiveDestroy();

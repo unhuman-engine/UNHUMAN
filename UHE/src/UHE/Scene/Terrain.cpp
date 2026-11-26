@@ -120,21 +120,37 @@ bool Heightmap(const std::string& path, const TerrainComponent& terrain, u32 sam
             stbi_image_free(pixels);
         return false;
     }
-    // The image as a field of its own size, then resampled to the grid.
-    Heightfield image;
-    image.Samples = static_cast<u32>(std::min(width, height));
-    image.Size = size;
-    image.Heights.resize(static_cast<std::size_t>(image.Samples) * image.Samples);
-    for (u32 z = 0; z < image.Samples; ++z)
+    // Sampled bilinearly over the whole image, each axis on its own: a
+    // rectangular image is stretched to the square terrain, not cropped.
+    out.Samples = samples;
+    out.Size = size;
+    out.Heights.resize(static_cast<std::size_t>(samples) * samples);
+    const auto pixel = [&](int px, int py)
     {
+        px = std::clamp(px, 0, width - 1);
+        py = std::clamp(py, 0, height - 1);
         // Image rows run top to bottom; the top row is the far (-Z) edge.
-        const u32 row = z;
-        for (u32 x = 0; x < image.Samples; ++x)
-            image.Heights[static_cast<std::size_t>(z) * image.Samples + x] =
-                static_cast<float>(pixels[static_cast<std::size_t>(row) * width + x]) / 65535.0f * terrain.Height;
+        return static_cast<float>(pixels[static_cast<std::size_t>(py) * static_cast<std::size_t>(width) +
+                                         static_cast<std::size_t>(px)]) /
+               65535.0f;
+    };
+    const float last = static_cast<float>(samples - 1);
+    for (u32 z = 0; z < samples; ++z)
+    {
+        const float v = static_cast<float>(z) / last * static_cast<float>(height - 1);
+        const int py = static_cast<int>(v);
+        const float ty = v - static_cast<float>(py);
+        for (u32 x = 0; x < samples; ++x)
+        {
+            const float u = static_cast<float>(x) / last * static_cast<float>(width - 1);
+            const int px = static_cast<int>(u);
+            const float tx = u - static_cast<float>(px);
+            const float top = pixel(px, py) + (pixel(px + 1, py) - pixel(px, py)) * tx;
+            const float bottom = pixel(px, py + 1) + (pixel(px + 1, py + 1) - pixel(px, py + 1)) * tx;
+            out.Heights[static_cast<std::size_t>(z) * samples + x] = (top + (bottom - top) * ty) * terrain.Height;
+        }
     }
     stbi_image_free(pixels);
-    out = Resample(image, samples);
     return true;
 }
 
@@ -246,9 +262,13 @@ RD3d::Primitive BuildPrimitive(const Heightfield& field, const TerrainComponent&
             RD3d::Vertex& v = prim.vertices[static_cast<std::size_t>(z) * n + x];
             const float y = h(ix, iz);
             v.position = glm::vec3(static_cast<float>(x) * step - half, y, static_cast<float>(z) * step - half);
-            // Central differences; one-sided at the edges through the clamp.
-            const float dx = (h(ix + 1, iz) - h(ix - 1, iz)) / (2.0f * step);
-            const float dz = (h(ix, iz + 1) - h(ix, iz - 1)) / (2.0f * step);
+            // Central differences inside; one-sided at the edges, over the one
+            // cell they actually span.
+            const int last = static_cast<int>(n) - 1;
+            const float spanX = static_cast<float>(std::min(ix + 1, last) - std::max(ix - 1, 0)) * step;
+            const float spanZ = static_cast<float>(std::min(iz + 1, last) - std::max(iz - 1, 0)) * step;
+            const float dx = (h(ix + 1, iz) - h(ix - 1, iz)) / spanX;
+            const float dz = (h(ix, iz + 1) - h(ix, iz - 1)) / spanZ;
             v.normal = glm::normalize(glm::vec3(-dx, 1.0f, -dz));
             v.uv = glm::vec2(v.position.x, v.position.z) * 0.25f;
             v.tangent = glm::vec4(glm::normalize(glm::vec3(1.0f, dx, 0.0f)), 1.0f);

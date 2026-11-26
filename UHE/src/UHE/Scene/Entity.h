@@ -9,25 +9,57 @@
 namespace UHE
 {
 
+/**
+ * @brief A handle to one entity of one scene, safe to keep across frames.
+ *
+ * It remembers which Scene instance it came from (Scene::GetInstanceId), so
+ * it knows when that scene was destroyed (Play and Stop replace the active
+ * scene; opening a scene or a project does too) or the entity was. Such a
+ * handle is invalid: `if (entity)` and IsValid() are false, HasComponent is
+ * false and TryGetComponent returns null, where reaching through the old
+ * Scene* crashed the editor. GetComponent still requires a live entity that
+ * has the component: check first, or use TryGetComponent.
+ */
 class UHE_API Entity
 {
 public:
     Entity() = default;
-    Entity(entt::entity handle, Scene* scene) : m_EntityHandle(handle), m_Scene(scene) {};
+    Entity(entt::entity handle, Scene* scene)
+        : m_EntityHandle(handle), m_Scene(scene), m_SceneId(scene != nullptr ? scene->GetInstanceId() : 0)
+    {
+    }
 
     Entity(const Entity&) = default;
+    Entity& operator=(const Entity&) = default;
     ~Entity() = default;
     UUID GetUUID() { return GetComponent<IDComponent>().ID; }
 
-    // Scene this entity belongs to (null if invalid).
-    Scene* GetScene() const { return m_Scene; }
+    /// @brief The scene still exists and still has this entity.
+    [[nodiscard]] bool IsValid() const
+    {
+        return m_EntityHandle != entt::null && m_Scene != nullptr && Scene::IsAlive(m_SceneId) &&
+               m_Scene->m_registry.valid(m_EntityHandle);
+    }
 
-    template <typename T> bool HasComponent() { return m_Scene->m_registry.all_of<T>(m_EntityHandle); }
+    // Scene this entity belongs to; null when it no longer exists.
+    Scene* GetScene() const { return Scene::IsAlive(m_SceneId) ? m_Scene : nullptr; }
+
+    /// @brief False for an invalid entity, too.
+    template <typename T> bool HasComponent() const
+    {
+        return IsValid() && m_Scene->m_registry.all_of<T>(m_EntityHandle);
+    }
 
     template <typename T> T& GetComponent()
     {
         UHE_CORE_ASSERT(HasComponent<T>(), "Entity does not have component!");
         return m_Scene->m_registry.get<T>(m_EntityHandle);
+    }
+
+    /// @brief The component, or null when the entity is gone or does not have one.
+    template <typename T> T* TryGetComponent()
+    {
+        return IsValid() ? m_Scene->m_registry.try_get<T>(m_EntityHandle) : nullptr;
     }
 
     /// @brief Adds a T built from \p args; an entity that already has one keeps it, unchanged.
@@ -53,7 +85,8 @@ public:
         m_Scene->m_registry.remove<T>(m_EntityHandle);
     }
 
-    operator bool() const { return m_EntityHandle != entt::null; }
+    /// @brief IsValid(): a handle whose scene or entity is gone is false.
+    operator bool() const { return IsValid(); }
     operator u32() const { return (u32)m_EntityHandle; }
     operator entt::entity() const { return m_EntityHandle; }
 
@@ -71,6 +104,7 @@ public:
 private:
     entt::entity m_EntityHandle{entt::null};
     Scene* m_Scene = nullptr;
+    u64 m_SceneId = 0; ///< Scene::GetInstanceId of m_Scene when this was made
 };
 
 } // namespace UHE

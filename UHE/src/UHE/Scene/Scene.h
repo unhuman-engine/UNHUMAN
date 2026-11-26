@@ -36,12 +36,27 @@ struct RigidBody3DComponent;
 struct BoxCollider3DComponent;
 struct SphereCollider3DComponent;
 struct CapsuleCollider3DComponent;
+struct TerrainComponent;
+struct UIRectComponent;
+struct UIImageComponent;
+struct UITextComponent;
+struct UIButtonComponent;
+struct UIProgressBarComponent;
 
 class UHE_API Scene
 {
 public:
     Scene();
     ~Scene();
+    // A scene is one instance: Entity handles name it by its id, so a copy
+    // would alias them. Scene::Copy builds a new scene instead.
+    Scene(const Scene&) = delete;
+    Scene& operator=(const Scene&) = delete;
+
+    /// @brief This scene's id: unique for the life of the process, never reused.
+    [[nodiscard]] u64 GetInstanceId() const { return m_InstanceId; }
+    /// @brief Whether the scene with \p instanceId still exists (Entity::IsValid).
+    [[nodiscard]] static bool IsAlive(u64 instanceId);
 
     Entity CreateEntity(const std::string& name = std::string());
     // Issue #17: create an entity parented under 'parent' (world-space
@@ -215,8 +230,9 @@ private:
     void FlushPendingCollapses();
     void FlushPendingModelOps();
     /// Rebuilds the mesh and heights of every TerrainComponent whose fields
-    /// changed. Between frames only: the upload records into the frame's
-    /// command buffer, outside any render pass.
+    /// changed. The vertex upload is a copy into host-visible memory, not a
+    /// recorded command, so it is safe at start-up too; it runs from the
+    /// scene updates (and OnRuntimeStart), never from inside a pass.
     void UpdateTerrains();
     /// Adds a static Jolt heightfield body for every terrain with a collider (OnRuntimeStart).
     void CreateTerrainBodies();
@@ -256,6 +272,7 @@ private:
     void RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
     void RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
 
+    u64 m_InstanceId = 0;
     entt::registry m_registry;
     u32 m_ViewportWidth = 0, m_ViewportHeight = 0;
     std::vector<UI::DrawCommand> m_UIDrawList;
@@ -331,5 +348,12 @@ template <> UHE_API void Scene::OnComponentAdded<RigidBody3DComponent>(Entity en
 template <> UHE_API void Scene::OnComponentAdded<BoxCollider3DComponent>(Entity entity, BoxCollider3DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<SphereCollider3DComponent>(Entity entity, SphereCollider3DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<CapsuleCollider3DComponent>(Entity entity, CapsuleCollider3DComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<TerrainComponent>(Entity entity, TerrainComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<UIRectComponent>(Entity entity, UIRectComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<UIImageComponent>(Entity entity, UIImageComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<UITextComponent>(Entity entity, UITextComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<UIButtonComponent>(Entity entity, UIButtonComponent& components);
+template <>
+UHE_API void Scene::OnComponentAdded<UIProgressBarComponent>(Entity entity, UIProgressBarComponent& components);
 
 } // namespace UHE

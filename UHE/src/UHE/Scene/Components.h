@@ -410,6 +410,7 @@ struct UHE_API TerrainComponent
     Ref<RD3d::Model> Mesh;
     std::shared_ptr<const std::vector<float>> Heights; ///< (Resolution+1)^2 metres, row-major along +Z
     u64 BuiltKey = 0;
+    uint32_t RuntimeBodyID = 0xFFFFFFFF; ///< the Play heightfield body (JPH::BodyID), removed with the entity
 
     TerrainComponent() = default;
     TerrainComponent(const TerrainComponent&) = default;
