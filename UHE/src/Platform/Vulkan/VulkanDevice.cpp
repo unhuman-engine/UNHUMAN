@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <iostream>
+#include "Platform/Vulkan/VulkanDebugUtils.h"
 
 // ─── Frame-loop timeouts (§9.1.5: bounded waits, never UINT64_MAX) ──────────
 // One second of GPU silence on a live submission means the device is gone or a
@@ -284,6 +285,10 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc)
 
     VmaMemoryUsage memUsage = desc.hostVisible ? VMA_MEMORY_USAGE_CPU_TO_GPU : VMA_MEMORY_USAGE_GPU_ONLY;
     buffer->init(m_Allocator, desc.size, usage, memUsage);
+    if (desc.debugName != nullptr)
+        DebugUtils::Name(static_cast<VkDevice>(*m_LogicalDevice.getLogicalDevice()),
+                         static_cast<int>(vk::ObjectType::eBuffer),
+                         reinterpret_cast<std::uint64_t>(static_cast<VkBuffer>(buffer->GetHandle())), desc.debugName);
     return reinterpret_cast<BufferHandle>(buffer);
 }
 
@@ -352,6 +357,10 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
 {
     auto* texture = new VulkanTexture();
     texture->Init(*this, desc);
+    if (desc.debugName != nullptr)
+        DebugUtils::Name(static_cast<VkDevice>(*m_LogicalDevice.getLogicalDevice()),
+                         static_cast<int>(vk::ObjectType::eImage),
+                         reinterpret_cast<std::uint64_t>(static_cast<VkImage>(texture->GetImage())), desc.debugName);
     return reinterpret_cast<TextureHandle>(texture);
 }
 ShaderHandle VulkanDevice::CreateShader(const ShaderDesc& desc)
@@ -368,6 +377,11 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         {
             auto* pipeline = new VulkanGraphicPipeline();
             pipeline->createGraphicsPipeline(m_LogicalDevice, m_DescriptorManager, m_Context, desc);
+            if (desc.debugName != nullptr)
+                DebugUtils::Name(static_cast<VkDevice>(*m_LogicalDevice.getLogicalDevice()),
+                                 static_cast<int>(vk::ObjectType::ePipeline),
+                                 reinterpret_cast<std::uint64_t>(static_cast<VkPipeline>(pipeline->GetPipeline())),
+                                 desc.debugName);
             return reinterpret_cast<PipelineHandle>(static_cast<VulkanPipelineState*>(pipeline));
         });
 }
@@ -510,12 +524,16 @@ void VulkanDevice::Begin()
 
 void VulkanDevice::BeginGpuPass(const std::string& name)
 {
-    m_GpuTimer.BeginPass(*m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), name);
+    const vk::CommandBuffer cmd = *m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle();
+    DebugUtils::BeginLabel(static_cast<VkCommandBuffer>(cmd), name.c_str());
+    m_GpuTimer.BeginPass(cmd, name);
 }
 
 void VulkanDevice::EndGpuPass()
 {
-    m_GpuTimer.EndPass(*m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle());
+    const vk::CommandBuffer cmd = *m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle();
+    m_GpuTimer.EndPass(cmd);
+    DebugUtils::EndLabel(static_cast<VkCommandBuffer>(cmd));
 }
 
 void VulkanDevice::End()

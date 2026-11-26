@@ -4,6 +4,7 @@
 #include "VulkanInstance.h"
 #include <volk.h>
 #include "Platform/Vulkan/ValidationGate.h"
+#include "Platform/Vulkan/VulkanDebugUtils.h"
 
 std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 #ifdef NDEBUG
@@ -133,10 +134,18 @@ std::vector<const char*> VulkanInstance::getRequiredExtensions()
     auto glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
     std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
 
-    if (enableValidationLayers)
+    // Names and labels for GPU debuggers whenever the driver has the
+    // extension, not only with validation: a RenderDoc capture of a release
+    // build shows each pass and object by name (DebugUtils).
+    bool debugUtils = enableValidationLayers;
+    if (!debugUtils)
     {
-        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        for (const auto& property : m_context.enumerateInstanceExtensionProperties())
+            debugUtils = debugUtils || strcmp(property.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0;
     }
+    if (debugUtils)
+        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    DebugUtils::SetEnabled(debugUtils);
     return extensions;
 }
 

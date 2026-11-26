@@ -110,6 +110,8 @@ TextureDesc PhysicalDesc(const FGLoweredFrame& frame, u32 resource)
     desc.usage = UsageOf(frame, resource);
     if (logical.Exported)
         desc.usage = desc.usage | ExportUsage(logical);
+    // The frame graph's name ("Scene.HDR", "SSAO.Raw") names the image in a GPU debugger.
+    desc.debugName = logical.Name.c_str();
     return desc;
 }
 
