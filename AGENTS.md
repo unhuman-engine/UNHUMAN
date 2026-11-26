@@ -150,6 +150,14 @@ here. Follow them; if a rule is wrong, change it here first.
 - CI applies the same gate in `.github/workflows/sanitizers.yml` (Sandbox smoke,
   ASan + TSan) and `test-renderer.yml` (editor). A run that renders 34 broken
   frames a second and survives is a failure, not a pass.
+- **Run synchronization validation after touching barriers.** `-sync-validation`
+  or `UHE_SYNC_VALIDATION=1` turns on the layer's hazard tracking, which the
+  ordinary gate does not do. It found two real races: depth barriers named only
+  the late fragment tests although a load or clear runs at the early ones
+  (`Stage::DepthTests` covers both), and a resource's first barrier in a frame
+  waited on `TopOfPipe`, which orders nothing before it (the previous frame's
+  writes to a pooled image, the swapchain acquire). It is now `AllCommands` +
+  `MemoryWrite`.
 - Severity is mapped honestly in `VulkanInstance::debugCallback`: errors are
   errors, warnings are warnings. The layer's "writes to Location 1 ... and this
   write is unused" is a warning. A message the layer repeats is logged in full

@@ -46,7 +46,15 @@ enum class Stage : u64
     ColorOutput,
     DepthEarly,
     DepthLate,
+    /// Both fragment-test stages: a depth attachment is loaded or cleared at
+    /// the early tests and written at the late ones, so a barrier for it must
+    /// cover both (sync validation: WRITE_AFTER_WRITE at EARLY_FRAGMENT_TESTS).
+    DepthTests,
     BottomOfPipe,
+    /// Every stage of everything submitted before: the source of a resource's
+    /// first barrier in a frame, which may follow the previous frame's writes
+    /// to the same pooled image, or the swapchain acquire.
+    AllCommands,
 };
 
 /// Memory access kind guarded by a barrier (subset of VkAccessFlagBits2).

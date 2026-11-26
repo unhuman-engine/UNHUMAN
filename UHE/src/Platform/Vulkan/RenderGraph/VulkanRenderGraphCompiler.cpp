@@ -43,7 +43,7 @@ RGUseRequirement TextureReadRequirement(RGPassType passType)
 RGUseRequirement TextureWriteRequirement(RGPassType passType, bool isDepth)
 {
     if (isDepth)
-        return {ImageState::DepthAttachment, Stage::DepthLate, Access::DepthWrite};
+        return {ImageState::DepthAttachment, Stage::DepthTests, Access::DepthWrite};
     if (passType == RGPassType::Transfer)
         return {ImageState::TransferDst, Stage::Transfer, Access::TransferWrite};
     if (passType == RGPassType::Compute)
@@ -443,13 +443,14 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
             RGTexTrack& track = texTracks[slot];
             if (!track.used || track.state != req.state)
             {
-                // Layout transition (or first use of fresh memory).
-                compiled.preImageBarriers.push_back({reqs.textureHandles.at(slot), track.state,
-                                                     req.state, track.used ? track.stage
-                                                                           : Stage::TopOfPipe,
-                                                     req.stage, track.used ? track.access
-                                                                           : Access::None,
-                                                     req.access});
+                // Layout transition, or the first use this frame. A first use
+                // waits on everything submitted before (all stages, all
+                // writes): a pooled image was written by the previous frame,
+                // the swapchain image by the acquire, and a TopOfPipe source
+                // ordered neither (sync validation: WRITE_AFTER_WRITE).
+                compiled.preImageBarriers.push_back({reqs.textureHandles.at(slot), track.state, req.state,
+                                                     track.used ? track.stage : Stage::AllCommands, req.stage,
+                                                     track.used ? track.access : Access::MemoryWrite, req.access});
                 track.state = req.state;
                 track.stage = req.stage;
                 track.access = req.access;

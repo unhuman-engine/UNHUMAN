@@ -293,12 +293,14 @@ int main()
         for (const RGCompiledImageBarrier& b : gbuffer.preImageBarriers)
         {
             if (b.oldState == ImageState::Undefined && b.newState == ImageState::DepthAttachment &&
-                b.srcStage == Stage::TopOfPipe)
+                b.srcStage == Stage::AllCommands && b.srcAccess == Access::MemoryWrite)
                 depthFresh = true;
             if (b.oldState == ImageState::Undefined && b.newState == ImageState::ColorAttachment)
                 albedoFresh = true;
         }
-        CHECK(depthFresh, "fresh depth: Undefined → DepthAttachment from TopOfPipe");
+        // A first use waits on everything before it: the pooled image may hold
+        // the previous frame's writes (sync validation flagged TopOfPipe).
+        CHECK(depthFresh, "fresh depth: Undefined → DepthAttachment after all prior writes");
         CHECK(albedoFresh, "fresh albedo: Undefined → ColorAttachment");
 
         CHECK(lighting.preImageBarriers.size() == 3,
@@ -312,7 +314,7 @@ int main()
             if (b.oldState == ImageState::DepthAttachment && b.newState == ImageState::ShaderRead)
                 depthToRead = true;
             if (b.oldState == ImageState::Present && b.newState == ImageState::ColorAttachment &&
-                b.srcStage == Stage::TopOfPipe && b.dstStage == Stage::ColorOutput)
+                b.srcStage == Stage::AllCommands && b.dstStage == Stage::ColorOutput)
                 swapAcquired = true;
         }
         CHECK(albedoToRead, "albedo: ColorAttachment → ShaderRead (ColorOutput → Fragment)");
