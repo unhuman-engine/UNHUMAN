@@ -99,6 +99,16 @@ here. Follow them; if a rule is wrong, change it here first.
   even when the layout does not change, and attachment access includes the
   read that a load, blend or depth test does.
 
+## Entities and scenes
+
+- **An `Entity` kept across frames is checked, not trusted.** Play, Stop and
+  opening a scene or a project replace the active scene; an `Entity` stored
+  in a panel or a member (the hovered entity, a selection) then names a scene
+  that is gone. `Entity` remembers its scene's instance id: `if (entity)`,
+  `IsValid()`, `HasComponent` and `TryGetComponent` answer false or null for
+  it. `GetComponent` does not check: use it only right after a check, or use
+  `TryGetComponent`. Never keep a raw `Scene*` or `entt::entity` instead.
+
 ## Scripting is a consumer of the engine
 
 - **The VM is main-thread only and never touched from a job.** A Lua state is not
@@ -157,6 +167,9 @@ here. Follow them; if a rule is wrong, change it here first.
   that interface plus the backend implementation (see `GetSwapchainFormat`).
   Demo layers may reach the swapchain for its extent — that is the documented
   exception.
+- **No identifier is called `near` or `far`.** `windows.h` defines both as
+  macros: a variable with either name compiled everywhere and broke the
+  Windows build, twice. `nearPlane`, `farPlane`, `closeTo`.
 - **Editor code reads ImGui internals through `ImGui::GetCurrentContext()`.**
   The inline helpers in `imgui_internal.h` (`GetCurrentWindow`, `GetActiveID`,
   ...) read the global `GImGui`, which the engine DLL does not export on
