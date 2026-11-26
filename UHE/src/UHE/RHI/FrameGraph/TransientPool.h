@@ -33,6 +33,14 @@ namespace UHE::RHI
  * nothing asked for in `retireAfterFrames` frames is destroyed, which is how a
  * resize retires the old size: its description is never asked for again.
  *
+ * Within a frame, an object is shared by requests whose lifetimes do not
+ * overlap: Acquire takes the [first, last] pass interval the resource is
+ * used in, and an object already claimed for disjoint intervals serves it
+ * too (memory aliasing between same-shape resources). The backend's first
+ * barrier for each resource discards the contents and waits on everything
+ * before it, which is what makes the reuse safe. Without an interval a
+ * request conflicts with every other one, as before.
+ *
  * The delay must exceed the frames in flight, so no submitted frame still
  * uses an object when it goes (the device's Destroy* also defers to the
  * slot's fence). Backend-neutral: create and destroy are injected, and
@@ -51,14 +59,28 @@ public:
     TransientPool(const TransientPool&) = delete;
     TransientPool& operator=(const TransientPool&) = delete;
 
-    /// @brief An object matching \p desc that nothing else holds this frame; nullptr if creation failed.
-    Handle Acquire(const Desc& desc)
+    static constexpr u32 kWholeFrame = ~0u;
+
+    /**
+     * @brief An object matching \p desc that nothing else uses during [\p first, \p last] this frame.
+     * @return nullptr if creation failed.
+     */
+    Handle Acquire(const Desc& desc, u32 first = 0, u32 last = kWholeFrame)
     {
+        if (first > last)
+            std::swap(first, last);
         for (Entry& entry : m_Entries)
         {
-            if (!entry.InUse && SameShape(entry.Shape, desc))
+            if (!SameShape(entry.Shape, desc))
+                continue;
+            const bool free =
+                std::none_of(entry.Claims.begin(), entry.Claims.end(), [&](const std::pair<u32, u32>& claim)
+                             { return first <= claim.second && claim.first <= last; });
+            if (free)
             {
-                entry.InUse = true;
+                if (!entry.Claims.empty())
+                    ++m_Aliased;
+                entry.Claims.emplace_back(first, last);
                 entry.LastUsedFrame = m_Frame;
                 return entry.Object;
             }
@@ -72,7 +94,7 @@ public:
         entry.Shape.debugName = nullptr; // the caller's string need not outlive the call
         entry.Object = object;
         entry.LastUsedFrame = m_Frame;
-        entry.InUse = true;
+        entry.Claims.emplace_back(first, last);
         m_Entries.push_back(entry);
         return object;
     }
@@ -81,7 +103,7 @@ public:
     void EndFrame()
     {
         for (Entry& entry : m_Entries)
-            entry.InUse = false;
+            entry.Claims.clear();
         const u64 frame = m_Frame;
         auto retired = std::remove_if(m_Entries.begin(), m_Entries.end(),
                                       [&](const Entry& entry)
@@ -112,6 +134,8 @@ public:
     [[nodiscard]] size_t Size() const { return m_Entries.size(); }
     [[nodiscard]] u64 CreatedCount() const { return m_Created; }
     [[nodiscard]] u64 DestroyedCount() const { return m_Destroyed; }
+    /// @brief Requests served by an object another request already used earlier in the same frame.
+    [[nodiscard]] u64 AliasedCount() const { return m_Aliased; }
 
 private:
     struct Entry
@@ -119,7 +143,7 @@ private:
         Desc Shape;
         Handle Object{};
         u64 LastUsedFrame = 0;
-        bool InUse = false; ///< claimed this frame
+        std::vector<std::pair<u32, u32>> Claims; ///< pass intervals it serves this frame
     };
 
     CreateFn m_Create;
@@ -129,6 +153,7 @@ private:
     u64 m_Frame = 0;
     u64 m_Created = 0;
     u64 m_Destroyed = 0;
+    u64 m_Aliased = 0;
 };
 
 using TransientTexturePool = TransientPool<TextureDesc, TextureHandle>;
