@@ -70,6 +70,11 @@ ProjectWindowSettings RuntimeLayer::ResolveWindow(const ProjectInfo* project)
         return static_cast<u32>(
             std::clamp<long>(value, ProjectWindowSettings::kMinSize, ProjectWindowSettings::kMaxSize));
     };
+    const std::string vsync = CommandLine::GetValue("vsync");
+    if (vsync == "on" || vsync == "1" || vsync == "true")
+        window.VSync = true;
+    else if (vsync == "off" || vsync == "0" || vsync == "false")
+        window.VSync = false;
     window.Width = size("width", window.Width);
     window.Height = size("height", window.Height);
     return window;

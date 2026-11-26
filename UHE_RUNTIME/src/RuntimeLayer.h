@@ -24,7 +24,7 @@ public:
     [[nodiscard]] static std::optional<UHE::ProjectInfo> FindProject();
     /**
      * @brief The window \p project asks for, with the command line's overrides:
-     *        -windowed, -borderless, -fullscreen, -width <px>, -height <px>.
+     *        -windowed, -borderless, -fullscreen, -width <px>, -height <px>, -vsync on|off.
      */
     [[nodiscard]] static UHE::ProjectWindowSettings ResolveWindow(const UHE::ProjectInfo* project);
 
