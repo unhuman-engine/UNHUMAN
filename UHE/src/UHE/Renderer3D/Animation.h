@@ -55,6 +55,10 @@ struct UHE_API Skin
     std::string Name;
     std::vector<i32> JointNodes;
     std::vector<glm::mat4> InverseBindMatrices; ///< Parallel to JointNodes
+    /// Joint world (rest pose) x inverse bind, parallel to JointNodes: the bone
+    /// matrices when no clip plays, so a skinned model stands as its skeleton
+    /// places it instead of falling back to its mesh node's transform.
+    std::vector<glm::mat4> RestPalette;
 };
 
 template <typename T> struct UHE_API Keyframe

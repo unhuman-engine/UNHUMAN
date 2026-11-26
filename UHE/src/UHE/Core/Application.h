@@ -15,6 +15,8 @@ class UHE_API Application
 {
 public:
     Application(const std::string& name = "UHE APP");
+    /// @brief Opens the main window with \p window instead of the default 1920x1080.
+    Application(const std::string& name, const WindowProps& window);
     virtual ~Application();
 
     void Run();

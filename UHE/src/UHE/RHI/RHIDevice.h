@@ -52,6 +52,16 @@ public:
     /// Wayland compositors never do), so the device must not rely on that alone.
     virtual void OnFramebufferResized() {}
 
+    /**
+     * @brief Asks for presentation synced to the display's refresh (vertical sync).
+     *
+     * Takes effect when the swapchain is next recreated, which a change
+     * schedules for right after the next present, as a resize does.
+     */
+    virtual void SetVSync(bool enabled) { (void)enabled; }
+    /// @brief Whether the device was asked for vertical sync (SetVSync or SwapchainDesc::vsync).
+    [[nodiscard]] virtual bool IsVSync() const { return false; }
+
     /// Blocks the CPU until every piece of GPU work submitted by this device has completed.
     virtual void WaitIdle() = 0;
     /// Rewinds the per-frame command buffers so they can be recorded again.
@@ -65,6 +75,17 @@ public:
     /// this format, and a pipeline has to be created for the pass it is bound
     /// in, so a scene pipeline that also serves such a pass needs it.
     [[nodiscard]] virtual TextureFormat GetSwapchainFormat() = 0;
+    /// @brief The device's maxPushConstantsSize. Vulkan guarantees only 128 bytes;
+    ///        desktop GPUs report 256, some mobile ones 128.
+    [[nodiscard]] virtual u32 GetMaxPushConstantsSize() const { return 256; }
+    /// @brief GPU milliseconds of each frame graph pass of a recently completed
+    ///        frame (a few frames old), in recording order; empty when the device
+    ///        cannot time (no timestamp queries).
+    [[nodiscard]] virtual const std::vector<GpuPassTiming>& GetGpuPassTimings() const
+    {
+        static const std::vector<GpuPassTiming> none;
+        return none;
+    }
     /// @brief Whether a pipeline can rasterize edges only (GraphicsPipelineDesc::wireframe).
     [[nodiscard]] virtual bool SupportsWireframe() const { return false; }
 

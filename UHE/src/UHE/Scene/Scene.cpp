@@ -2,17 +2,21 @@
 #include "Scene.h"
 #include <box2d/box2d.h>
 #include <glm/glm.hpp>
+#include <map>
+#include <unordered_set>
 #include "Components.h"
 #include "Entity.h"
 #include "ScriptableEntity.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Audio/AudioEngine.h"
 #include "UHE/Core/UUID.h"
+#include "UHE/Physics/Joints3D.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer2D/SubTexture2D.h"
 #include "UHE/Renderer3D/AnimationStateMachine.h"
 #include "UHE/Renderer3D/LightSystem.h"
 #include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Renderer3D/WaterRenderer.h"
 #include "UHE/Scripting/ScriptEngine.h"
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -20,18 +24,38 @@
 
 // Jolt Physics
 #include <Jolt/Jolt.h>
-#include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
-#include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
+#include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include "UHE/Scene/Terrain.h"
 
 namespace UHE
 {
 
-Scene::Scene()
+namespace
 {
+/// Scenes alive now, by instance id. Ids are never reused, so an Entity that
+/// outlived its scene cannot pass for one in a new scene at the same address.
+std::unordered_set<u64>& LiveScenes()
+{
+    static std::unordered_set<u64> live;
+    return live;
+}
+u64 g_NextSceneId = 1;
+} // namespace
+
+bool Scene::IsAlive(u64 instanceId)
+{
+    return instanceId != 0 && LiveScenes().contains(instanceId);
+}
+
+Scene::Scene() : m_InstanceId(g_NextSceneId++)
+{
+    LiveScenes().insert(m_InstanceId);
     // Initialize all component pools to prevent EnTT out-of-bounds asserts across DLL boundaries
     m_registry.storage<IDComponent>();
     m_registry.storage<TagComponent>();
@@ -52,6 +76,9 @@ Scene::Scene()
     m_registry.storage<CapsuleCollider3DComponent>();
     m_registry.storage<ModelNodeComponent>();
     m_registry.storage<RelationshipComponent>();
+    m_registry.storage<TerrainComponent>();
+    m_registry.storage<SequencerComponent>();
+    m_registry.storage<Joint3DComponent>();
 }
 
 Scene::~Scene()
@@ -70,6 +97,9 @@ Scene::~Scene()
         b2DestroyWorld(m_PhysicsWorldId);
         m_PhysicsWorldId = b2_nullWorldId;
     }
+    // Last: the teardown above (script OnDestroy) still reaches its entities;
+    // from here on every Entity of this scene reads as invalid.
+    LiveScenes().erase(m_InstanceId);
 }
 
 void Scene::DestroyScriptInstances()
@@ -96,6 +126,8 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
     Ref<Scene> newScene = CreateRef<Scene>();
     newScene->m_ViewportWidth = other->m_ViewportWidth;
     newScene->m_ViewportHeight = other->m_ViewportHeight;
+    newScene->m_RenderSettings = other->m_RenderSettings;
+    newScene->m_PhysicsSettings = other->m_PhysicsSettings;
 
     auto& srcRegistry = other->m_registry;
     auto& dstRegistry = newScene->m_registry;
@@ -272,10 +304,38 @@ Ref<Scene> Scene::Copy(Ref<Scene> other)
         if (srcRegistry.all_of<DirectionalLightComponent>(srcEntity))
         {
             auto& src = srcRegistry.get<DirectionalLightComponent>(srcEntity);
-            auto& dst = newEntity.AddComponent<DirectionalLightComponent>();
-            dst.Color = src.Color;
-            dst.Intensity = src.Intensity;
+            newEntity.AddComponent<DirectionalLightComponent>() = src;
         }
+
+        if (srcRegistry.all_of<FoliageComponent>(srcEntity))
+            newEntity.AddComponent<FoliageComponent>() = srcRegistry.get<FoliageComponent>(srcEntity);
+        if (srcRegistry.all_of<WindComponent>(srcEntity))
+            newEntity.AddComponent<WindComponent>() = srcRegistry.get<WindComponent>(srcEntity);
+        if (srcRegistry.all_of<AreaLightComponent>(srcEntity))
+            newEntity.AddComponent<AreaLightComponent>() = srcRegistry.get<AreaLightComponent>(srcEntity);
+        if (srcRegistry.all_of<WaterComponent>(srcEntity))
+            newEntity.AddComponent<WaterComponent>() = srcRegistry.get<WaterComponent>(srcEntity);
+        // The built mesh and heights are shared, not rebuilt: they are immutable once built.
+        if (srcRegistry.all_of<TerrainComponent>(srcEntity))
+            newEntity.AddComponent<TerrainComponent>() = srcRegistry.get<TerrainComponent>(srcEntity);
+        if (srcRegistry.all_of<SequencerComponent>(srcEntity))
+            newEntity.AddComponent<SequencerComponent>() = srcRegistry.get<SequencerComponent>(srcEntity);
+        if (srcRegistry.all_of<Joint3DComponent>(srcEntity))
+        {
+            Joint3DComponent& joint = newEntity.AddComponent<Joint3DComponent>();
+            joint = srcRegistry.get<Joint3DComponent>(srcEntity);
+            joint.RuntimeConstraint = nullptr; // the copy builds its own in Play
+        }
+        if (srcRegistry.all_of<UIRectComponent>(srcEntity))
+            newEntity.AddComponent<UIRectComponent>() = srcRegistry.get<UIRectComponent>(srcEntity);
+        if (srcRegistry.all_of<UIImageComponent>(srcEntity))
+            newEntity.AddComponent<UIImageComponent>() = srcRegistry.get<UIImageComponent>(srcEntity);
+        if (srcRegistry.all_of<UITextComponent>(srcEntity))
+            newEntity.AddComponent<UITextComponent>() = srcRegistry.get<UITextComponent>(srcEntity);
+        if (srcRegistry.all_of<UIButtonComponent>(srcEntity))
+            newEntity.AddComponent<UIButtonComponent>() = srcRegistry.get<UIButtonComponent>(srcEntity);
+        if (srcRegistry.all_of<UIProgressBarComponent>(srcEntity))
+            newEntity.AddComponent<UIProgressBarComponent>() = srcRegistry.get<UIProgressBarComponent>(srcEntity);
 
         // Copy PointLightComponent
         if (srcRegistry.all_of<PointLightComponent>(srcEntity))
@@ -475,6 +535,28 @@ void Scene::DestroyEntity(Entity entity)
             }
         }
 
+        // Physics bodies go with their entity: left behind, an invisible
+        // collider would stay in the world until Play stops. Its joints first:
+        // a constraint must not outlive a body it holds.
+        Physics::DestroyJointsOf(*this, e);
+        if (JPH::BodyInterface* bodies = m_PhysicsSystem3D.GetBodyInterface())
+        {
+            const auto removeBody = [bodies](uint32_t& id)
+            {
+                if (id == 0xFFFFFFFF)
+                    return;
+                const JPH::BodyID body(id);
+                if (bodies->IsAdded(body))
+                    bodies->RemoveBody(body);
+                bodies->DestroyBody(body);
+                id = 0xFFFFFFFF;
+            };
+            if (auto* rb = e.TryGetComponent<RigidBody3DComponent>())
+                removeBody(rb->RuntimeBodyID);
+            if (auto* terrain = e.TryGetComponent<TerrainComponent>())
+                removeBody(terrain->RuntimeBodyID);
+        }
+
         UnindexEntity(uuid);
         if (e.HasComponent<AudioSourceComponent>())
         {
@@ -490,6 +572,56 @@ void Scene::DestroyEntity(Entity entity)
 }
 
 // --- Issue #17: hierarchy helpers ---
+
+void Scene::ApplySequence(const Sequence& sequence, float time)
+{
+    for (const SequenceTrack& track : sequence.Tracks)
+    {
+        if (track.Muted || track.Property == SequenceProperty::Event || track.Keys.empty())
+            continue;
+        Entity target = GetEntityWithUUID(track.Target);
+        auto* transform = target.TryGetComponent<TransformComponent>();
+        if (transform == nullptr)
+            continue;
+        switch (track.Property)
+        {
+            case SequenceProperty::Position:
+                transform->Translation = Sequence::Sample(track, time, transform->Translation);
+                break;
+            case SequenceProperty::Rotation:
+                transform->Rotation = Sequence::Sample(track, time, transform->Rotation);
+                break;
+            case SequenceProperty::Scale:
+                transform->Scale = Sequence::Sample(track, time, transform->Scale);
+                break;
+            case SequenceProperty::Event:
+                break;
+        }
+    }
+}
+
+void Scene::StepSequences(Timestep ts)
+{
+    UHE_PROFILE_FUNCTION();
+    std::vector<std::pair<entt::entity, std::vector<std::string>>> fired;
+    auto view = m_registry.view<SequencerComponent>();
+    for (auto entity : view)
+    {
+        SequencerComponent& sequencer = view.get<SequencerComponent>(entity);
+        if (!sequencer.Playing)
+            continue;
+        std::vector<std::string> events;
+        sequencer.Data.Advance(sequencer.Time, sequencer.Playing, ts.GetSeconds() * sequencer.Speed, &events);
+        ApplySequence(sequencer.Data, sequencer.Time);
+        if (!events.empty())
+            fired.emplace_back(entity, std::move(events));
+    }
+    for (auto& [entity, events] : fired)
+    {
+        for (const std::string& name : events)
+            ScriptEngine::Get().OnSequenceEvent(*this, static_cast<u32>(entity), name);
+    }
+}
 
 Entity Scene::GetEntityWithUUID(u64 uuid)
 {
@@ -906,6 +1038,7 @@ void Scene::OnUpdateEditorSimulation(Timestep ts)
     FlushPendingReparents();
     FlushPendingCollapses();
     FlushPendingModelOps();
+    UpdateTerrains();
 
     m_registry.view<NativeScriptComponent>().each(
         [=, this](auto entity, auto& nsc)
@@ -1095,12 +1228,15 @@ void Scene::StopAudioSources()
         });
 }
 
-void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera)
+void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera, bool drawGrid)
 {
     UHE_PROFILE_FUNCTION();
     // Called immediately before drawing (legacy path) or from the render-graph
     // scene pass, so UI edits made after OnUpdate are reflected this frame.
-    UpdateWorldTransformCache();
+    // Passes that drew the scene earlier this frame already built it.
+    if (!m_RenderFramePrepared)
+        UpdateWorldTransformCache();
+    m_RenderFramePrepared = false;
 
     Renderer2D::BeginScene(camera);
     RenderSprites(ts, m_WorldTransformCache);
@@ -1112,9 +1248,16 @@ void Scene::RenderEditorScene(Timestep ts, EditorCamera& camera)
     RenderModels(ts, m_WorldTransformCache);
     // Last: the grid blends over what is drawn and is hidden where geometry is nearer.
     const EditorOverlays& overlays = GetEditorOverlays();
+    if (drawGrid)
+        RenderEditorGrid();
+    Renderer3D::EndScene();
+}
+
+void Scene::RenderEditorGrid()
+{
+    const EditorOverlays& overlays = GetEditorOverlays();
     if (overlays.Grid)
         Renderer3D::DrawGrid({.Axes = overlays.GridAxes, .Opacity = overlays.GridOpacity});
-    Renderer3D::EndScene();
 }
 
 Scene::EditorOverlays& Scene::GetEditorOverlays()
@@ -1311,6 +1454,18 @@ void Scene::RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt
             GetWorldFromCache(worldTransforms, entity) * rotation * glm::scale(glm::mat4(1.0f), glm::vec3(0.5f));
         Renderer2D::DrawQuad(billTransform, m_PointLightIcon, 1.0f, glm::vec4(1.0f), (int)entity);
     }
+
+    // Area lights reuse the point-light icon. Only the world position is kept: an area light is
+    // nearly always rotated (it faces down by default), and its rotation would tilt the billboard
+    // away from the camera.
+    auto areaLightView = m_registry.view<TransformComponent, AreaLightComponent>();
+    for (auto entity : areaLightView)
+    {
+        const glm::vec3 position(GetWorldFromCache(worldTransforms, entity)[3]);
+        glm::mat4 billTransform =
+            glm::translate(glm::mat4(1.0f), position) * rotation * glm::scale(glm::mat4(1.0f), glm::vec3(0.5f));
+        Renderer2D::DrawQuad(billTransform, m_PointLightIcon, 1.0f, glm::vec4(1.0f), (int)entity);
+    }
 }
 
 void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms)
@@ -1348,7 +1503,21 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
             if (animComp.Animator)
                 animator = animComp.Animator.get();
         }
+        if (const auto* foliage = m_registry.try_get<FoliageComponent>(entity))
+            Renderer3D::SetFoliage(foliage->Bend, foliage->Height);
+        else
+            Renderer3D::SetFoliage(0.0f, 1.0f);
         Renderer3D::SubmitModel(*model.ModelData, GetWorldFromCache(worldTransforms, entity), (int)entity, animator);
+    }
+
+    auto terrainView = m_registry.view<TerrainComponent>();
+    for (auto entity : terrainView)
+    {
+        const auto& terrain = terrainView.get<TerrainComponent>(entity);
+        if (!terrain.Mesh)
+            continue;
+        Renderer3D::SetFoliage(0.0f, 1.0f);
+        Renderer3D::SubmitModel(*terrain.Mesh, GetWorldFromCache(worldTransforms, entity), (int)entity, nullptr);
     }
 
     // Issue #17: leaf nodes of expanded glTF trees submit their sub-mesh with
@@ -1360,7 +1529,8 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
     // per node and break the bone-offset contract).
     auto nodeView = m_registry.view<ModelNodeComponent>();
 
-    std::unordered_map<u64, Renderer3D::BoneBinding> boneCache;
+    // Keyed by model entity and skin: a model's meshes can use different skins.
+    std::map<std::pair<u64, int>, Renderer3D::BoneBinding> boneCache;
     // Same one-upload-per-model contract for material parameters: the whole
     // model's material list goes to the GPU buffer once, and every node mesh
     // references it by index.
@@ -1389,8 +1559,10 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
         if (meshIndex >= static_cast<int>(meshes.size()))
             continue;
 
-        // Use cached binding or prepare it once per model entity
-        auto cacheIt = boneCache.find(nodeComp.ModelEntity);
+        // One binding per model entity and skin, prepared on first use; none for a rigid mesh.
+        const int skinIndex = meshes[meshIndex].skinIndex;
+        const auto cacheKey = std::make_pair(nodeComp.ModelEntity, skinIndex);
+        auto cacheIt = boneCache.find(cacheKey);
         if (cacheIt == boneCache.end())
         {
             const RD3d::Animator* animator = nullptr;
@@ -1400,8 +1572,8 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
                 if (animComp.Animator)
                     animator = animComp.Animator.get();
             }
-            boneCache[nodeComp.ModelEntity] = Renderer3D::PrepareBoneBinding(animator);
-            cacheIt = boneCache.find(nodeComp.ModelEntity);
+            cacheIt =
+                boneCache.emplace(cacheKey, Renderer3D::PrepareSkinBinding(*mc.ModelData, animator, skinIndex)).first;
         }
 
         auto materialIt = materialCache.find(nodeComp.ModelEntity);
@@ -1411,9 +1583,17 @@ void Scene::RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm
                                                Renderer3D::PrepareMaterialBinding(*mc.ModelData)).first;
         }
 
-        Renderer3D::SubmitMesh(meshes[meshIndex], GetWorldFromCache(worldTransforms, entity), (int)entity,
-                               *mc.ModelData, materialIt->second, cacheIt->second.BufferIndex,
-                               cacheIt->second.Offset);
+        if (const auto* foliage = m_registry.try_get<FoliageComponent>(static_cast<entt::entity>(modelEntity)))
+            Renderer3D::SetFoliage(foliage->Bend, foliage->Height);
+        else
+            Renderer3D::SetFoliage(0.0f, 1.0f);
+        // A skinned mesh follows its joints, which are relative to the model,
+        // not to the node entity it was expanded into.
+        const entt::entity placedBy = meshes[meshIndex].skinIndex >= 0 && cacheIt->second.BufferIndex >= 0
+                                          ? static_cast<entt::entity>(modelEntity)
+                                          : entity;
+        Renderer3D::SubmitMesh(meshes[meshIndex], GetWorldFromCache(worldTransforms, placedBy), (int)entity,
+                               *mc.ModelData, materialIt->second, cacheIt->second.BufferIndex, cacheIt->second.Offset);
     }
 }
 
@@ -1431,6 +1611,7 @@ void Scene::OnUpdateRuntimeSimulation(Timestep frame)
     FlushPendingReparents();
     FlushPendingCollapses();
     FlushPendingModelOps();
+    UpdateTerrains();
 
     // Hot reload is polled per frame, not per tick: it watches the disk.
     ScriptEngine::Get().Tick(*this);
@@ -1447,6 +1628,7 @@ void Scene::OnUpdateRuntimeSimulation(Timestep frame)
     // Presentation runs on the render delta: animation playback and audio
     // follow wall-clock time, and neither feeds back into the simulation.
     StepAnimators(frame);
+    StepSequences(frame);
     UpdateAudioSources(frame, true);
 
     // Issue #17: world transforms are refreshed in RenderRuntimeScene so the
@@ -1517,6 +1699,7 @@ void Scene::StepSimulation()
 
     // 3D Physics Jolt
     m_PhysicsSystem3D.Update(dt);
+    Physics::UpdateSensors(*this, dt.GetSeconds());
     if (JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface())
     {
         auto view3d = m_registry.view<TransformComponent, RigidBody3DComponent>();
@@ -1546,10 +1729,74 @@ void Scene::StepSimulation()
     m_InterpolateRender = false;
 }
 
-void Scene::RenderRuntimeScene(Timestep ts)
+void Scene::PrepareRenderFrame(bool runtime)
 {
-    UHE_PROFILE_FUNCTION();
+    if (m_RenderFramePrepared)
+        return;
+    if (runtime)
+        BuildRuntimeRenderCache();
+    else
+        UpdateWorldTransformCache();
+    m_RenderFramePrepared = true;
+}
 
+std::optional<SceneRenderView> Scene::GetPrimaryCameraView()
+{
+    auto view = m_registry.view<TransformComponent, CameraComponent>();
+    for (auto entity : view)
+    {
+        auto& camera = view.get<CameraComponent>(entity);
+        if (!camera.Primary)
+            continue;
+        const glm::mat4 transform = GetWorldFromCache(m_WorldTransformCache, entity);
+        SceneRenderView result;
+        result.View = glm::inverse(transform);
+        result.Projection = camera.Camera.GetProjection();
+        result.Position = glm::vec3(transform[3]);
+        return result;
+    }
+    return std::nullopt;
+}
+
+void Scene::RenderDepth()
+{
+    RenderModels(Timestep(0.0f), m_WorldTransformCache);
+}
+
+WindSettings Scene::GetEffectiveWind()
+{
+    WindSettings wind = m_RenderSettings.Wind;
+    auto view = m_registry.view<TransformComponent, WindComponent>();
+    for (auto entity : view)
+    {
+        const glm::mat4 world = GetWorldFromCache(m_WorldTransformCache, entity);
+        const glm::vec3 forward = -glm::vec3(world[2]);
+        const WindComponent& zone = view.get<WindComponent>(entity);
+        if (glm::length(glm::vec2(forward.x, forward.z)) > 1e-4f)
+            wind.Direction = glm::normalize(glm::vec2(forward.x, forward.z));
+        wind.Strength = zone.Strength;
+        wind.GustStrength = zone.GustStrength;
+        wind.GustFrequency = zone.GustFrequency;
+        break; // the first wind zone wins
+    }
+    return wind;
+}
+
+bool Scene::HasWater()
+{
+    return !m_registry.view<WaterComponent>().empty();
+}
+
+void Scene::RenderWater()
+{
+    auto view = m_registry.view<TransformComponent, WaterComponent>();
+    for (auto entity : view)
+        WaterRenderer::Submit(GetWorldFromCache(m_WorldTransformCache, entity), view.get<WaterComponent>(entity),
+                              static_cast<int>(entity));
+}
+
+void Scene::BuildRuntimeRenderCache()
+{
     // Issue #49: blend physics-driven bodies from their pose before the last
     // tick to their current one. The blend only feeds this world-cache build;
     // TransformComponent keeps the simulated state.
@@ -1571,6 +1818,14 @@ void Scene::RenderRuntimeScene(Timestep ts)
     }
     UpdateWorldTransformCache();
     m_RenderLocalOverride.clear();
+}
+
+void Scene::RenderRuntimeScene(Timestep ts)
+{
+    UHE_PROFILE_FUNCTION();
+    if (!m_RenderFramePrepared)
+        BuildRuntimeRenderCache();
+    m_RenderFramePrepared = false;
 
     Camera* mainCamera = nullptr;
     glm::mat4 cameraTransform;
@@ -1630,6 +1885,17 @@ void Scene::OnRuntimeStart()
             audio.StopRequested = false;
         });
 
+    // Sequences start before the bodies are made, so a kinematic body starts where its track puts it.
+    m_registry.view<SequencerComponent>().each(
+        [this](entt::entity, SequencerComponent& sequencer)
+        {
+            sequencer.Data.SortKeys();
+            sequencer.Time = 0.0f;
+            sequencer.Playing = sequencer.PlayOnStart;
+            if (sequencer.Playing)
+                ApplySequence(sequencer.Data, 0.0f);
+        });
+
     // 1. Define and Create the World
     b2WorldDef worldDef = b2DefaultWorldDef();
     worldDef.gravity = {0.0f, -9.8f};
@@ -1685,8 +1951,16 @@ void Scene::OnRuntimeStart()
     }
 
     // --- 3D Physics (Jolt) ---
+    // The scene's physics settings, before the world exists.
+    m_PhysicsSystem3D.SetGravity(m_PhysicsSettings.Gravity);
+    m_PhysicsSystem3D.SetCollisionSteps(m_PhysicsSettings.CollisionSteps);
+    if (m_PhysicsSettings.TickRate > 0.0f)
+        m_SimulationClock.SetFixedStep(1.0 / static_cast<double>(m_PhysicsSettings.TickRate));
     m_PhysicsSystem3D.InitializeScene();
     JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface();
+    // A scene started without a frame before it (the game runtime) has not built its terrains yet.
+    UpdateTerrains();
+    CreateTerrainBodies();
 
     auto view3d = m_registry.view<TransformComponent, RigidBody3DComponent>();
     for (auto entity : view3d)
@@ -1760,6 +2034,8 @@ void Scene::OnRuntimeStart()
                 bodySettings.mMassPropertiesOverride.mMass = rb3d.Mass;
             }
 
+            // The entity rides on the body, so a ray hit (a range sensor) names it.
+            bodySettings.mUserData = static_cast<JPH::uint64>(static_cast<u32>(entity));
             JPH::Body* body = bodyInterface->CreateBody(bodySettings);
             if (body)
             {
@@ -1767,6 +2043,128 @@ void Scene::OnRuntimeStart()
                 rb3d.RuntimeBodyID = body->GetID().GetIndexAndSequenceNumber();
             }
         }
+    }
+
+    // Joints last: they join bodies that now exist.
+    Physics::CreateJoints(*this);
+}
+
+void Scene::UpdateUI(glm::vec2 screenSize, const UI::Pointer& pointer)
+{
+    UI::Events events;
+    const UISettings& ui = m_RenderSettings.UI;
+    m_UIDrawList =
+        UI::Update(*this, screenSize, pointer, &events, UI::Scale(ui.ScaleWithScreen, ui.ReferenceHeight, screenSize));
+    m_PointerOverUI = events.PointerOverUI;
+    // After the layout, not during it: a script may add, remove or hide UI.
+    for (const entt::entity clicked : events.Clicked)
+        ScriptEngine::Get().OnUIClick(*this, static_cast<u32>(clicked));
+}
+
+void Scene::UpdateTerrains()
+{
+    auto view = m_registry.view<TerrainComponent>();
+    for (auto entity : view)
+    {
+        auto& terrain = view.get<TerrainComponent>(entity);
+        std::string heightmap;
+        u64 key = Terrain::BuildKey(terrain);
+        if (!terrain.HeightmapPath.empty())
+        {
+            const std::filesystem::path resolved = ResolveAssetPath(terrain.HeightmapPath);
+            std::error_code ec;
+            const auto written = std::filesystem::last_write_time(resolved, ec);
+            if (!ec)
+            {
+                heightmap = resolved.string();
+                const auto ticks = written.time_since_epoch().count();
+                key ^= static_cast<u64>(ticks) * 0x9E3779B97F4A7C15ull; // a repainted heightmap rebuilds too
+            }
+            else
+            {
+                heightmap = resolved.string(); // missing: BuildHeightfield logs it and falls back to noise
+            }
+        }
+        if (key == terrain.BuiltKey)
+            continue;
+        terrain.BuiltKey = key;
+
+        Terrain::Heightfield field = Terrain::BuildHeightfield(terrain, heightmap);
+        RD3d::Material material;
+        material.RoughnessFactor = 0.92f;
+        std::vector<RD3d::Primitive> primitives;
+        primitives.push_back(Terrain::BuildPrimitive(field, terrain));
+        // A new model each time: the previous one may still be drawn by a
+        // frame in flight, and its buffers are freed only after that frame.
+        auto mesh = CreateRef<RD3d::Model>();
+        if (mesh->LoadFromPrimitives("Terrain", std::move(primitives), {material}))
+            terrain.Mesh = mesh;
+        terrain.Heights = std::make_shared<const std::vector<float>>(std::move(field.Heights));
+    }
+}
+
+void Scene::CreateTerrainBodies()
+{
+    JPH::BodyInterface* bodyInterface = m_PhysicsSystem3D.GetBodyInterface();
+    if (bodyInterface == nullptr)
+        return;
+    auto view = m_registry.view<TransformComponent, TerrainComponent>();
+    for (auto entity : view)
+    {
+        auto [transform, terrain] = view.get<TransformComponent, TerrainComponent>(entity);
+        if (!terrain.Collider || !terrain.Heights || terrain.Heights->empty())
+            continue;
+        const u32 rendered = static_cast<u32>(std::lround(std::sqrt(static_cast<double>(terrain.Heights->size()))));
+        const float size = std::max(terrain.Size, 0.1f);
+        const float spacing = size / static_cast<float>(rendered - 1);
+        // Jolt needs a sample count its block size (2) divides; the grid has
+        // Resolution + 1. The drawn samples are kept as they are and, for an
+        // odd count, one more row and column repeat the far edges: a flat lip
+        // one cell wide outside the terrain, instead of a resampled surface
+        // that would sit below the drawn ridges.
+        const u32 samples = rendered % 2 != 0 ? rendered + 1 : rendered;
+        std::vector<float> heights(static_cast<size_t>(samples) * samples);
+        for (u32 z = 0; z < samples; ++z)
+            for (u32 x = 0; x < samples; ++x)
+                heights[static_cast<size_t>(z) * samples + x] =
+                    (*terrain.Heights)[static_cast<size_t>(std::min(z, rendered - 1)) * rendered +
+                                       std::min(x, rendered - 1)];
+
+        // Placed by the world transform, as the mesh is drawn: a terrain under
+        // a moved parent has its collider where it is seen.
+        glm::vec3 scale = transform.Scale;
+        glm::vec3 translation = transform.Translation;
+        glm::quat rotation = glm::quat(transform.Rotation);
+        {
+            glm::vec3 worldScale(1.0f);
+            glm::vec3 worldTranslation(0.0f);
+            glm::quat worldRotation(1.0f, 0.0f, 0.0f, 0.0f);
+            glm::vec3 skew(0.0f);
+            glm::vec4 perspective(0.0f);
+            if (glm::decompose(GetWorldSpaceTransformMatrix(Entity{entity, this}), worldScale, worldRotation,
+                               worldTranslation, skew, perspective))
+            {
+                scale = worldScale;
+                translation = worldTranslation;
+                rotation = worldRotation;
+            }
+        }
+        JPH::HeightFieldShapeSettings settings(heights.data(),
+                                               JPH::Vec3(-size * 0.5f * scale.x, 0.0f, -size * 0.5f * scale.z),
+                                               JPH::Vec3(spacing * scale.x, scale.y, spacing * scale.z), samples);
+        JPH::ShapeSettings::ShapeResult shape = settings.Create();
+        if (shape.HasError())
+        {
+            UHE_CORE_ERROR("Terrain: no collider ({0})", shape.GetError().c_str());
+            continue;
+        }
+        const glm::quat q = glm::normalize(rotation);
+        JPH::BodyCreationSettings body(shape.Get(), JPH::Vec3(translation.x, translation.y, translation.z),
+                                       JPH::Quat(q.x, q.y, q.z, q.w), JPH::EMotionType::Static, 0);
+        body.mFriction = 0.8f;
+        body.mUserData = static_cast<JPH::uint64>(static_cast<u32>(entity));
+        terrain.RuntimeBodyID =
+            bodyInterface->CreateAndAddBody(body, JPH::EActivation::DontActivate).GetIndexAndSequenceNumber();
     }
 }
 
@@ -1787,7 +2185,8 @@ void Scene::OnRuntimeStop()
         m_PhysicsWorldId = b2_nullWorldId;
     }
 
-    // 3D Physics
+    // 3D Physics: the joints hold references to their bodies; released first.
+    Physics::DestroyAllJoints(*this);
     m_PhysicsSystem3D.ShutdownScene();
 
     StopAudioSources();
@@ -1836,6 +2235,18 @@ template <> void Scene::OnComponentAdded<Model3DComponent>(Entity entity, Model3
 template <> void Scene::OnComponentAdded<DirectionalLightComponent>(Entity entity, DirectionalLightComponent& component) {};
 template <> void Scene::OnComponentAdded<PointLightComponent>(Entity entity, PointLightComponent& component) {};
 template <> void Scene::OnComponentAdded<SpotLightComponent>(Entity entity, SpotLightComponent& component) {};
+template <> void Scene::OnComponentAdded<FoliageComponent>(Entity entity, FoliageComponent& component) {};
+template <> void Scene::OnComponentAdded<WaterComponent>(Entity entity, WaterComponent& component) {};
+template <> void Scene::OnComponentAdded<TerrainComponent>(Entity entity, TerrainComponent& component) {};
+template <> void Scene::OnComponentAdded<SequencerComponent>(Entity entity, SequencerComponent& component) {};
+template <> void Scene::OnComponentAdded<Joint3DComponent>(Entity entity, Joint3DComponent& component) {};
+template <> void Scene::OnComponentAdded<UIRectComponent>(Entity entity, UIRectComponent& component) {};
+template <> void Scene::OnComponentAdded<UIImageComponent>(Entity entity, UIImageComponent& component) {};
+template <> void Scene::OnComponentAdded<UITextComponent>(Entity entity, UITextComponent& component) {};
+template <> void Scene::OnComponentAdded<UIButtonComponent>(Entity entity, UIButtonComponent& component) {};
+template <> void Scene::OnComponentAdded<UIProgressBarComponent>(Entity entity, UIProgressBarComponent& component) {};
+template <> void Scene::OnComponentAdded<AreaLightComponent>(Entity entity, AreaLightComponent& component) {};
+template <> void Scene::OnComponentAdded<WindComponent>(Entity entity, WindComponent& component) {};
 template <> void Scene::OnComponentAdded<AnimatorComponent>(Entity entity, AnimatorComponent& component) {};
 template <> void Scene::OnComponentAdded<ModelNodeComponent>(Entity entity, ModelNodeComponent& component) {};
 template <> void Scene::OnComponentAdded<RelationshipComponent>(Entity entity, RelationshipComponent& component) {};

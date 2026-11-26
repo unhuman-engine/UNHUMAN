@@ -303,6 +303,17 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::Key << "DirectionalLightComponent" << YAML::BeginMap;
         out << YAML::Key << "Color" << YAML::Value << dlc.Color;
         out << YAML::Key << "Intensity" << YAML::Value << dlc.Intensity;
+        out << YAML::Key << "CastShadows" << YAML::Value << dlc.CastShadows;
+        out << YAML::EndMap;
+    }
+
+    // Foliage (sways in the scene's wind)
+    if (entity.HasComponent<FoliageComponent>())
+    {
+        auto& fc = entity.GetComponent<FoliageComponent>();
+        out << YAML::Key << "FoliageComponent" << YAML::BeginMap;
+        out << YAML::Key << "Bend" << YAML::Value << fc.Bend;
+        out << YAML::Key << "Height" << YAML::Value << fc.Height;
         out << YAML::EndMap;
     }
 
@@ -314,6 +325,7 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::Key << "Color" << YAML::Value << plc.Color;
         out << YAML::Key << "Intensity" << YAML::Value << plc.Intensity;
         out << YAML::Key << "Radius" << YAML::Value << plc.Radius;
+        out << YAML::Key << "CastShadows" << YAML::Value << plc.CastShadows;
         out << YAML::EndMap;
     }
 
@@ -327,6 +339,197 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
         out << YAML::Key << "Radius" << YAML::Value << slc.Radius;
         out << YAML::Key << "InnerConeAngle" << YAML::Value << slc.InnerConeAngle;
         out << YAML::Key << "OuterConeAngle" << YAML::Value << slc.OuterConeAngle;
+        out << YAML::Key << "CastShadows" << YAML::Value << slc.CastShadows;
+        out << YAML::EndMap;
+    }
+
+    // AreaLight (a rectangle on the local XY plane, shining along local -Z)
+    if (entity.HasComponent<AreaLightComponent>())
+    {
+        auto& alc = entity.GetComponent<AreaLightComponent>();
+        out << YAML::Key << "AreaLightComponent" << YAML::BeginMap;
+        out << YAML::Key << "Color" << YAML::Value << alc.Color;
+        out << YAML::Key << "Intensity" << YAML::Value << alc.Intensity;
+        out << YAML::Key << "Width" << YAML::Value << alc.Width;
+        out << YAML::Key << "Height" << YAML::Value << alc.Height;
+        out << YAML::Key << "Range" << YAML::Value << alc.Range;
+        out << YAML::Key << "TwoSided" << YAML::Value << alc.TwoSided;
+        out << YAML::Key << "CastShadows" << YAML::Value << alc.CastShadows;
+        out << YAML::EndMap;
+    }
+
+    // Water (direction in degrees; colours in sRGB)
+    if (entity.HasComponent<WaterComponent>())
+    {
+        auto& wc = entity.GetComponent<WaterComponent>();
+        out << YAML::Key << "WaterComponent" << YAML::BeginMap;
+        out << YAML::Key << "Size" << YAML::Value << wc.Size;
+        out << YAML::Key << "Resolution" << YAML::Value << wc.Resolution;
+        out << YAML::Key << "ShallowColor" << YAML::Value << wc.ShallowColor;
+        out << YAML::Key << "DeepColor" << YAML::Value << wc.DeepColor;
+        out << YAML::Key << "Clarity" << YAML::Value << wc.Clarity;
+        out << YAML::Key << "WaveHeight" << YAML::Value << wc.WaveHeight;
+        out << YAML::Key << "WaveLength" << YAML::Value << wc.WaveLength;
+        out << YAML::Key << "WaveSpeed" << YAML::Value << wc.WaveSpeed;
+        out << YAML::Key << "Choppiness" << YAML::Value << wc.Choppiness;
+        out << YAML::Key << "Direction" << YAML::Value << wc.Direction;
+        out << YAML::Key << "FollowWind" << YAML::Value << wc.FollowWind;
+        out << YAML::Key << "Foam" << YAML::Value << wc.Foam;
+        out << YAML::EndMap;
+    }
+
+    // Game UI (colours sRGB with alpha; layout results and mouse state are not saved)
+    if (entity.HasComponent<UIRectComponent>())
+    {
+        auto& r = entity.GetComponent<UIRectComponent>();
+        out << YAML::Key << "UIRectComponent" << YAML::BeginMap;
+        out << YAML::Key << "AnchorMin" << YAML::Value << r.AnchorMin;
+        out << YAML::Key << "AnchorMax" << YAML::Value << r.AnchorMax;
+        out << YAML::Key << "Pivot" << YAML::Value << r.Pivot;
+        out << YAML::Key << "Position" << YAML::Value << r.Position;
+        out << YAML::Key << "Size" << YAML::Value << r.Size;
+        out << YAML::Key << "Order" << YAML::Value << r.Order;
+        out << YAML::Key << "Visible" << YAML::Value << r.Visible;
+        out << YAML::EndMap;
+    }
+    if (entity.HasComponent<UIImageComponent>())
+    {
+        auto& i = entity.GetComponent<UIImageComponent>();
+        out << YAML::Key << "UIImageComponent" << YAML::BeginMap;
+        out << YAML::Key << "Color" << YAML::Value << i.Color;
+        out << YAML::Key << "TexturePath" << YAML::Value << i.TexturePath;
+        out << YAML::Key << "CornerRadius" << YAML::Value << i.CornerRadius;
+        out << YAML::Key << "BorderWidth" << YAML::Value << i.BorderWidth;
+        out << YAML::Key << "BorderColor" << YAML::Value << i.BorderColor;
+        out << YAML::EndMap;
+    }
+    if (entity.HasComponent<UITextComponent>())
+    {
+        auto& t = entity.GetComponent<UITextComponent>();
+        out << YAML::Key << "UITextComponent" << YAML::BeginMap;
+        out << YAML::Key << "Text" << YAML::Value << t.Text;
+        out << YAML::Key << "FontSize" << YAML::Value << t.FontSize;
+        out << YAML::Key << "Color" << YAML::Value << t.Color;
+        out << YAML::Key << "Align" << YAML::Value << static_cast<int>(t.Align);
+        out << YAML::Key << "FontPath" << YAML::Value << t.FontPath;
+        out << YAML::EndMap;
+    }
+    if (entity.HasComponent<UIButtonComponent>())
+    {
+        auto& b = entity.GetComponent<UIButtonComponent>();
+        out << YAML::Key << "UIButtonComponent" << YAML::BeginMap;
+        out << YAML::Key << "NormalColor" << YAML::Value << b.NormalColor;
+        out << YAML::Key << "HoverColor" << YAML::Value << b.HoverColor;
+        out << YAML::Key << "PressedColor" << YAML::Value << b.PressedColor;
+        out << YAML::Key << "Interactable" << YAML::Value << b.Interactable;
+        out << YAML::EndMap;
+    }
+    if (entity.HasComponent<UIProgressBarComponent>())
+    {
+        auto& p = entity.GetComponent<UIProgressBarComponent>();
+        out << YAML::Key << "UIProgressBarComponent" << YAML::BeginMap;
+        out << YAML::Key << "Value" << YAML::Value << p.Value;
+        out << YAML::Key << "FillColor" << YAML::Value << p.FillColor;
+        out << YAML::Key << "BackgroundColor" << YAML::Value << p.BackgroundColor;
+        out << YAML::Key << "CornerRadius" << YAML::Value << p.CornerRadius;
+        out << YAML::Key << "Interactable" << YAML::Value << p.Interactable;
+        out << YAML::EndMap;
+    }
+
+    // Terrain (colours in sRGB; the mesh and heights are rebuilt on load)
+    if (entity.HasComponent<TerrainComponent>())
+    {
+        auto& tc = entity.GetComponent<TerrainComponent>();
+        out << YAML::Key << "TerrainComponent" << YAML::BeginMap;
+        out << YAML::Key << "HeightmapPath" << YAML::Value << tc.HeightmapPath;
+        out << YAML::Key << "Size" << YAML::Value << tc.Size;
+        out << YAML::Key << "Height" << YAML::Value << tc.Height;
+        out << YAML::Key << "Resolution" << YAML::Value << tc.Resolution;
+        out << YAML::Key << "Seed" << YAML::Value << tc.Seed;
+        out << YAML::Key << "FeatureSize" << YAML::Value << tc.FeatureSize;
+        out << YAML::Key << "Octaves" << YAML::Value << tc.Octaves;
+        out << YAML::Key << "Roughness" << YAML::Value << tc.Roughness;
+        out << YAML::Key << "SandColor" << YAML::Value << tc.SandColor;
+        out << YAML::Key << "GrassColor" << YAML::Value << tc.GrassColor;
+        out << YAML::Key << "RockColor" << YAML::Value << tc.RockColor;
+        out << YAML::Key << "SnowColor" << YAML::Value << tc.SnowColor;
+        out << YAML::Key << "SandLevel" << YAML::Value << tc.SandLevel;
+        out << YAML::Key << "SnowLevel" << YAML::Value << tc.SnowLevel;
+        out << YAML::Key << "RockSlope" << YAML::Value << tc.RockSlope;
+        out << YAML::Key << "Collider" << YAML::Value << tc.Collider;
+        out << YAML::EndMap;
+    }
+
+    // Joint: the other body by UUID (0: the world)
+    if (entity.HasComponent<Joint3DComponent>())
+    {
+        const auto& joint = entity.GetComponent<Joint3DComponent>();
+        static constexpr const char* kTypes[] = {"Fixed", "Hinge", "Slider", "Ball"};
+        static constexpr const char* kMotors[] = {"Off", "Velocity", "Position"};
+        out << YAML::Key << "Joint3DComponent" << YAML::BeginMap;
+        out << YAML::Key << "Type" << YAML::Value << kTypes[static_cast<int>(joint.Type)];
+        out << YAML::Key << "ConnectedEntity" << YAML::Value << joint.ConnectedEntity;
+        out << YAML::Key << "Anchor" << YAML::Value << joint.Anchor;
+        out << YAML::Key << "Axis" << YAML::Value << joint.Axis;
+        out << YAML::Key << "LimitsEnabled" << YAML::Value << joint.LimitsEnabled;
+        out << YAML::Key << "LimitMin" << YAML::Value << joint.LimitMin;
+        out << YAML::Key << "LimitMax" << YAML::Value << joint.LimitMax;
+        out << YAML::Key << "Friction" << YAML::Value << joint.Friction;
+        out << YAML::Key << "Motor" << YAML::Value << kMotors[static_cast<int>(joint.Motor)];
+        out << YAML::Key << "MotorTarget" << YAML::Value << joint.MotorTarget;
+        out << YAML::Key << "MotorMaxForce" << YAML::Value << joint.MotorMaxForce;
+        out << YAML::Key << "MotorFrequency" << YAML::Value << joint.MotorFrequency;
+        out << YAML::Key << "MotorDamping" << YAML::Value << joint.MotorDamping;
+        out << YAML::EndMap;
+    }
+
+    // Sequencer: tracks name their targets by UUID; each key is one flow map.
+    if (entity.HasComponent<SequencerComponent>())
+    {
+        auto& sc = entity.GetComponent<SequencerComponent>();
+        out << YAML::Key << "SequencerComponent" << YAML::BeginMap;
+        out << YAML::Key << "Duration" << YAML::Value << sc.Data.Duration;
+        out << YAML::Key << "Loop" << YAML::Value << sc.Data.Loop;
+        out << YAML::Key << "PlayOnStart" << YAML::Value << sc.PlayOnStart;
+        out << YAML::Key << "Speed" << YAML::Value << sc.Speed;
+        out << YAML::Key << "Tracks" << YAML::Value << YAML::BeginSeq;
+        for (const SequenceTrack& track : sc.Data.Tracks)
+        {
+            out << YAML::BeginMap;
+            out << YAML::Key << "Target" << YAML::Value << track.Target;
+            out << YAML::Key << "Property" << YAML::Value << SequencePropertyName(track.Property);
+            out << YAML::Key << "Muted" << YAML::Value << track.Muted;
+            out << YAML::Key << "Keys" << YAML::Value << YAML::BeginSeq;
+            for (const SequenceKey& key : track.Keys)
+            {
+                out << YAML::Flow << YAML::BeginMap;
+                out << YAML::Key << "Time" << YAML::Value << key.Time;
+                if (track.Property == SequenceProperty::Event)
+                {
+                    out << YAML::Key << "Event" << YAML::Value << key.Event;
+                }
+                else
+                {
+                    out << YAML::Key << "Value" << YAML::Value << key.Value;
+                    out << YAML::Key << "Interp" << YAML::Value << SequenceInterpName(key.Interp);
+                }
+                out << YAML::EndMap;
+            }
+            out << YAML::EndSeq;
+            out << YAML::EndMap;
+        }
+        out << YAML::EndSeq;
+        out << YAML::EndMap;
+    }
+
+    // Wind zone (its direction is the entity's local -Z, so only the strengths are stored)
+    if (entity.HasComponent<WindComponent>())
+    {
+        auto& wind = entity.GetComponent<WindComponent>();
+        out << YAML::Key << "WindComponent" << YAML::BeginMap;
+        out << YAML::Key << "Strength" << YAML::Value << wind.Strength;
+        out << YAML::Key << "GustStrength" << YAML::Value << wind.GustStrength;
+        out << YAML::Key << "GustFrequency" << YAML::Value << wind.GustFrequency;
         out << YAML::EndMap;
     }
 
@@ -356,6 +559,192 @@ static void SerializeEntity(YAML::Emitter& out, Entity entity)
     }
 
     out << YAML::EndMap;
+}
+
+/// @brief Writes the scene's RenderSettings as the top-level "Environment" map, one sub-map per group.
+static void SerializeRenderSettings(YAML::Emitter& out, const RenderSettings& settings)
+{
+    out << YAML::Key << "Environment" << YAML::BeginMap;
+
+    const EnvironmentSettings& env = settings.Environment;
+    out << YAML::Key << "Environment" << YAML::BeginMap;
+    out << YAML::Key << "SkyColor" << YAML::Value << env.SkyColor;
+    out << YAML::Key << "GroundColor" << YAML::Value << env.GroundColor;
+    out << YAML::Key << "AmbientIntensity" << YAML::Value << env.AmbientIntensity;
+    out << YAML::Key << "Exposure" << YAML::Value << env.Exposure;
+    out << YAML::EndMap;
+
+    const SkySettings& sky = settings.Sky;
+    out << YAML::Key << "Sky" << YAML::BeginMap;
+    const char* modeNames[] = {"Color", "Procedural", "Image"};
+    out << YAML::Key << "Mode" << YAML::Value << modeNames[std::clamp(static_cast<int>(sky.Mode), 0, 2)];
+    out << YAML::Key << "Intensity" << YAML::Value << sky.Intensity;
+    out << YAML::Key << "ZenithColor" << YAML::Value << sky.ZenithColor;
+    out << YAML::Key << "HorizonColor" << YAML::Value << sky.HorizonColor;
+    out << YAML::Key << "GroundColor" << YAML::Value << sky.GroundColor;
+    out << YAML::Key << "SunSize" << YAML::Value << sky.SunSize;
+    out << YAML::Key << "SunBrightness" << YAML::Value << sky.SunBrightness;
+    out << YAML::Key << "ImagePath" << YAML::Value << sky.ImagePath;
+    out << YAML::Key << "ImageRotation" << YAML::Value << sky.ImageRotation;
+    out << YAML::Key << "AmbientFromSky" << YAML::Value << sky.AmbientFromSky;
+    out << YAML::EndMap;
+
+    out << YAML::Key << "AntiAliasing" << YAML::BeginMap;
+    out << YAML::Key << "FXAA" << YAML::Value << settings.AntiAliasing.FXAA;
+    out << YAML::EndMap;
+
+    out << YAML::Key << "UI" << YAML::BeginMap;
+    out << YAML::Key << "ScaleWithScreen" << YAML::Value << settings.UI.ScaleWithScreen;
+    out << YAML::Key << "ReferenceHeight" << YAML::Value << settings.UI.ReferenceHeight;
+    out << YAML::EndMap;
+
+    const ShadowSettings& shadows = settings.Shadows;
+    out << YAML::Key << "Shadows" << YAML::BeginMap;
+    out << YAML::Key << "Enabled" << YAML::Value << shadows.Enabled;
+    out << YAML::Key << "CascadeCount" << YAML::Value << shadows.CascadeCount;
+    out << YAML::Key << "Distance" << YAML::Value << shadows.Distance;
+    out << YAML::Key << "SplitLambda" << YAML::Value << shadows.SplitLambda;
+    out << YAML::Key << "Resolution" << YAML::Value << shadows.Resolution;
+    out << YAML::Key << "DepthBias" << YAML::Value << shadows.DepthBias;
+    out << YAML::Key << "NormalBias" << YAML::Value << shadows.NormalBias;
+    out << YAML::Key << "Softness" << YAML::Value << shadows.Softness;
+    out << YAML::Key << "ShowCascades" << YAML::Value << shadows.ShowCascades;
+    out << YAML::EndMap;
+
+    const LocalShadowSettings& localShadows = settings.LocalShadows;
+    out << YAML::Key << "LocalShadows" << YAML::BeginMap;
+    out << YAML::Key << "Enabled" << YAML::Value << localShadows.Enabled;
+    out << YAML::Key << "TileResolution" << YAML::Value << localShadows.TileResolution;
+    out << YAML::Key << "MaxTiles" << YAML::Value << localShadows.MaxTiles;
+    out << YAML::Key << "DepthBias" << YAML::Value << localShadows.DepthBias;
+    out << YAML::Key << "NormalBias" << YAML::Value << localShadows.NormalBias;
+    out << YAML::EndMap;
+
+    const SSAOSettings& ssao = settings.SSAO;
+    out << YAML::Key << "SSAO" << YAML::BeginMap;
+    out << YAML::Key << "Enabled" << YAML::Value << ssao.Enabled;
+    out << YAML::Key << "Radius" << YAML::Value << ssao.Radius;
+    out << YAML::Key << "Intensity" << YAML::Value << ssao.Intensity;
+    out << YAML::Key << "Bias" << YAML::Value << ssao.Bias;
+    out << YAML::EndMap;
+
+    const BloomSettings& bloom = settings.Bloom;
+    out << YAML::Key << "Bloom" << YAML::BeginMap;
+    out << YAML::Key << "Enabled" << YAML::Value << bloom.Enabled;
+    out << YAML::Key << "Intensity" << YAML::Value << bloom.Intensity;
+    out << YAML::Key << "FilterRadius" << YAML::Value << bloom.FilterRadius;
+    out << YAML::EndMap;
+
+    const WindSettings& wind = settings.Wind;
+    out << YAML::Key << "Wind" << YAML::BeginMap;
+    out << YAML::Key << "Direction" << YAML::Value << wind.Direction;
+    out << YAML::Key << "Strength" << YAML::Value << wind.Strength;
+    out << YAML::Key << "GustStrength" << YAML::Value << wind.GustStrength;
+    out << YAML::Key << "GustFrequency" << YAML::Value << wind.GustFrequency;
+    out << YAML::EndMap;
+
+    out << YAML::EndMap; // Environment
+}
+
+/**
+ * @brief Reads `node[key]` into `value`, keeping the current value when the key is missing or mistyped.
+ *
+ * The Environment block is newer than most scenes, and a scene that predates a
+ * field must load with that field's default rather than fail to load at all.
+ */
+template <typename T> static void ReadOptional(const YAML::Node& node, const char* key, T& value)
+{
+    if (!node)
+        return;
+    if (const YAML::Node field = node[key])
+        value = field.as<T>(value);
+}
+
+/// @brief Reads the "Environment" map into `settings`; any missing group or field keeps its default.
+static void DeserializeRenderSettings(const YAML::Node& node, RenderSettings& settings)
+{
+    if (!node || !node.IsMap())
+        return;
+
+    const YAML::Node envNode = node["Environment"];
+    EnvironmentSettings& env = settings.Environment;
+    ReadOptional(envNode, "SkyColor", env.SkyColor);
+    ReadOptional(envNode, "GroundColor", env.GroundColor);
+    ReadOptional(envNode, "AmbientIntensity", env.AmbientIntensity);
+    ReadOptional(envNode, "Exposure", env.Exposure);
+
+    const YAML::Node skyNode = node["Sky"];
+    SkySettings& sky = settings.Sky;
+    std::string skyMode;
+    ReadOptional(skyNode, "Mode", skyMode);
+    if (skyMode == "Color")
+        sky.Mode = SkySettings::SkyMode::Color;
+    else if (skyMode == "Image")
+        sky.Mode = SkySettings::SkyMode::Image;
+    else if (skyMode == "Procedural")
+        sky.Mode = SkySettings::SkyMode::Procedural;
+    ReadOptional(skyNode, "Intensity", sky.Intensity);
+    ReadOptional(skyNode, "ZenithColor", sky.ZenithColor);
+    ReadOptional(skyNode, "HorizonColor", sky.HorizonColor);
+    ReadOptional(skyNode, "GroundColor", sky.GroundColor);
+    ReadOptional(skyNode, "SunSize", sky.SunSize);
+    ReadOptional(skyNode, "SunBrightness", sky.SunBrightness);
+    ReadOptional(skyNode, "ImagePath", sky.ImagePath);
+    ReadOptional(skyNode, "ImageRotation", sky.ImageRotation);
+    ReadOptional(skyNode, "AmbientFromSky", sky.AmbientFromSky);
+
+    ReadOptional(node["AntiAliasing"], "FXAA", settings.AntiAliasing.FXAA);
+
+    const YAML::Node uiNode = node["UI"];
+    ReadOptional(uiNode, "ScaleWithScreen", settings.UI.ScaleWithScreen);
+    ReadOptional(uiNode, "ReferenceHeight", settings.UI.ReferenceHeight);
+    settings.UI.ReferenceHeight = std::clamp(settings.UI.ReferenceHeight, 100.0f, 8640.0f);
+
+    const YAML::Node shadowNode = node["Shadows"];
+    ShadowSettings& shadows = settings.Shadows;
+    ReadOptional(shadowNode, "Enabled", shadows.Enabled);
+    ReadOptional(shadowNode, "CascadeCount", shadows.CascadeCount);
+    ReadOptional(shadowNode, "Distance", shadows.Distance);
+    ReadOptional(shadowNode, "SplitLambda", shadows.SplitLambda);
+    ReadOptional(shadowNode, "Resolution", shadows.Resolution);
+    ReadOptional(shadowNode, "DepthBias", shadows.DepthBias);
+    ReadOptional(shadowNode, "NormalBias", shadows.NormalBias);
+    ReadOptional(shadowNode, "Softness", shadows.Softness);
+    ReadOptional(shadowNode, "ShowCascades", shadows.ShowCascades);
+    // These two size GPU resources, so a hand-edited file must not take them out of range.
+    shadows.CascadeCount = std::clamp(shadows.CascadeCount, 1, 4);
+    shadows.Resolution = std::clamp(shadows.Resolution, 512, 4096);
+
+    const YAML::Node localShadowNode = node["LocalShadows"];
+    LocalShadowSettings& localShadows = settings.LocalShadows;
+    ReadOptional(localShadowNode, "Enabled", localShadows.Enabled);
+    ReadOptional(localShadowNode, "TileResolution", localShadows.TileResolution);
+    ReadOptional(localShadowNode, "MaxTiles", localShadows.MaxTiles);
+    ReadOptional(localShadowNode, "DepthBias", localShadows.DepthBias);
+    ReadOptional(localShadowNode, "NormalBias", localShadows.NormalBias);
+    // Both size the shadow atlas, so they are held in range like the cascade settings above.
+    localShadows.TileResolution = std::clamp(localShadows.TileResolution, 256, 2048);
+    localShadows.MaxTiles = std::clamp(localShadows.MaxTiles, 1, 64);
+
+    const YAML::Node ssaoNode = node["SSAO"];
+    SSAOSettings& ssao = settings.SSAO;
+    ReadOptional(ssaoNode, "Enabled", ssao.Enabled);
+    ReadOptional(ssaoNode, "Radius", ssao.Radius);
+    ReadOptional(ssaoNode, "Intensity", ssao.Intensity);
+    ReadOptional(ssaoNode, "Bias", ssao.Bias);
+
+    const YAML::Node bloomNode = node["Bloom"];
+    BloomSettings& bloom = settings.Bloom;
+    ReadOptional(bloomNode, "Enabled", bloom.Enabled);
+    ReadOptional(bloomNode, "Intensity", bloom.Intensity);
+    ReadOptional(bloomNode, "FilterRadius", bloom.FilterRadius);
+
+    const YAML::Node windNode = node["Wind"];
+    WindSettings& wind = settings.Wind;
+    ReadOptional(windNode, "Direction", wind.Direction);
+    ReadOptional(windNode, "Strength", wind.Strength);
+    ReadOptional(windNode, "GustStrength", wind.GustStrength);
+    ReadOptional(windNode, "GustFrequency", wind.GustFrequency);
 }
 
 static void SerializeEntityRecursive(YAML::Emitter& out, Entity entity, std::unordered_set<u64>& written)
@@ -390,6 +779,18 @@ void SceneSerializer::Serialize(const std::string& filepath)
 
     out << YAML::BeginMap;
     out << YAML::Key << "Scene" << YAML::Value << "Untitled";
+    // 2: cameras store their own perspective far plane (format 1 wrote the
+    // orthographic one there; those files are repaired on load).
+    out << YAML::Key << "SceneFormat" << YAML::Value << 2;
+    SerializeRenderSettings(out, m_Scene->GetRenderSettings());
+    {
+        const PhysicsSettings& physics = m_Scene->GetPhysicsSettings();
+        out << YAML::Key << "Physics" << YAML::BeginMap;
+        out << YAML::Key << "TickRate" << YAML::Value << physics.TickRate;
+        out << YAML::Key << "CollisionSteps" << YAML::Value << physics.CollisionSteps;
+        out << YAML::Key << "Gravity" << YAML::Value << physics.Gravity;
+        out << YAML::EndMap;
+    }
     out << YAML::Key << "Entities" << YAML::BeginSeq;
 
     // Pass 1: hierarchy order — roots first, then each root's subtree.
@@ -441,8 +842,21 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
         return false;
 
     YAML::Node data = YAML::Load(stream);
+    const int sceneFormat = data["SceneFormat"] ? data["SceneFormat"].as<int>(1) : 1;
     if (!data["Scene"])
         return false;
+
+    // Before the entity list: a scene with no entities still has its environment.
+    DeserializeRenderSettings(data["Environment"], m_Scene->GetRenderSettings());
+    if (const YAML::Node physicsNode = data["Physics"])
+    {
+        PhysicsSettings& physics = m_Scene->GetPhysicsSettings();
+        ReadOptional(physicsNode, "TickRate", physics.TickRate);
+        ReadOptional(physicsNode, "CollisionSteps", physics.CollisionSteps);
+        ReadOptional(physicsNode, "Gravity", physics.Gravity);
+        physics.TickRate = std::clamp(physics.TickRate, 0.0f, 10000.0f);
+        physics.CollisionSteps = std::clamp(physics.CollisionSteps, 1, 8);
+    }
 
     auto entities = data["Entities"];
     if (!entities)
@@ -534,7 +948,21 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
 
             cam.SetPerspectiveFOV(cameraNode["PerspectiveFOV"].as<float>());
             cam.SetPerpecstiveNear(cameraNode["PerspectiveNear"].as<float>());
-            cam.SetPerspecstiveFar(cameraNode["PerspectiveFar"].as<float>());
+            // Scenes saved before the GetProjectionFar fix stored the
+            // orthographic far plane here; they load with the default instead.
+            // Only files from before format 2 can carry the old value; a newer
+            // file whose two far planes match was authored that way.
+            bool repaired = false;
+            const float savedFar = cameraNode["PerspectiveFar"].as<float>();
+            cam.SetPerspecstiveFar(
+                sceneFormat < 2 ? SceneCamera::LoadedPerspectiveFar(cameraNode["PerspectiveNear"].as<float>(), savedFar,
+                                                                    cameraNode["OrthographicFar"].as<float>(), repaired)
+                                : savedFar);
+            if (repaired)
+                UHE_CORE_WARN("Scene '{0}': camera '{1}' had a perspective far plane of {2} (saved by an older "
+                              "editor); using {3}. Save the scene to keep it.",
+                              filepath, entity.GetComponent<TagComponent>().Tag,
+                              cameraNode["PerspectiveFar"].as<float>(), SceneCamera::kDefaultPerspectiveFar);
 
             cam.SetOrthographicSize(cameraNode["OrthographicSize"].as<float>());
             cam.SetOrthoGraphicNearClip(cameraNode["OrthographicNear"].as<float>());
@@ -818,6 +1246,16 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             auto& dlc = entity.AddComponent<DirectionalLightComponent>();
             dlc.Color = dlcNode["Color"].as<glm::vec3>();
             dlc.Intensity = dlcNode["Intensity"].as<float>();
+            dlc.CastShadows = dlcNode["CastShadows"] ? dlcNode["CastShadows"].as<bool>() : true;
+        }
+
+        // Foliage
+        auto foliageNode = entityNode["FoliageComponent"];
+        if (foliageNode)
+        {
+            auto& fc = entity.AddComponent<FoliageComponent>();
+            fc.Bend = foliageNode["Bend"] ? foliageNode["Bend"].as<float>() : 1.0f;
+            fc.Height = foliageNode["Height"] ? foliageNode["Height"].as<float>() : 2.0f;
         }
 
         // PointLight
@@ -828,6 +1266,7 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             plc.Color = plcNode["Color"].as<glm::vec3>();
             plc.Intensity = plcNode["Intensity"].as<float>();
             plc.Radius = plcNode["Radius"].as<float>();
+            ReadOptional(plcNode, "CastShadows", plc.CastShadows);
         }
 
         // SpotLight
@@ -840,6 +1279,195 @@ bool SceneSerializer::DeserializeUnchecked(const std::string& filepath)
             slc.Radius = slcNode["Radius"].as<float>();
             slc.InnerConeAngle = slcNode["InnerConeAngle"].as<float>();
             slc.OuterConeAngle = slcNode["OuterConeAngle"].as<float>();
+            ReadOptional(slcNode, "CastShadows", slc.CastShadows);
+        }
+
+        // AreaLight: every field optional, so a scene saved before a field existed keeps its default
+        if (auto alcNode = entityNode["AreaLightComponent"])
+        {
+            auto& alc = entity.AddComponent<AreaLightComponent>();
+            ReadOptional(alcNode, "Color", alc.Color);
+            ReadOptional(alcNode, "Intensity", alc.Intensity);
+            ReadOptional(alcNode, "Width", alc.Width);
+            ReadOptional(alcNode, "Height", alc.Height);
+            ReadOptional(alcNode, "Range", alc.Range);
+            ReadOptional(alcNode, "TwoSided", alc.TwoSided);
+            ReadOptional(alcNode, "CastShadows", alc.CastShadows);
+        }
+
+        // Water: every field optional, as for the area light
+        if (auto waterNode = entityNode["WaterComponent"])
+        {
+            auto& wc = entity.AddComponent<WaterComponent>();
+            ReadOptional(waterNode, "Size", wc.Size);
+            ReadOptional(waterNode, "Resolution", wc.Resolution);
+            ReadOptional(waterNode, "ShallowColor", wc.ShallowColor);
+            ReadOptional(waterNode, "DeepColor", wc.DeepColor);
+            ReadOptional(waterNode, "Clarity", wc.Clarity);
+            ReadOptional(waterNode, "WaveHeight", wc.WaveHeight);
+            ReadOptional(waterNode, "WaveLength", wc.WaveLength);
+            ReadOptional(waterNode, "WaveSpeed", wc.WaveSpeed);
+            ReadOptional(waterNode, "Choppiness", wc.Choppiness);
+            ReadOptional(waterNode, "Direction", wc.Direction);
+            ReadOptional(waterNode, "FollowWind", wc.FollowWind);
+            ReadOptional(waterNode, "Foam", wc.Foam);
+            // The grid is Resolution^2 cells: a hand-edited 0 or 100000 must not reach the mesh builder.
+            wc.Resolution = std::clamp(wc.Resolution, 1, 512);
+        }
+
+        // Game UI: every field optional
+        if (auto node = entityNode["UIRectComponent"])
+        {
+            auto& r = entity.AddComponent<UIRectComponent>();
+            ReadOptional(node, "AnchorMin", r.AnchorMin);
+            ReadOptional(node, "AnchorMax", r.AnchorMax);
+            ReadOptional(node, "Pivot", r.Pivot);
+            ReadOptional(node, "Position", r.Position);
+            ReadOptional(node, "Size", r.Size);
+            ReadOptional(node, "Order", r.Order);
+            ReadOptional(node, "Visible", r.Visible);
+        }
+        if (auto node = entityNode["UIImageComponent"])
+        {
+            auto& i = entity.AddComponent<UIImageComponent>();
+            ReadOptional(node, "Color", i.Color);
+            ReadOptional(node, "TexturePath", i.TexturePath);
+            ReadOptional(node, "CornerRadius", i.CornerRadius);
+            ReadOptional(node, "BorderWidth", i.BorderWidth);
+            ReadOptional(node, "BorderColor", i.BorderColor);
+        }
+        if (auto node = entityNode["UITextComponent"])
+        {
+            auto& t = entity.AddComponent<UITextComponent>();
+            ReadOptional(node, "Text", t.Text);
+            ReadOptional(node, "FontSize", t.FontSize);
+            ReadOptional(node, "Color", t.Color);
+            int align = static_cast<int>(t.Align);
+            ReadOptional(node, "Align", align);
+            t.Align = static_cast<UITextComponent::Alignment>(std::clamp(align, 0, 2));
+            ReadOptional(node, "FontPath", t.FontPath);
+        }
+        if (auto node = entityNode["UIButtonComponent"])
+        {
+            auto& b = entity.AddComponent<UIButtonComponent>();
+            ReadOptional(node, "NormalColor", b.NormalColor);
+            ReadOptional(node, "HoverColor", b.HoverColor);
+            ReadOptional(node, "PressedColor", b.PressedColor);
+            ReadOptional(node, "Interactable", b.Interactable);
+        }
+        if (auto node = entityNode["UIProgressBarComponent"])
+        {
+            auto& p = entity.AddComponent<UIProgressBarComponent>();
+            ReadOptional(node, "Value", p.Value);
+            ReadOptional(node, "FillColor", p.FillColor);
+            ReadOptional(node, "BackgroundColor", p.BackgroundColor);
+            ReadOptional(node, "CornerRadius", p.CornerRadius);
+            ReadOptional(node, "Interactable", p.Interactable);
+        }
+
+        // Terrain: every field optional
+        if (auto terrainNode = entityNode["TerrainComponent"])
+        {
+            auto& tc = entity.AddComponent<TerrainComponent>();
+            ReadOptional(terrainNode, "HeightmapPath", tc.HeightmapPath);
+            ReadOptional(terrainNode, "Size", tc.Size);
+            ReadOptional(terrainNode, "Height", tc.Height);
+            ReadOptional(terrainNode, "Resolution", tc.Resolution);
+            ReadOptional(terrainNode, "Seed", tc.Seed);
+            ReadOptional(terrainNode, "FeatureSize", tc.FeatureSize);
+            ReadOptional(terrainNode, "Octaves", tc.Octaves);
+            ReadOptional(terrainNode, "Roughness", tc.Roughness);
+            ReadOptional(terrainNode, "SandColor", tc.SandColor);
+            ReadOptional(terrainNode, "GrassColor", tc.GrassColor);
+            ReadOptional(terrainNode, "RockColor", tc.RockColor);
+            ReadOptional(terrainNode, "SnowColor", tc.SnowColor);
+            ReadOptional(terrainNode, "SandLevel", tc.SandLevel);
+            ReadOptional(terrainNode, "SnowLevel", tc.SnowLevel);
+            ReadOptional(terrainNode, "RockSlope", tc.RockSlope);
+            ReadOptional(terrainNode, "Collider", tc.Collider);
+            // Resolution^2 quads are built: a hand-edited value must not reach the builder unclamped.
+            tc.Resolution = std::clamp(tc.Resolution, 8, 1024);
+        }
+
+        // Joint: every field optional; an unknown type or motor name keeps the default
+        if (auto jointNode = entityNode["Joint3DComponent"])
+        {
+            auto& joint = entity.AddComponent<Joint3DComponent>();
+            std::string type = "Hinge";
+            std::string motor = "Off";
+            ReadOptional(jointNode, "Type", type);
+            ReadOptional(jointNode, "Motor", motor);
+            static constexpr const char* kTypes[] = {"Fixed", "Hinge", "Slider", "Ball"};
+            static constexpr const char* kMotors[] = {"Off", "Velocity", "Position"};
+            for (int i = 0; i < 4; ++i)
+                if (type == kTypes[i])
+                    joint.Type = static_cast<Joint3DComponent::JointType>(i);
+            for (int i = 0; i < 3; ++i)
+                if (motor == kMotors[i])
+                    joint.Motor = static_cast<Joint3DComponent::MotorMode>(i);
+            ReadOptional(jointNode, "ConnectedEntity", joint.ConnectedEntity);
+            ReadOptional(jointNode, "Anchor", joint.Anchor);
+            ReadOptional(jointNode, "Axis", joint.Axis);
+            ReadOptional(jointNode, "LimitsEnabled", joint.LimitsEnabled);
+            ReadOptional(jointNode, "LimitMin", joint.LimitMin);
+            ReadOptional(jointNode, "LimitMax", joint.LimitMax);
+            ReadOptional(jointNode, "Friction", joint.Friction);
+            ReadOptional(jointNode, "MotorTarget", joint.MotorTarget);
+            ReadOptional(jointNode, "MotorMaxForce", joint.MotorMaxForce);
+            ReadOptional(jointNode, "MotorFrequency", joint.MotorFrequency);
+            ReadOptional(jointNode, "MotorDamping", joint.MotorDamping);
+        }
+
+        // Sequencer: every field optional; an unknown property name drops its track, not the scene
+        if (auto sequencerNode = entityNode["SequencerComponent"])
+        {
+            auto& sc = entity.AddComponent<SequencerComponent>();
+            ReadOptional(sequencerNode, "Duration", sc.Data.Duration);
+            ReadOptional(sequencerNode, "Loop", sc.Data.Loop);
+            ReadOptional(sequencerNode, "PlayOnStart", sc.PlayOnStart);
+            ReadOptional(sequencerNode, "Speed", sc.Speed);
+            sc.Data.Duration = std::max(sc.Data.Duration, 0.01f);
+            if (const YAML::Node tracks = sequencerNode["Tracks"]; tracks && tracks.IsSequence())
+            {
+                for (const YAML::Node& trackNode : tracks)
+                {
+                    SequenceTrack track;
+                    ReadOptional(trackNode, "Target", track.Target);
+                    std::string property = "Position";
+                    ReadOptional(trackNode, "Property", property);
+                    if (!SequencePropertyFromName(property, track.Property))
+                    {
+                        UHE_CORE_WARN("Scene: a sequence track has an unknown property '{0}'; dropped", property);
+                        continue;
+                    }
+                    ReadOptional(trackNode, "Muted", track.Muted);
+                    if (const YAML::Node keys = trackNode["Keys"]; keys && keys.IsSequence())
+                    {
+                        for (const YAML::Node& keyNode : keys)
+                        {
+                            SequenceKey key;
+                            ReadOptional(keyNode, "Time", key.Time);
+                            ReadOptional(keyNode, "Value", key.Value);
+                            ReadOptional(keyNode, "Event", key.Event);
+                            std::string interp = "Smooth";
+                            ReadOptional(keyNode, "Interp", interp);
+                            SequenceInterpFromName(interp, key.Interp);
+                            track.Keys.push_back(std::move(key));
+                        }
+                    }
+                    sc.Data.Tracks.push_back(std::move(track));
+                }
+            }
+            sc.Data.SortKeys();
+        }
+
+        // Wind zone: every field optional, as for the area light
+        if (auto windNode = entityNode["WindComponent"])
+        {
+            auto& wind = entity.AddComponent<WindComponent>();
+            ReadOptional(windNode, "Strength", wind.Strength);
+            ReadOptional(windNode, "GustStrength", wind.GustStrength);
+            ReadOptional(windNode, "GustFrequency", wind.GustFrequency);
         }
 
         // Issue #17: glTF node entity marker

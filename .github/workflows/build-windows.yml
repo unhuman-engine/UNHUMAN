@@ -3,6 +3,8 @@ name: Build Windows
 on:
   push:
     branches: [ main, master ]
+    # A version tag (v0.2.0) also publishes the packages as a GitHub Release.
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   # Allow manual trigger from GitHub Actions tab
@@ -11,6 +13,8 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write # attaching the packages to a release on a version tag
 
     steps:
       - name: Checkout repository
@@ -64,26 +68,33 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Prepare artifact
+      # The editor bundle and PondDemo exported as a game, as zips (see
+      # script/package.py). No GPU here to run the game; the Linux job does.
+      - name: Package
+        run: python script/package.py --bin bin/Release-windows-x64 --out dist --zip
+
+      - name: List the exported game
         shell: pwsh
-        run: |
-          $outDir = "bin/Release-windows-x64"
-          $artifactDir = "release-package"
-          New-Item -ItemType Directory -Force -Path $artifactDir
+        run: Get-ChildItem dist/PondDemo-windows-x64 -File | Format-Table Name, Length
 
-          # Copy all executables and DLLs from the output directory
-          if (Test-Path $outDir) {
-            Copy-Item "$outDir/*" -Destination $artifactDir -Recurse -Force
-          }
-
-          # Copy editor assets alongside the executable
-          if (Test-Path "UHE_EDITOR/assets") {
-            Copy-Item "UHE_EDITOR/assets" -Destination "$artifactDir/assets" -Recurse -Force
-          }
-
-      - name: Upload Windows Build
+      - name: Upload editor
         uses: actions/upload-artifact@v4
         with:
           name: UHE-Editor-Windows-x64
-          path: release-package/
+          path: dist/UHE-Editor-windows-x64.zip
           retention-days: 30
+
+      - name: Upload exported PondDemo
+        uses: actions/upload-artifact@v4
+        with:
+          name: PondDemo-Windows-x64
+          path: dist/PondDemo-windows-x64.zip
+          retention-days: 30
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/UHE-Editor-windows-x64.zip
+            dist/PondDemo-windows-x64.zip

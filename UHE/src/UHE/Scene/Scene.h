@@ -2,13 +2,16 @@
 
 #include <box2d/types.h>
 #include <example/stb_image.h>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include "UHE/Core/SimulationClock.h"
 #include "UHE/Core/Timestep.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer/EditorCamera.h"
+#include "UHE/Renderer3D/RenderSettings.h"
 #include "UHE/Scene/Components.h"
+#include "UHE/UI/UISystem.h"
 #include "entt.hpp"
 class b2World;
 
@@ -33,12 +36,38 @@ struct RigidBody3DComponent;
 struct BoxCollider3DComponent;
 struct SphereCollider3DComponent;
 struct CapsuleCollider3DComponent;
+struct TerrainComponent;
+struct SequencerComponent;
+struct Joint3DComponent;
+
+/// @brief A scene's simulation settings: what a robot scene tunes (issue #69).
+struct PhysicsSettings
+{
+    float TickRate = 0.0f;  ///< simulation ticks per second; 0 keeps the engine's (120 Hz)
+    int CollisionSteps = 1; ///< Jolt sub-steps per tick, 1..8: stiff joint chains want more
+    glm::vec3 Gravity{0.0f, -9.81f, 0.0f};
+};
+struct Sequence;
+struct UIRectComponent;
+struct UIImageComponent;
+struct UITextComponent;
+struct UIButtonComponent;
+struct UIProgressBarComponent;
 
 class UHE_API Scene
 {
 public:
     Scene();
     ~Scene();
+    // A scene is one instance: Entity handles name it by its id, so a copy
+    // would alias them. Scene::Copy builds a new scene instead.
+    Scene(const Scene&) = delete;
+    Scene& operator=(const Scene&) = delete;
+
+    /// @brief This scene's id: unique for the life of the process, never reused.
+    [[nodiscard]] u64 GetInstanceId() const { return m_InstanceId; }
+    /// @brief Whether the scene with \p instanceId still exists (Entity::IsValid).
+    [[nodiscard]] static bool IsAlive(u64 instanceId);
 
     Entity CreateEntity(const std::string& name = std::string());
     // Issue #17: create an entity parented under 'parent' (world-space
@@ -46,6 +75,14 @@ public:
     Entity CreateChildEntity(Entity parent, const std::string& name = std::string());
 
     void DestroyEntity(Entity entity);
+
+    /**
+     * @brief Sets every unmuted track's target to its value at \p time.
+     *
+     * Used by playback in Play and by the editor's Sequencer preview. A track
+     * whose target does not exist (deleted, or in another scene) is skipped.
+     */
+    void ApplySequence(const Sequence& sequence, float time);
 
     // Issue #17: hierarchy helpers operating on RelationshipComponent.
     Entity GetEntityWithUUID(u64 uuid);
@@ -109,7 +146,10 @@ public:
     // step while the simulation/timestep still runs on the main thread. The
     // combined OnUpdate* functions keep the immediate path unchanged.
     void OnUpdateEditorSimulation(Timestep ts);
-    void RenderEditorScene(Timestep ts, EditorCamera& camera);
+    /// @param drawGrid false when the grid is drawn later, as an overlay (RenderEditorGrid)
+    void RenderEditorScene(Timestep ts, EditorCamera& camera, bool drawGrid = true);
+    /// @brief The ground grid per GetEditorOverlays(), with the last Renderer3D::BeginScene's camera.
+    void RenderEditorGrid();
     /// One rendered frame of play mode: feeds `frame` to the simulation clock,
     /// runs the fixed ticks it is due (StepSimulation), then advances the
     /// per-frame systems (animators, audio) by the frame time.
@@ -133,8 +173,51 @@ public:
 
     Entity GetPrimaryCameraEntity();
 
+    /// @brief How this scene is rendered (environment, shadows, SSAO, bloom, wind); saved with the scene.
+    [[nodiscard]] PhysicsSettings& GetPhysicsSettings() { return m_PhysicsSettings; }
+    [[nodiscard]] const PhysicsSettings& GetPhysicsSettings() const { return m_PhysicsSettings; }
+    [[nodiscard]] RenderSettings& GetRenderSettings() { return m_RenderSettings; }
+    [[nodiscard]] const RenderSettings& GetRenderSettings() const { return m_RenderSettings; }
+
+    /**
+     * @brief Builds this frame's world transforms once, for every pass that draws the scene.
+     *
+     * A frame that draws the scene in several passes (shadow cascades, a depth
+     * prepass, the colour pass) has to use the same transforms in all of them:
+     * a prepass and a colour pass that disagree leave holes. The first call of
+     * a frame builds the cache (blending physics bodies in play mode, as
+     * RenderRuntimeScene does); later calls and the next RenderEditorScene or
+     * RenderRuntimeScene reuse it, and that call ends the frame.
+     */
+    void PrepareRenderFrame(bool runtime);
+
+    /// @brief The primary camera's view from the current transforms; nullopt when there is none.
+    [[nodiscard]] std::optional<SceneRenderView> GetPrimaryCameraView();
+
+    /// @brief Submits every model with the current transforms, between Renderer3D::BeginDepthPass and EndDepthPass.
+    void RenderDepth();
+
+    /// @brief The wind this frame: the first WindComponent's, or the Environment's when there is none.
+    [[nodiscard]] WindSettings GetEffectiveWind();
+
+    /// @brief Whether any entity has a WaterComponent (the renderer adds its water pass only then).
+    [[nodiscard]] bool HasWater();
+    /// @brief Submits every water surface with the current transforms, between WaterRenderer::Begin and End.
+    void RenderWater();
+
     static Ref<Scene> Copy(Ref<Scene> other);
     entt::registry& GetRegistry() { return m_registry; }
+
+    /**
+     * @brief Lays out the game UI for a screen of \p screenSize pixels and
+     *        applies the mouse (UI::Update); a clicked button calls its
+     *        script's `OnClick`. Once per frame, before the UI is drawn.
+     */
+    void UpdateUI(glm::vec2 screenSize, const UI::Pointer& pointer);
+    /// @brief What UpdateUI last laid out, back to front (UIRenderer draws it).
+    [[nodiscard]] const std::vector<UI::DrawCommand>& GetUIDrawList() const { return m_UIDrawList; }
+    /// @brief The mouse was over a UI element at the last UpdateUI: a game should not also act on that click.
+    [[nodiscard]] bool IsPointerOverUI() const { return m_PointerOverUI; }
 
     /// The scene's physics system. Scripts drive rigid bodies through it
     /// (velocity and force), so it is reachable rather than private.
@@ -167,6 +250,13 @@ private:
     void FlushPendingReparents();
     void FlushPendingCollapses();
     void FlushPendingModelOps();
+    /// Rebuilds the mesh and heights of every TerrainComponent whose fields
+    /// changed. The vertex upload is a copy into host-visible memory, not a
+    /// recorded command, so it is safe at start-up too; it runs from the
+    /// scene updates (and OnRuntimeStart), never from inside a pass.
+    void UpdateTerrains();
+    /// Adds a static Jolt heightfield body for every terrain with a collider (OnRuntimeStart).
+    void CreateTerrainBodies();
     // Attach 'child' under 'parent' WITHOUT preserving its world transform:
     // the local transform is kept as-is (new entities appear at the parent's
     // origin). ReparentEntity is the world-preserving variant.
@@ -190,18 +280,28 @@ private:
     // by the editor and runtime update paths so both see identical behaviour.
     void StepAnimators(Timestep ts);
 
+    /// Advances every playing SequencerComponent, applies it and fires its
+    /// events into the entity's script (after the loop: a script may change the registry).
+    void StepSequences(Timestep ts);
+
     // Starts/stops AudioSourceComponents and mirrors their options to the live
     // voice. Editor mode only honours explicit Play buttons; runtime also runs
     // Autoplay sources.
     void UpdateAudioSources(Timestep ts, bool runtime);
     void StopAudioSources();
 
+    /// Builds the world cache with physics bodies blended between their last two ticks.
+    void BuildRuntimeRenderCache();
+
     void RenderSprites(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
     void RenderModels(Timestep ts, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
     void RenderLightIcons(EditorCamera& camera, const std::unordered_map<entt::entity, glm::mat4>& worldTransforms);
 
+    u64 m_InstanceId = 0;
     entt::registry m_registry;
     u32 m_ViewportWidth = 0, m_ViewportHeight = 0;
+    std::vector<UI::DrawCommand> m_UIDrawList;
+    bool m_PointerOverUI = false;
 
     // Issue #17: world-space transform cache, rebuilt each frame.
     std::unordered_map<entt::entity, glm::mat4> m_WorldTransformCache;
@@ -221,6 +321,7 @@ private:
 
     b2WorldId m_PhysicsWorldId = b2_nullWorldId;
     Physics::PhysicsSystem3D m_PhysicsSystem3D;
+    PhysicsSettings m_PhysicsSettings;
 
     // Issue #49: simulated time, decoupled from the render delta.
     SimulationClock m_SimulationClock;
@@ -233,6 +334,10 @@ private:
     // Set while RenderRuntimeScene builds the world cache: blended local
     // transforms that override TransformComponent for that build only.
     std::unordered_map<entt::entity, glm::mat4> m_RenderLocalOverride;
+
+    RenderSettings m_RenderSettings;
+    /// PrepareRenderFrame built this frame's cache; the next Render*Scene uses it and clears this.
+    bool m_RenderFramePrepared = false;
 
     Ref<Texture2D> m_DirLightIcon;
     Ref<Texture2D> m_PointLightIcon;
@@ -258,6 +363,10 @@ template <> UHE_API void Scene::OnComponentAdded<Model3DComponent>(Entity entity
 template <> UHE_API void Scene::OnComponentAdded<DirectionalLightComponent>(Entity entity, DirectionalLightComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<PointLightComponent>(Entity entity, PointLightComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<SpotLightComponent>(Entity entity, SpotLightComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<FoliageComponent>(Entity entity, FoliageComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<WaterComponent>(Entity entity, WaterComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<AreaLightComponent>(Entity entity, AreaLightComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<WindComponent>(Entity entity, WindComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<AnimatorComponent>(Entity entity, AnimatorComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<ModelNodeComponent>(Entity entity, ModelNodeComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<RelationshipComponent>(Entity entity, RelationshipComponent& components);
@@ -265,5 +374,14 @@ template <> UHE_API void Scene::OnComponentAdded<RigidBody3DComponent>(Entity en
 template <> UHE_API void Scene::OnComponentAdded<BoxCollider3DComponent>(Entity entity, BoxCollider3DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<SphereCollider3DComponent>(Entity entity, SphereCollider3DComponent& components);
 template <> UHE_API void Scene::OnComponentAdded<CapsuleCollider3DComponent>(Entity entity, CapsuleCollider3DComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<TerrainComponent>(Entity entity, TerrainComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<SequencerComponent>(Entity entity, SequencerComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<Joint3DComponent>(Entity entity, Joint3DComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<UIRectComponent>(Entity entity, UIRectComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<UIImageComponent>(Entity entity, UIImageComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<UITextComponent>(Entity entity, UITextComponent& components);
+template <> UHE_API void Scene::OnComponentAdded<UIButtonComponent>(Entity entity, UIButtonComponent& components);
+template <>
+UHE_API void Scene::OnComponentAdded<UIProgressBarComponent>(Entity entity, UIProgressBarComponent& components);
 
 } // namespace UHE

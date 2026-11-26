@@ -17,6 +17,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <sstream>
 #include <string>
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Scene/Components.h"
@@ -266,6 +268,260 @@ end
               "GetID answered with a value a Lua integer can hold");
         check(engine.ErroredInstanceCount() == 0, "nothing errored");
         check(engine.InstanceCount() == 1, "the spawned entity has no script of its own");
+    }
+
+    section("game UI");
+    {
+        // A button whose OnClick updates a label and a gauge, the way a game
+        // or a simulation dashboard reacts to its UI.
+        const std::string script = WriteScript("ui.lua", R"(
+function OnCreate(self)
+    self.count = 0
+end
+
+function OnClick(self)
+    self.count = self.count + 1
+    local label = Find("Label")
+    if label then label:SetText("Clicked " .. self.count) end
+    local gauge = Find("Gauge")
+    if gauge then gauge:SetValue(gauge:GetValue() + 0.25) end
+    if self.count == 2 then Find("Label"):SetVisible(false) end
+    self:SetColor(1, 0, 0)
+end
+)");
+
+        Scene scene;
+        Entity button = SpawnScripted(scene, "Button", script);
+        auto& rect = button.AddComponent<UIRectComponent>();
+        rect.Size = {100.0f, 40.0f}; // centred: 350..450 x 280..320 on an 800 x 600 screen
+        button.AddComponent<UIImageComponent>();
+        auto& buttonState = button.AddComponent<UIButtonComponent>();
+        Entity label = scene.CreateEntity("Label");
+        label.AddComponent<UIRectComponent>();
+        label.AddComponent<UITextComponent>().Text = "Idle";
+        Entity gauge = scene.CreateEntity("Gauge");
+        gauge.AddComponent<UIRectComponent>();
+        gauge.AddComponent<UIProgressBarComponent>().Value = 0.25f;
+        Start(scene);
+        Step(scene, 0.1f, 1); // OnCreate
+
+        const auto click = [&]
+        {
+            UI::Pointer pointer;
+            pointer.Active = true;
+            pointer.Position = {400.0f, 300.0f};
+            pointer.Down = pointer.Pressed = true;
+            scene.UpdateUI({800.0f, 600.0f}, pointer);
+            pointer.Down = pointer.Pressed = false;
+            pointer.Released = true;
+            scene.UpdateUI({800.0f, 600.0f}, pointer);
+        };
+        scene.GetRenderSettings().UI.ScaleWithScreen = false;
+        click();
+        check(label.GetComponent<UITextComponent>().Text == "Clicked 1", "OnClick ran and SetText reached the label");
+        check(std::abs(gauge.GetComponent<UIProgressBarComponent>().Value - 0.5f) < 1e-5f,
+              "GetValue and SetValue reached the gauge");
+        check(buttonState.NormalColor == glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), "SetColor on a button sets its colour");
+        click();
+        check(!label.GetComponent<UIRectComponent>().Visible && buttonState.Clicks == 2,
+              "a second click: SetVisible hid the label");
+        check(engine.ErroredInstanceCount() == 0, "nothing errored");
+    }
+
+    section("sequencer");
+    {
+        // A door that a sequence opens, with events the script answers.
+        const std::string script = WriteScript("sequence.lua", R"(
+function OnCreate(self)
+    self.heard = ""
+end
+
+function OnSequenceEvent(self, name)
+    self.heard = self.heard .. name .. ";"
+    if name == "opened" then
+        Find("Label"):SetText(self.heard .. string.format("%.1f", self:GetSequenceTime()))
+        self:PauseSequence()
+    end
+end
+)");
+        const std::string path = (g_ScriptDir / "sequence.unhuman").string();
+        {
+            Ref<Scene> source = CreateRef<Scene>();
+            Entity door = source->CreateEntity("Door");
+            Entity director = SpawnScripted(*source, "Director", script);
+            source->CreateEntity("Label").AddComponent<UITextComponent>();
+            auto& sequencer = director.AddComponent<SequencerComponent>();
+            sequencer.Data.Duration = 2.0f;
+            SequenceTrack slide;
+            slide.Target = door.GetUUID();
+            Sequence::SetKey(slide, 0.0f, glm::vec3(0.0f), SequenceInterp::Linear);
+            Sequence::SetKey(slide, 1.0f, glm::vec3(0.0f, 3.0f, 0.0f), SequenceInterp::Linear);
+            sequencer.Data.Tracks.push_back(slide);
+            SequenceTrack events;
+            events.Property = SequenceProperty::Event;
+            for (const auto& [t, name] : {std::pair{0.25f, "moving"}, {1.0f, "opened"}})
+            {
+                SequenceKey key;
+                key.Time = t;
+                key.Event = name;
+                events.Keys.push_back(key);
+            }
+            sequencer.Data.Tracks.push_back(events);
+            SceneSerializer(source).Serialize(path);
+        }
+
+        Ref<Scene> loaded = CreateRef<Scene>();
+        check(SceneSerializer(loaded).Deserialize(path), "a scene with a sequence loads");
+        Entity door;
+        Entity director;
+        Entity label;
+        for (auto handle : loaded->GetRegistry().view<TagComponent>())
+        {
+            const std::string& tag = loaded->GetRegistry().get<TagComponent>(handle).Tag;
+            Entity entity{handle, loaded.get()};
+            if (tag == "Door")
+                door = entity;
+            else if (tag == "Director")
+                director = entity;
+            else if (tag == "Label")
+                label = entity;
+        }
+        auto* sequencer = director.TryGetComponent<SequencerComponent>();
+        check(sequencer != nullptr && sequencer->Data.Tracks.size() == 2 &&
+                  sequencer->Data.Tracks[0].Target == door.GetUUID() && sequencer->Data.Tracks[1].Keys.size() == 2 &&
+                  sequencer->Data.Tracks[1].Keys[1].Event == "opened",
+              "tracks, targets, keys and events survive save and load");
+
+        // 1/8 s steps add up exactly, so the playhead lands on the key at 1 s.
+        Start(*loaded);
+        Step(*loaded, 0.125f, 1); // OnCreate
+        Step(*loaded, 0.125f, 3);
+        const float y = door.GetComponent<TransformComponent>().Translation.y;
+        check(std::abs(y - 1.5f) < 1e-4f, "playing from Play start moves the door along its track");
+        Step(*loaded, 0.125f, 10);
+        check(label.GetComponent<UITextComponent>().Text == "moving;opened;1.0",
+              "OnSequenceEvent heard both events in order, and the script read the time");
+        check(sequencer->Time == 1.0f && !sequencer->Playing, "PauseSequence from the event stopped it there");
+        // StopSequence rewinds and poses the start; PlaySequence plays again.
+        ScriptEngine::Get().OnSceneStop(*loaded);
+        check(engine.ErroredInstanceCount() == 0, "nothing errored");
+    }
+
+    section("robot joints and sensors from a script");
+    {
+        // A wheel on a hinge above a floor: the controller spins it with a
+        // velocity motor, reads its encoder and IMU, and ranges the floor.
+        const std::string script = WriteScript("robot.lua", R"(
+function OnCreate(self)
+    self.ticks = 0
+end
+
+function OnUpdate(self, dt)
+    self.ticks = self.ticks + 1
+    if self.ticks == 1 then
+        self:SetJointMotor("velocity", 2.0, 30.0)
+    end
+    if self.ticks == 240 then
+        local accel, gyro = self:GetIMU()
+        local range, hit = self:Raycast(0, -1, 0, 20)
+        Find("Report"):SetText(string.format("%.2f %.2f %.2f %.2f %s", self:GetJointVelocity(), gyro.y, accel.y,
+                                             range or -1, hit and hit:GetName() or "none"))
+    end
+end
+)");
+        const std::string path = (g_ScriptDir / "robot.unhuman").string();
+        {
+            Ref<Scene> source = CreateRef<Scene>();
+            source->GetPhysicsSettings().TickRate = 240.0f;
+            source->GetPhysicsSettings().CollisionSteps = 2;
+            Entity floor = source->CreateEntity("Floor");
+            floor.GetComponent<TransformComponent>().Translation = {0.0f, -0.5f, 0.0f};
+            floor.AddComponent<RigidBody3DComponent>();
+            floor.AddComponent<BoxCollider3DComponent>().HalfExtent = {5.0f, 0.5f, 5.0f};
+            Entity wheel = SpawnScripted(*source, "Wheel", script);
+            wheel.GetComponent<TransformComponent>().Translation = {0.0f, 3.0f, 0.0f};
+            auto& rb = wheel.AddComponent<RigidBody3DComponent>();
+            rb.Type = RigidBody3DComponent::BodyType::Dynamic;
+            rb.AngularDamping = 0.0f;
+            wheel.AddComponent<SphereCollider3DComponent>().Radius = 0.25f;
+            auto& axle = wheel.AddComponent<Joint3DComponent>();
+            axle.Type = Joint3DComponent::JointType::Hinge;
+            axle.Axis = {0.0f, 1.0f, 0.0f};
+            source->CreateEntity("Report").AddComponent<UITextComponent>();
+            SceneSerializer(source).Serialize(path);
+        }
+        Ref<Scene> loaded = CreateRef<Scene>();
+        check(SceneSerializer(loaded).Deserialize(path), "a robot scene loads");
+        check(loaded->GetPhysicsSettings().TickRate == 240.0f && loaded->GetPhysicsSettings().CollisionSteps == 2,
+              "the scene's physics settings survive save and load");
+        Entity report;
+        for (auto handle : loaded->GetRegistry().view<TagComponent>())
+            if (loaded->GetRegistry().get<TagComponent>(handle).Tag == "Report")
+                report = Entity{handle, loaded.get()};
+        Start(*loaded);
+        Step(*loaded, 1.0f / 240.0f, 241);
+        const std::string text = report.GetComponent<UITextComponent>().Text;
+        std::cout << "  controller reported: " << text << "\n";
+        float speed = 0, gyroY = 0, accelY = 0, range = 0;
+        std::string hit;
+        std::istringstream fields(text);
+        const bool parsed = static_cast<bool>(fields >> speed >> gyroY >> accelY >> range >> hit);
+        check(parsed && std::abs(speed - 2.0f) < 0.05f && std::abs(gyroY - 2.0f) < 0.05f,
+              "SetJointMotor spun the wheel to 2 rad/s; the encoder and the gyro both read it");
+        check(parsed && std::abs(accelY - 9.81f) < 0.05f, "the IMU on a body held still reads +9.81 m/s^2 up");
+        check(parsed && std::abs(range - 3.0f) < 0.01f && hit == "Floor",
+              "Raycast down from the wheel ranges the floor at 3 m and names it");
+        ScriptEngine::Get().OnSceneStop(*loaded);
+        loaded->OnRuntimeStop();
+        check(engine.ErroredInstanceCount() == 0, "nothing errored");
+    }
+
+    section("camera far plane across save and load");
+    {
+        // A camera whose two far planes are equal on purpose keeps them after
+        // a save and a load (format 2); a format 1 file with the old bug's
+        // value is repaired.
+        const std::string path = (g_ScriptDir / "camera.unhuman").string();
+        {
+            Ref<Scene> source = CreateRef<Scene>();
+            Entity e = source->CreateEntity("Camera");
+            auto& c = e.AddComponent<CameraComponent>();
+            c.Camera.SetPerspective(0.8f, 0.01f, 100.0f);
+            c.Camera.SetOrthographic(10.0f, -1.0f, 100.0f);
+            c.Camera.SetProjectionType(SceneCamera::ProjectionType::Perpective);
+            SceneSerializer(source).Serialize(path);
+        }
+        Ref<Scene> loaded = CreateRef<Scene>();
+        check(SceneSerializer(loaded).Deserialize(path), "the scene loads");
+        float farPlane = 0.0f;
+        for (auto handle : loaded->GetRegistry().view<CameraComponent>())
+            farPlane = loaded->GetRegistry().get<CameraComponent>(handle).Camera.GetProjectionFar();
+        check(std::abs(farPlane - 100.0f) < 1e-4f, "a deliberate far plane equal to the orthographic one is kept");
+
+        // The same file as format 1 with the old bug's value: repaired.
+        std::string text;
+        {
+            std::ifstream in(path);
+            text.assign(std::istreambuf_iterator<char>(in), {});
+        }
+        const auto replace = [&](const std::string& from, const std::string& to)
+        {
+            const size_t at = text.find(from);
+            if (at != std::string::npos)
+                text.replace(at, from.size(), to);
+        };
+        replace("SceneFormat: 2\n", "");
+        replace("PerspectiveFar: 100", "PerspectiveFar: 1");
+        replace("OrthographicFar: 100", "OrthographicFar: 1");
+        {
+            std::ofstream out(path);
+            out << text;
+        }
+        Ref<Scene> legacy = CreateRef<Scene>();
+        check(SceneSerializer(legacy).Deserialize(path), "the legacy scene loads");
+        for (auto handle : legacy->GetRegistry().view<CameraComponent>())
+            farPlane = legacy->GetRegistry().get<CameraComponent>(handle).Camera.GetProjectionFar();
+        check(farPlane == SceneCamera::kDefaultPerspectiveFar, "a format 1 camera with the old value is repaired");
     }
 
     section("controller loop");

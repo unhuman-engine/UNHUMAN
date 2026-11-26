@@ -13,28 +13,30 @@ namespace
 // layout. glTF intensity units differ per type (lux for directional, candela
 // for point/spot); the engine's convention is a plain scalar, so the values
 // pass through and the shader's PI boost applies uniformly.
-LightData MakeDirectional(const glm::vec3& direction, const glm::vec3& color, float intensity)
+LightData MakeDirectional(const glm::vec3& direction, const glm::vec3& color, float intensity, bool castShadows)
 {
     LightData data;
     data.Type_Radius_Pad = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f);
     data.PositionOrDirection = glm::vec4(direction, 0.0f);
-    data.Direction_Pad = glm::vec4(0.0f);
+    data.Direction_Pad = glm::vec4(0.0f, 0.0f, 0.0f, castShadows ? 1.0f : 0.0f);
     data.ColorIntensity = glm::vec4(color, intensity);
     return data;
 }
 
-LightData MakePoint(const glm::vec3& position, const glm::vec3& color, float intensity, float radius)
+LightData MakePoint(const glm::vec3& position, const glm::vec3& color, float intensity, float radius,
+                    bool castShadows = false)
 {
     LightData data;
     data.Type_Radius_Pad = glm::vec4(1.0f, radius, 0.0f, 0.0f);
     data.PositionOrDirection = glm::vec4(position, 1.0f);
     data.Direction_Pad = glm::vec4(0.0f);
     data.ColorIntensity = glm::vec4(color, intensity);
+    data.AreaRight_Pad.w = castShadows ? 1.0f : 0.0f;
     return data;
 }
 
 LightData MakeSpot(const glm::vec3& position, const glm::vec3& direction, const glm::vec3& color, float intensity,
-                   float radius, float innerAngle, float outerAngle)
+                   float radius, float innerAngle, float outerAngle, bool castShadows = false)
 {
     LightData data;
     // Cone angles are stored as cosines so the shader's inner test is a dot
@@ -43,6 +45,21 @@ LightData MakeSpot(const glm::vec3& position, const glm::vec3& direction, const 
     data.PositionOrDirection = glm::vec4(position, 1.0f);
     data.Direction_Pad = glm::vec4(glm::normalize(direction), 0.0f);
     data.ColorIntensity = glm::vec4(color, intensity);
+    data.AreaRight_Pad.w = castShadows ? 1.0f : 0.0f;
+    return data;
+}
+
+LightData MakeArea(const glm::vec3& position, const glm::quat& rotation, const AreaLightComponent& light)
+{
+    LightData data;
+    data.Type_Radius_Pad = glm::vec4(3.0f, std::max(light.Range, 0.1f), std::max(light.Width, 0.01f) * 0.5f,
+                                     std::max(light.Height, 0.01f) * 0.5f);
+    data.PositionOrDirection = glm::vec4(position, 1.0f);
+    data.Direction_Pad =
+        glm::vec4(glm::normalize(rotation * glm::vec3(0.0f, 0.0f, -1.0f)), light.TwoSided ? 1.0f : 0.0f);
+    data.ColorIntensity = glm::vec4(light.Color, light.Intensity);
+    data.AreaRight_Pad =
+        glm::vec4(glm::normalize(rotation * glm::vec3(1.0f, 0.0f, 0.0f)), light.CastShadows ? 1.0f : 0.0f);
     return data;
 }
 
@@ -62,7 +79,7 @@ std::vector<LightData> LightSystem::ExtractLights(entt::registry& registry)
 
         glm::vec3 direction = glm::normalize(q * glm::vec3(0.0f, 0.0f, -1.0f));
 
-        lights.push_back(MakeDirectional(direction, light.Color, light.Intensity));
+        lights.push_back(MakeDirectional(direction, light.Color, light.Intensity, light.CastShadows));
     }
 
     auto pointLightView = registry.view<TransformComponent, PointLightComponent>();
@@ -70,7 +87,8 @@ std::vector<LightData> LightSystem::ExtractLights(entt::registry& registry)
     {
         auto [transform, light] = pointLightView.get<TransformComponent, PointLightComponent>(entity);
 
-        lights.push_back(MakePoint(transform.Translation, light.Color, light.Intensity, light.Radius));
+        lights.push_back(
+            MakePoint(transform.Translation, light.Color, light.Intensity, light.Radius, light.CastShadows));
     }
 
     auto spotLightView = registry.view<TransformComponent, SpotLightComponent>();
@@ -82,7 +100,14 @@ std::vector<LightData> LightSystem::ExtractLights(entt::registry& registry)
         glm::vec3 direction = q * glm::vec3(0.0f, 0.0f, -1.0f);
 
         lights.push_back(MakeSpot(transform.Translation, direction, light.Color, light.Intensity, light.Radius,
-                                  light.InnerConeAngle, light.OuterConeAngle));
+                                  light.InnerConeAngle, light.OuterConeAngle, light.CastShadows));
+    }
+
+    auto areaLightView = registry.view<TransformComponent, AreaLightComponent>();
+    for (auto entity : areaLightView)
+    {
+        auto [transform, light] = areaLightView.get<TransformComponent, AreaLightComponent>(entity);
+        lights.push_back(MakeArea(transform.Translation, glm::quat(transform.Rotation), light));
     }
 
     // KHR_lights_punctual (issue #29 Tier 3): lights defined INSIDE a glTF
@@ -119,7 +144,7 @@ std::vector<LightData> LightSystem::ExtractLights(entt::registry& registry)
             switch (light.type)
             {
                 case PunctualLight::Type::Directional:
-                    lights.push_back(MakeDirectional(direction, light.Color, light.Intensity));
+                    lights.push_back(MakeDirectional(direction, light.Color, light.Intensity, true));
                     break;
                 case PunctualLight::Type::Spot:
                 {
@@ -145,7 +170,7 @@ std::vector<LightData> LightSystem::ExtractLights(entt::registry& registry)
         LightData fallback;
         fallback.Type_Radius_Pad = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); // Type = 0 (Directional)
         fallback.PositionOrDirection = glm::vec4(0.5f, -1.0f, 0.3f, 0.0f);
-        fallback.Direction_Pad = glm::vec4(0.0f);
+        fallback.Direction_Pad = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f); // casts shadows
         fallback.ColorIntensity = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
         lights.push_back(fallback);
     }

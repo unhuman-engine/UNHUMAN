@@ -5,6 +5,7 @@
 // referenced by twenty nodes costs one vertex buffer instead of twenty.
 
 #include "uhepch.h"
+#include <algorithm>
 #include "LoadModel.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/Renderer/Renderer.h"
@@ -68,6 +69,16 @@ void Model::UploadGeometry(Geometry& geometry, size_t geometryIndex)
 
 void Model::ReleaseGeometryBuffers(std::vector<Geometry>& geometry)
 {
+    // A model loaded without uploading (cooking, no device) has nothing to free.
+    const bool anyBuffer =
+        std::any_of(geometry.begin(), geometry.end(),
+                    [](const Geometry& geom)
+                    {
+                        return std::any_of(geom.primitive.begin(), geom.primitive.end(),
+                                           [](const Primitive& prim) { return prim.VertexBuffer || prim.IndexBuffer; });
+                    });
+    if (!anyBuffer)
+        return;
     auto& device = Renderer::GetDevice();
 
     for (auto& geom : geometry)

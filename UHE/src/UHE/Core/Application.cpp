@@ -4,12 +4,15 @@
 #include <stb_image_write.h>
 #include "UHE/Audio/AudioEngine.h"
 #include "UHE/Core/Log.h"
+#include "UHE/Debug/RenderDoc.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer/PostProcess.h"
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Renderer/UIRenderer.h"
 #include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Renderer3D/SceneRenderer.h"
 #include "UHE/Scripting/ScriptEngine.h"
 #include "input.h"
 
@@ -20,11 +23,14 @@ namespace UHE
 
 Application* Application::s_instance = nullptr;
 
-Application::Application(const std::string& name)
+Application::Application(const std::string& name) : Application(name, WindowProps(name)) {}
 
+Application::Application(const std::string& name, const WindowProps& window)
 {
     UHE_PROFILE_FUNCTION();
     UHE_CORE_ASSERT(!s_instance, "Application already exists!");
+    // Before any Vulkan object exists: RenderDoc hooks instance creation.
+    RenderDoc::Init();
     // Before any layer exists: ImGui reads it to skip its .ini, so a
     // captured frame never depends on a layout saved on this machine.
     m_Capture = CaptureSettings::FromEnvironment();
@@ -34,7 +40,7 @@ Application::Application(const std::string& name)
         UHE_CORE_INFO("[CAPTURE] fixed timestep {0} s", *m_Capture.FixedTimestep);
 
     s_instance = this;
-    m_Window = std::unique_ptr<Window>(Window::Create(WindowProps(name)));
+    m_Window = std::unique_ptr<Window>(Window::Create(window));
     m_Window->SetEventCallback(BIND_EVENT_FN(OnEvent));
     m_Window->SetVSync(false);
 
@@ -60,6 +66,8 @@ Application::~Application()
     Audio::AudioEngine::Shutdown();
     Physics::PhysicsSystem3D::Shutdown();
     PostProcess::Shutdown();
+    SceneRenderer::Shutdown();
+    UIRenderer::Shutdown();
     Renderer3D::Shutdown();
     Renderer2D::Shutdown();
     Renderer::Shutdown();
@@ -124,8 +132,10 @@ void Application::Run()
     // simulation time.
     m_LastFrameTime = glfwGetTime();
 
+    u64 frameIndex = 0;
     while (m_Running)
     {
+        RenderDoc::OnFrame(++frameIndex);
         // Input first: a frame updates on the input that arrived before it,
         // then simulates, then renders. Polling after End() made every frame
         // act on the previous frame's input.
@@ -208,6 +218,17 @@ void Application::OnFrameCaptured(const RHI::RHIDevice::CapturedFrame& frame)
     if (ok)
     {
         UHE_CORE_INFO("[CAPTURE] wrote {0} ({1}x{2})", m_Capture.CapturePath, frame.Width, frame.Height);
+        // The GPU cost of each pass, with the frame it describes (a few frames
+        // old): a capture run doubles as a per-pass performance record.
+        const auto& timings = Renderer::GetDevice().GetGpuPassTimings();
+        float total = 0.0f;
+        for (const RHI::GpuPassTiming& timing : timings)
+        {
+            total += timing.Milliseconds;
+            UHE_CORE_INFO("[CAPTURE] GPU {0}: {1:.3f} ms", timing.Name, timing.Milliseconds);
+        }
+        if (!timings.empty())
+            UHE_CORE_INFO("[CAPTURE] GPU total: {0:.3f} ms over {1} passes", total, timings.size());
     }
     else
     {

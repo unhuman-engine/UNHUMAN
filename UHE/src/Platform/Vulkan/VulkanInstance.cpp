@@ -4,6 +4,9 @@
 #include "VulkanInstance.h"
 #include <volk.h>
 #include "Platform/Vulkan/ValidationGate.h"
+#include "Platform/Vulkan/VulkanDebugUtils.h"
+#include "UHE/Core/CommandLine.h"
+#include "UHE/Debug/GpuDebugOptions.h"
 
 std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 #ifdef NDEBUG
@@ -99,15 +102,35 @@ void VulkanInstance::initialize()
         debugCreateInfo.pfnUserCallback = debugCallback;
     }
 
+    // Synchronization validation (missing or wrong barriers, hazards between
+    // passes) is off by default: it is slow, and only the validation layer has
+    // it. `-sync-validation` or UHE_SYNC_VALIDATION=1 turns it on for a run.
+    const vk::ValidationFeatureEnableEXT syncValidation = vk::ValidationFeatureEnableEXT::eSynchronizationValidation;
+    vk::ValidationFeaturesEXT validationFeatures{
+        .enabledValidationFeatureCount = 1,
+        .pEnabledValidationFeatures = &syncValidation,
+    };
+    GpuDebugOptions& debugOptions = GetGpuDebugOptions();
+    const bool sync =
+        enableValidationLayers && (Validation::ParseEnabledFlag(std::getenv("UHE_SYNC_VALIDATION")) ||
+                                   CommandLine::HasFlag("sync-validation") || debugOptions.RequestSyncValidation);
+    debugOptions.ValidationActive = enableValidationLayers;
+    debugOptions.SyncValidationActive = sync;
+    if (sync)
+    {
+        validationFeatures.pNext = &debugCreateInfo;
+        UHE_CORE_INFO("[VALIDATION] synchronization validation on");
+    }
+
     vk::InstanceCreateInfo createInfo{
-        .pNext = enableValidationLayers ? &debugCreateInfo : nullptr,
+        .pNext = sync ? static_cast<const void*>(&validationFeatures)
+                      : (enableValidationLayers ? static_cast<const void*>(&debugCreateInfo) : nullptr),
         .flags = {},
         .pApplicationInfo = &appInfo,
         .enabledLayerCount = static_cast<uint32_t>(requiredLayer.size()),
         .ppEnabledLayerNames = requiredLayer.data(),
         .enabledExtensionCount = static_cast<uint32_t>(requiredExtensions.size()),
-        .ppEnabledExtensionNames = requiredExtensions.empty() ? nullptr : requiredExtensions.data()
-    };
+        .ppEnabledExtensionNames = requiredExtensions.empty() ? nullptr : requiredExtensions.data()};
 
     m_instance = vk::raii::Instance(m_context, createInfo);
 
@@ -133,10 +156,18 @@ std::vector<const char*> VulkanInstance::getRequiredExtensions()
     auto glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
     std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
 
-    if (enableValidationLayers)
+    // Names and labels for GPU debuggers whenever the driver has the
+    // extension, not only with validation: a RenderDoc capture of a release
+    // build shows each pass and object by name (DebugUtils).
+    bool debugUtils = enableValidationLayers;
+    if (!debugUtils)
     {
-        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        for (const auto& property : m_context.enumerateInstanceExtensionProperties())
+            debugUtils = debugUtils || strcmp(property.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0;
     }
+    if (debugUtils)
+        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    DebugUtils::SetEnabled(debugUtils);
     return extensions;
 }
 

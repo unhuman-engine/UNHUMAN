@@ -517,6 +517,28 @@ int main()
         BufferDesc histogram;
         histogram.size = 1024;
         histogram.usage = BufferUsage::Storage;
+        // Aliasing: same-shape requests whose pass intervals do not touch share an object.
+        {
+            UHE::RHI::TransientTexturePool aliasPool(
+                [&](const TextureDesc&) { return reinterpret_cast<TextureHandle>(static_cast<uintptr_t>(++created)); },
+                [](TextureHandle) {});
+            const u32 before = created;
+            const TextureHandle ssaoRaw = aliasPool.Acquire(hdr, 2, 3);
+            const TextureHandle bloomTemp = aliasPool.Acquire(hdr, 5, 6);
+            check(ssaoRaw == bloomTemp && created == before + 1 && aliasPool.AliasedCount() == 1,
+                  "disjoint lifetimes share one texture");
+            const TextureHandle overlapping = aliasPool.Acquire(hdr, 3, 5);
+            check(overlapping != ssaoRaw && created == before + 2, "an overlapping lifetime gets its own");
+            // [6, 8] shares pass 6 with the first texture's [5, 6] (a pass that reads one
+            // and writes the other needs both), but not the second's [3, 5].
+            const TextureHandle touching = aliasPool.Acquire(hdr, 6, 8);
+            check(touching == overlapping && created == before + 2,
+                  "sharing an end pass is an overlap; a texture free in that interval serves it");
+            check(aliasPool.Acquire(hdr) != ssaoRaw, "a request without an interval conflicts with every claim");
+            aliasPool.EndFrame();
+            check(aliasPool.Acquire(hdr, 0, 1) == ssaoRaw, "claims end with the frame");
+        }
+
         const BufferHandle first = buffers.Acquire(histogram);
         buffers.EndFrame();
         check(buffers.Acquire(histogram) == first && buffersCreated == 1, "buffers are pooled the same way");

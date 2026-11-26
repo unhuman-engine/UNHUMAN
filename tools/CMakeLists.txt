@@ -14,11 +14,16 @@ set(UHE_SHADER_DIR "${CMAKE_SOURCE_DIR}/UHE_EDITOR/assets/shaders")
 # the artifact -- it is just slower the first time.
 set(UHE_SHADER_SOURCES
     "${UHE_SHADER_DIR}/Basic3D.slang"
+    "${UHE_SHADER_DIR}/Bloom.slang"
     "${UHE_SHADER_DIR}/Grid.slang"
     "${UHE_SHADER_DIR}/ImGuiSrgb.slang"
+    "${UHE_SHADER_DIR}/Sky.slang"
+    "${UHE_SHADER_DIR}/SSAO.slang"
     "${UHE_SHADER_DIR}/Texture.slang"
     "${UHE_SHADER_DIR}/Text.slang"
     "${UHE_SHADER_DIR}/Tonemap.slang"
+    "${UHE_SHADER_DIR}/UI.slang"
+    "${UHE_SHADER_DIR}/Water.slang"
 )
 
 set(UHE_SHADER_DEPENDS ${UHE_SHADER_SOURCES} "${UHE_SHADER_DIR}/variants.txt")
@@ -93,3 +98,4 @@ target_include_directories(uhe_imgdiff PRIVATE "${CMAKE_SOURCE_DIR}/UHE/vendor/s
 if(MSVC)
     target_compile_options(uhe_imgdiff PRIVATE /utf-8)
 endif()
+add_subdirectory(export)

@@ -10,10 +10,10 @@
 #pragma once
 
 #include <cstddef>
-#include <span>
-#include <vector>
-
 #include <fastgltf/types.hpp>
+#include <span>
+#include <string>
+#include <vector>
 
 namespace UHE::RD3d
 {
@@ -28,5 +28,18 @@ namespace UHE::RD3d
 // by element count, so an empty or short span would read out of bounds.
 std::span<const std::byte> GetBufferViewBytes(const fastgltf::Asset& asset, std::size_t bufferViewIndex,
                                               std::vector<std::byte>& scratch);
+
+/**
+ * @brief Checks that every buffer view lies inside its loaded buffer and every
+ *        accessor (sparse parts included) inside its buffer view.
+ *
+ * fastgltf's accessor iteration indexes the view's bytes by element count and
+ * trusts the file: a truncated .bin or a wrong count reads past the end (an
+ * abort in a checked build, a wild read in Release). A model that fails this
+ * is rejected as a whole, before anything iterates it.
+ *
+ * @param error Set to what is out of range when the check fails.
+ */
+bool ValidateBufferRanges(const fastgltf::Asset& asset, std::string& error);
 
 } // namespace UHE::RD3d

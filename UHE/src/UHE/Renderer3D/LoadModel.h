@@ -1,15 +1,15 @@
 #pragma once
+#include <array>
 #include <fastgltf/core.hpp>
 #include <filesystem>
 #include <glm/glm.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "UHE/RHI/RHITypes.h"
 #include "UHE/Renderer/Texture.h"
 #include "UHE/Renderer3D/Animation.h"
 #include "UHE/Renderer3D/MaterialExtensions.h"
-
-#include "UHE/RHI/RHITypes.h"
 
 namespace UHE::RD3d
 {
@@ -35,9 +35,9 @@ struct Vertex
 // How a material's alpha is interpreted. glTF alphaMode.
 enum class AlphaMode : u32
 {
-    Opaque = 0,  // alpha ignored
-    Mask = 1,    // fragment discarded below alphaCutoff
-    Blend = 2,   // alpha blended (needs sorted transparent pass - not implemented)
+    Opaque = 0, // alpha ignored
+    Mask = 1,   // fragment discarded below alphaCutoff
+    Blend = 2,  // alpha blended: drawn after the opaque scene, back to front (Renderer3D::EndScene)
 };
 
 // KHR_texture_transform, already converted to the engine's UV convention.
@@ -195,6 +195,9 @@ struct Mesh
     // time, which keeps skinning correct (bone matrices still apply on top) and
     // needs no vertex rewriting.
     glm::mat4 LocalTransform{1.0f};
+    /// The glTF skin this mesh deforms with, -1 when it is rigid. A skinned
+    /// mesh ignores LocalTransform: its joints place it (glTF 2.0, skins).
+    int skinIndex = -1;
 
     std::vector<Primitive> primitive;
 
@@ -229,7 +232,26 @@ struct ModelLoadOptions
     // tangent frame at that vertex would then be meaningless. The loader
     // enforces this ordering internally regardless of the values here.
     bool generateTangents = true;
+
+    /// Keep every texture's encoded image (PNG, JPEG or KTX2 bytes) and sampler:
+    /// what a cooked model stores in place of the GPU texture (SaveCooked).
+    bool keepTextureSources = false;
+
+    /// Create GPU textures and buffers. Off for cooking, which runs with no device
+    /// (uhe_export, uhe_cook): materials then hold no textures, only their sources.
+    bool upload = true;
 };
+
+/// @brief An encoded image as the source carried it, and the sampler it is bound with.
+struct TextureSource
+{
+    std::string Name;
+    std::vector<u8> Bytes;
+    RHI::SamplerDesc Sampler;
+};
+
+/// @brief Per material, the TextureSource each MaterialTextureSlot samples (-1: none).
+using MaterialTextureSources = std::array<i32, static_cast<size_t>(MaterialTextureSlot::Count)>;
 
 // Issue #17: flat representation of the glTF node tree so the editor can turn
 // each node into a controllable child entity instead of one opaque model.
@@ -282,6 +304,13 @@ struct PunctualLight
     std::string Name;
 };
 
+/**
+ * @brief Cooks the glTF/GLB at \p source into \p cooked without a GPU (ExportOptions::CookModel, uhe_export).
+ * @return false with a reason in \p error when the source does not load or the cook cannot be written.
+ */
+UHE_API bool CookModelFile(const std::filesystem::path& source, const std::filesystem::path& cooked,
+                           std::string& error);
+
 class UHE_API Model
 {
 public:
@@ -290,17 +319,56 @@ public:
     Model(const Model&) = delete;
     Model& operator=(const Model&) = delete;
 
+    /**
+     * @brief Loads a glTF/GLB file, or a cooked model.
+     *
+     * A `.uhemodel` path loads the cooked file. A glTF path loads its cooked
+     * sibling `<path>.uhemodel` instead when one exists and the source is
+     * missing (an exported game) or older: the runtime does not parse glTF
+     * when a cook is there.
+     */
     bool loadModel(const std::filesystem::path& filepath, const ModelLoadOptions& options = {});
+
+    /**
+     * @brief Writes the loaded model as a cooked binary (UHE/AssetsManager/CookedFile.h).
+     *
+     * Needs a model loaded with ModelLoadOptions::keepTextureSources. Geometry,
+     * materials with their encoded images, nodes, lights, skins and animation
+     * clips are stored as the loader left them, so a cooked load and a glTF load
+     * build the same model. \p sourceHash identifies the source it was cooked from.
+     */
+    bool SaveCooked(const std::filesystem::path& path, u64 sourceHash, std::string* error = nullptr) const;
+
+    /// @brief Loads a file SaveCooked wrote; false (with \p error) on a damaged, foreign or newer file.
+    bool LoadCooked(const std::filesystem::path& path, const ModelLoadOptions& options = {},
+                    std::string* error = nullptr);
+
+    /// @brief The cooked sibling loadModel looks for: `<source>.uhemodel`.
+    [[nodiscard]] static std::filesystem::path CookedPathFor(const std::filesystem::path& source);
+
+    const std::vector<TextureSource>& GetTextureSources() const { return m_TextureSources; }
+    const std::vector<MaterialTextureSources>& GetMaterialTextureSources() const { return m_MaterialTextureSources; }
+
+    /**
+     * @brief Builds the model from geometry made in code (terrain, generated
+     *        shapes) instead of from a file, and uploads it.
+     *
+     * One mesh at the model's origin, one node. Each primitive needs its
+     * vertices and indices; Primitive::materialIndex picks from \p materials
+     * (an empty list gets the glTF default material). It draws, casts shadows
+     * and is picked like a loaded model.
+     */
+    bool LoadFromPrimitives(const std::string& name, std::vector<Primitive> primitives,
+                            std::vector<Material> materials);
     void Destroy();
 
     const std::vector<Mesh>& GetMesh() const { return m_LoadedMeshes; }
     const std::vector<Material>& GetMaterials() const { return m_LoadedMaterials; }
     const std::vector<Geometry>& GetGeometry() const { return m_Geometry; }
 
-    // True when any material in the file uses alphaMode BLEND. Transparent
-    // materials need a depth-sorted pass, which does not exist yet (roadmap M3
-    // step 4), so the renderer can warn instead of silently drawing them in
-    // submission order.
+    // True when any material in the file is see-through (alphaMode BLEND or
+    // transmission): those primitives are drawn in Renderer3D's sorted
+    // transparent pass rather than with the opaque ones.
     bool HasTransparentMaterials() const { return m_HasTransparentMaterials; }
 
     // True when the file declared an extension the loader does not implement, so
@@ -361,7 +429,8 @@ private:
     std::vector<int> m_RootNodes;
     std::unordered_map<int, int> m_NodeToMesh; // glTF node -> m_LoadedMeshes index
     std::vector<PunctualLight> m_PunctualLights;
-
+    std::vector<TextureSource> m_TextureSources;                  ///< keepTextureSources only
+    std::vector<MaterialTextureSources> m_MaterialTextureSources; ///< parallel to m_LoadedMaterials
 
     Skeleton m_Skeleton;
     std::vector<AnimationClip> m_Animations;

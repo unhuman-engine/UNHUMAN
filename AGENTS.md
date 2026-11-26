@@ -77,10 +77,66 @@ here. Follow them; if a rule is wrong, change it here first.
   access, state and name matches, and rebinds handle generations. The topology
   hash counts a pass's reads instead of naming them; never key a cache on it.
   `UHE_RENDERGRAPH_NO_CACHE=1` compiles every frame, for an A/B.
+- **Passes record one at a time, in compiled order.** They all record into
+  the frame's one command buffer, and renderers like `Renderer3D` keep global
+  state: two independent passes (shadow cascades and the depth prepass) once
+  recorded at the same time from two job threads and corrupted the heap.
+  `MapToTaskgraph` chains every pass after the previous one; parallel
+  recording would need a command buffer per pass first.
+- **The 3D scene is drawn by `SceneRenderer`, in several passes.** Shadow
+  cascades, the depth prepass, the colour pass and water all draw the scene,
+  and they must agree on where everything is: a prepass and a colour pass that
+  disagree leave holes. `Scene::PrepareRenderFrame` builds the transforms once
+  per frame, the camera is resolved once when the first pass executes, and
+  the depth-only pipelines use the colour pass's own vertex shader.
+- **Per-frame shading data lives in `Renderer3D::SceneFrameData`, not in push
+  constants.** Basic3D's push constants are 208 of the 256 bytes a device must
+  support; shadows, ambient, occlusion and wind are one storage buffer read
+  through `frameDataIndex`. `Basic3D.slang` and `Water.slang` each declare its
+  layout, so a field added to the C++ struct is added to both.
 - **Every write is followed by a barrier.** Two passes rendering into one
   attachment in a row are separate rendering scopes; the compiler orders them
   even when the layout does not change, and attachment access includes the
   read that a load, blend or depth test does.
+
+## Entities and scenes
+
+- **An `Entity` kept across frames is checked, not trusted.** Play, Stop and
+  opening a scene or a project replace the active scene; an `Entity` stored
+  in a panel or a member (the hovered entity, a selection) then names a scene
+  that is gone. `Entity` remembers its scene's instance id: `if (entity)`,
+  `IsValid()`, `HasComponent` and `TryGetComponent` answer false or null for
+  it. `GetComponent` does not check: use it only right after a check, or use
+  `TryGetComponent`. Never keep a raw `Scene*` or `entt::entity` instead.
+
+## Cooked assets
+
+- **A game loads cooked models, not glTF.** Exports cook every referenced
+  model to `<model>.uhemodel` (`Model::SaveCooked`, through
+  `ExportOptions::CookModel`) and drop the glTF with the files only it used;
+  `Model::loadModel` takes the cook when the source is missing or older.
+  `uhe_cook --inspect` shows what a cook holds.
+- **A model field is a cooked-format field.** `CookedModel.cpp` writes every
+  field of `Material`, `MaterialExtensions`, `Primitive`, `Mesh`, `ModelNode`,
+  the lights, skins and clips by name. A field added to one of them is added
+  there too, and `kModelVersion` goes up so an older cook is recooked instead
+  of misread; `tests/gltf` compares a cooked load with the glTF load.
+- **Cooking never touches the GPU.** It loads with `upload = false` and
+  `keepTextureSources = true`; `uhe_export` links stubs that abort on any
+  texture or buffer creation, so a change that makes cooking upload fails there.
+
+## Physics for robots
+
+- **Joints are built from the poses at Play start.** `Physics::CreateJoints`
+  runs after the bodies exist; `Joint3DComponent::Anchor`/`Axis` are in the
+  entity's space and encoders read from that starting pose. A joint is torn
+  down before either body (`DestroyJointsOf` in `DestroyEntity`,
+  `DestroyAllJoints` in `OnRuntimeStop`): a constraint must not outlive a body.
+- **Sensors read the last simulation tick, never the render cache.** Encoders
+  and IMUs update in `Physics::UpdateSensors` after each step; a script ray
+  walks the transform tree now (`GetWorldSpaceTransformMatrix`) because the
+  render cache is a frame behind. That keeps a run reproducible tick for tick,
+  which `tests/scene` checks bit-for-bit.
 
 ## Scripting is a consumer of the engine
 
@@ -123,6 +179,14 @@ here. Follow them; if a rule is wrong, change it here first.
 - CI applies the same gate in `.github/workflows/sanitizers.yml` (Sandbox smoke,
   ASan + TSan) and `test-renderer.yml` (editor). A run that renders 34 broken
   frames a second and survives is a failure, not a pass.
+- **Run synchronization validation after touching barriers.** `-sync-validation`
+  or `UHE_SYNC_VALIDATION=1` turns on the layer's hazard tracking, which the
+  ordinary gate does not do. It found two real races: depth barriers named only
+  the late fragment tests although a load or clear runs at the early ones
+  (`Stage::DepthTests` covers both), and a resource's first barrier in a frame
+  waited on `TopOfPipe`, which orders nothing before it (the previous frame's
+  writes to a pooled image, the swapchain acquire). It is now `AllCommands` +
+  `MemoryWrite`.
 - Severity is mapped honestly in `VulkanInstance::debugCallback`: errors are
   errors, warnings are warnings. The layer's "writes to Location 1 ... and this
   write is unused" is a warning. A message the layer repeats is logged in full
@@ -140,10 +204,21 @@ here. Follow them; if a rule is wrong, change it here first.
   that interface plus the backend implementation (see `GetSwapchainFormat`).
   Demo layers may reach the swapchain for its extent — that is the documented
   exception.
+- **No identifier is called `near` or `far`.** `windows.h` defines both as
+  macros: a variable with either name compiled everywhere and broke the
+  Windows build, twice. `nearPlane`, `farPlane`, `closeTo`.
 - **Editor code reads ImGui internals through `ImGui::GetCurrentContext()`.**
   The inline helpers in `imgui_internal.h` (`GetCurrentWindow`, `GetActiveID`,
   ...) read the global `GImGui`, which the engine DLL does not export on
   Windows: the editor compiled everywhere and failed to link on Windows only.
+- **Wait on children with a continuation, not a nested `Wait`.** `Wait()` runs
+  other jobs on the waiting thread's stack, so waits inside jobs grow it;
+  `UheJobsystem::Then(counter, job)` or a `JobTask` coroutine's
+  `co_await jobs.WhenDone(counter)` resume with no thread held. A
+  `JobCounter` may be destroyed only after `Wait()` on it returned or from its
+  continuation: the job that finished the group is still inside it until then.
+  The deque is Chase–Lev with seq_cst operations instead of fences, because
+  TSan (which CI runs on `tests/jobsystem`) does not model fences.
 - **Behaviour lives in `UHE/src/UHE`; apps compose layers.** `sandbox`,
   `UHEGAME` and `UHE_EDITOR` are composition roots, not engines.
 - **The engine and the editor share one scene format**: `.unhuman` YAML, with

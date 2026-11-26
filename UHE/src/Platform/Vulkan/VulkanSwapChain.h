@@ -18,8 +18,9 @@ public:
     VulkanSwapChain(const VulkanSwapChain&) = delete;
     VulkanSwapChain& operator=(const VulkanSwapChain&) = delete;
 
+    /// @param vsync FIFO when true; otherwise MAILBOX, else IMMEDIATE, whichever the surface offers.
     void createSwapChain(vk::raii::Device& device, vk::raii::PhysicalDevice& physicalDevice,
-                         vk::raii::SurfaceKHR& surface, GLFWwindow* window);
+                         vk::raii::SurfaceKHR& surface, GLFWwindow* window, bool vsync);
     void cleanupSwapChain();
 
     void AcquireNextImage() override;
@@ -35,12 +36,14 @@ public:
     [[nodiscard]] vk::SurfaceFormatKHR& GetSurfaceFormat() { return swapChainSurfaceFormat; }
     /// @brief true when the images were created with transfer-source usage (frame capture).
     [[nodiscard]] bool SupportsTransferSrc() const { return supportsTransferSrc; }
+    /// @brief The present mode the swapchain was created with.
+    [[nodiscard]] vk::PresentModeKHR GetPresentMode() const { return presentMode; }
 
 private:
     vk::Extent2D chooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities, GLFWwindow* window);
     u32 chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const& surfaceCapablities);
     vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& availableFormats);
-    vk::PresentModeKHR chooseSwapPresentMode(const std::vector<vk::PresentModeKHR>& availablePresentModes);
+    vk::PresentModeKHR chooseSwapPresentMode(const std::vector<vk::PresentModeKHR>& availablePresentModes, bool vsync);
 
 private:
     vk::raii::SwapchainKHR swapChain = nullptr;
@@ -49,6 +52,9 @@ private:
     vk::Extent2D swapChainExtent;
     std::vector<vk::raii::ImageView> swapChainImageViews;
     bool supportsTransferSrc = false;
+    vk::PresentModeKHR presentMode = vk::PresentModeKHR::eFifo;
+    /// The present mode has been logged; later recreations log only a change.
+    bool presentModeLogged = false;
     vk::raii::Sampler textureSampler = nullptr;
     vk::raii::ImageView textureImageView = nullptr;
 };

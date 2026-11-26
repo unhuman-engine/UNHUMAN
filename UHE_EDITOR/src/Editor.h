@@ -4,14 +4,17 @@
 #include <string>
 #include <vector>
 #include "CommandPalette.h"
+#include "EditorDisplaySettings.h"
 #include "Notifications.h"
 #include "Panel/AnimationGraphPanel.h"
 #include "Panel/AudioPanel.h"
 #include "Panel/ContentBrowserPanel.h"
+#include "Panel/EnvironmentPanel.h"
 #include "Panel/ProfilerPanel.h"
 #include "Panel/ProjectLauncherPanel.h"
 #include "Panel/SceneHierachyPanel.h"
 #include "Panel/ScriptsPanel.h"
+#include "Panel/SequencerPanel.h"
 #include "UHE.h"
 #include "UHE/Renderer/EditorCamera.h"
 #include "UHE/Renderer3D/Renderer3D.h"
@@ -50,12 +53,22 @@ private:
     void NewScene(bool notify = true);
     void OpenScene();
     void SaveSceneAs();
+    /// @brief File > Export Game: writes the open project out as a standalone game (GameExporter).
+    void ExportGame();
     void OpenScene(const std::filesystem::path& path, bool notify = true);
 
     // Project lifecycle: the editor has no asset root until a project is open.
     bool OpenProject(const std::filesystem::path& path);
-    void SetProject(ProjectInfo info);
+    /// @param starterScene a new project: write the starter scene first and open it.
+    void SetProject(ProjectInfo info, bool starterScene = false);
+    /// @brief Stops Play, drops the scene and returns to the project manager.
     void CloseProject();
+    /**
+     * @brief Gives a new project something to look at: a ground, a cube, a sun
+     *        and a camera in Assets/Scenes/Main.unhuman, set as its start scene.
+     * @return false (logged) when a file cannot be written; the project still opens.
+     */
+    bool WriteStarterScene(ProjectInfo& project);
     [[nodiscard]] std::filesystem::path ProjectAssetPath() const;
 
     // Files dropped from the OS file explorer: imported into the project, and
@@ -79,6 +92,16 @@ private:
     void DrawPreferencesModal();
     void DrawAboutModal();
     void CreateEntityFromMenu(const char* name, int componentKind);
+    /// @brief Create > UI: an element of \p kind (0 panel, 1 text, 2 button, 3 progress bar, 4 slider),
+    ///        inside the selected UI element when one is selected.
+    void CreateUIElement(int kind);
+
+    // Game UI in the viewport: the mouse in scene pixels, from the viewport panel.
+    glm::vec2 m_ViewportPointer{-1.0f};
+    bool m_ViewportPointerInside = false;
+    bool m_UIMouseWasDown = false;
+    bool m_ShowGameUI = true; ///< View > Overlays: draw the game UI over the viewport
+    int m_DebugBuffer = 0;    ///< View > Buffer: SceneRenderer::Desc::DebugBuffer (lit view only)
 
     // ---- editor ergonomics ----
     void Notify(NotificationCenter::Kind kind, std::string title, std::string message = {});
@@ -103,7 +126,10 @@ private:
     // The simulation runs in OnUpdate; the scene is drawn by a frame graph
     // pass, recorded before the ImGui pass that shows it.
     void DeclareSceneGraphPass(Timestep ts, bool runtime);
-    void RecordSceneGraphPass(UHE::RHI::FGContext& context, Timestep ts, bool runtime);
+    /// Seconds the viewport has rendered; animates wind and water.
+    float m_SceneTime = 0.0f;
+    /// @brief The colour pass's draws, for \p scene: the one the frame was declared with.
+    void RecordSceneGraphPass(UHE::RHI::FGContext& context, Scene& scene, Timestep ts, bool runtime);
 
 private:
     Entity m_Square;
@@ -136,17 +162,21 @@ private:
 
     SceneHierarchyPanel m_SceneHireacyPanel;
     AnimationGraphPanel m_AnimationGraphPanel;
+    SequencerPanel m_SequencerPanel;
     AudioPanel m_AudioPanel;
     ContentBrowserPanel m_ContentBrowserPanel;
+    EnvironmentPanel m_EnvironmentPanel; ///< the active scene's RenderSettings, a tab beside Properties
     ProfilerPanel m_ProfilerPanel;
     ScriptsPanel m_ScriptsPanel;
     ProjectLauncherPanel m_ProjectLauncher;
     CommandPalette m_CommandPalette;
     NotificationCenter m_Notifications;
+    EditorDisplaySettings m_DisplaySettings;
     std::optional<ProjectInfo> m_Project;
     bool m_ShowLauncher = true;
-    // Scene targets: created by the frame graph at the viewport's size, and
-    // exported under these names for the viewport image and picking.
+    // Scene targets: created by the frame graph at the viewport's size times
+    // the render scale, and exported under these names for the viewport image
+    // and picking.
     static constexpr const char* kSceneColor = "Editor.Scene.Color";
     static constexpr const char* kSceneEntity = "Editor.Scene.Entity";
     static constexpr u32 kMaxSceneSize = 8192;
@@ -162,11 +192,14 @@ private:
 
     bool m_ShowHierarchy = true;
     bool m_ShowInspector = true;
+    bool m_ShowEnvironment = true;
     bool m_ShowContentBrowser = true;
     bool m_ShowConsole = true;
     bool m_ShowProfiler = true;
     bool m_ShowScripts = true;
     bool m_ShowAnimationGraph = true;
+    bool m_ShowSequencer = true;
+    std::string m_PendingPanelFocus; ///< view.panel: focused once that window exists
     bool m_ShowAudio = true;
     bool m_ShowSettings = true;
     bool m_ShowViewport = true;

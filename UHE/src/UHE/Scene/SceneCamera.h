@@ -19,6 +19,20 @@ public:
 
     void SetOrthographic(f32 size, f32 nearClip, f32 farClip);
 
+    static constexpr f32 kDefaultPerspectiveFar = 1000.0f;
+
+    /**
+     * @brief The perspective far plane a saved scene should load with.
+     *
+     * Scenes saved before the fix to GetProjectionFar() hold the orthographic
+     * far plane (1 by default) as their perspective one, which shows nothing
+     * past a metre. That value, or any far plane not beyond the near one, is
+     * replaced by kDefaultPerspectiveFar.
+     *
+     * @param repaired set to true when the saved value was replaced.
+     */
+    static f32 LoadedPerspectiveFar(f32 perspectiveNear, f32 perspectiveFar, f32 orthographicFar, bool& repaired);
+
     void SetViewportSize(u32 width, u32 height);
 
     void SetPerspective(f32 fov, f32 nearClip, f32 farClip);
@@ -30,9 +44,9 @@ public:
         RecalculateProjection();
     }
     f32 GetOrthographicNearClip() const { return m_OrthographicNear; }
-    f32 SetOrthoGraphicNearClip(f32 nearClip)
+    void SetOrthoGraphicNearClip(f32 nearClip)
     {
-        return m_OrthographicNear = nearClip;
+        m_OrthographicNear = nearClip;
         RecalculateProjection();
     }
     f32 GetOrthographicFarClip() const { return m_OthergraphicFar; }
@@ -45,7 +59,9 @@ public:
 
     f32 GetProjectionFOV() const { return m_PerspectiveFOV; }
     f32 GetProjectionNear() const { return m_PerspectiveNear; }
-    f32 GetProjectionFar() const { return m_OthergraphicFar; }
+    /// @brief The perspective far plane (it used to return the orthographic one,
+    ///        so every saved scene stored a perspective far plane of 1 m).
+    f32 GetProjectionFar() const { return m_PerspectiveFar; }
 
     void SetPerspectiveFOV(f32 fov)
     {

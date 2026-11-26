@@ -290,8 +290,12 @@ vk::PipelineStageFlags2 ToVkPipelineStage2(Stage stage)
             return vk::PipelineStageFlagBits2::eEarlyFragmentTests;
         case Stage::DepthLate:
             return vk::PipelineStageFlagBits2::eLateFragmentTests;
+        case Stage::DepthTests:
+            return vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests;
         case Stage::BottomOfPipe:
             return vk::PipelineStageFlagBits2::eBottomOfPipe;
+        case Stage::AllCommands:
+            return vk::PipelineStageFlagBits2::eAllCommands;
     }
     return vk::PipelineStageFlagBits2::eAllCommands;
 }
@@ -349,8 +353,12 @@ vk::PipelineStageFlags ToVkPipelineStage1(Stage stage)
             return vk::PipelineStageFlagBits::eEarlyFragmentTests;
         case Stage::DepthLate:
             return vk::PipelineStageFlagBits::eLateFragmentTests;
+        case Stage::DepthTests:
+            return vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests;
         case Stage::BottomOfPipe:
             return vk::PipelineStageFlagBits::eBottomOfPipe;
+        case Stage::AllCommands:
+            return vk::PipelineStageFlagBits::eAllCommands;
     }
     return vk::PipelineStageFlagBits::eAllCommands;
 }

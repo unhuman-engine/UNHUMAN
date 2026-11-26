@@ -1,0 +1,10 @@
+Project:
+  Name: WorldDemo
+  EngineVersion: "0.1"
+  StartScene: "Assets/Scenes/World.unhuman"
+  Window:
+    Title: World Demo
+    Width: 1600
+    Height: 900
+    Mode: Windowed
+    VSync: true

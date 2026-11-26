@@ -32,6 +32,8 @@ namespace UHE
         void DrawSummary();
         void DrawHistoryGraph();
         void DrawHotspots();
+        /// GPU milliseconds of each frame graph pass (timestamp queries; a few frames old).
+        void DrawGpuPasses();
         void DrawScopeTable();
         void DrawScopeDetails();
         void DrawCallTree();

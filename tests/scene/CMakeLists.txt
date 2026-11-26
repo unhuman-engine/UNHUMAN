@@ -18,11 +18,16 @@ add_executable(scene_test
     # until a test calls Init(), which this harness does not.
     ${SCENE_SRC_DIR}/Scripting/ScriptEngine.cpp
     ${SCENE_SRC_DIR}/Scene/SceneCamera.cpp
+    # Terrain heights, mesh and heightfield body are CPU work; stb reads heightmaps.
+    ${SCENE_SRC_DIR}/Scene/Terrain.cpp
+    ${SCENE_SRC_DIR}/UI/UISystem.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/vendor/stb_image/stb_image.cpp
     ${SCENE_SRC_DIR}/Scene/Entity.cpp
     ${SCENE_SRC_DIR}/Core/UUID.cpp
     ${SCENE_SRC_DIR}/Core/SimulationClock.cpp
     ${SCENE_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${SCENE_SRC_DIR}/Physics/PhysicsSystem3D.cpp
+    ${SCENE_SRC_DIR}/Physics/Joints3D.cpp
     ${SCENE_SRC_DIR}/Math/Math.cpp
     ${SCENE_SRC_DIR}/Debug/TracySetup.cpp
     # SpriteAnimation::Tick is invoked from RenderSprites (stubbed renderer,
@@ -34,6 +39,7 @@ add_executable(scene_test
     # The scene step drives animation graphs; both are pure logic (the
     # Animator they act on is stubbed in tests/scene/stubs.cpp).
     ${SCENE_SRC_DIR}/Animation/AnimationGraph.cpp
+    ${SCENE_SRC_DIR}/Animation/Sequence.cpp
     ${SCENE_SRC_DIR}/Renderer3D/AnimationStateMachine.cpp
 )
 

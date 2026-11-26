@@ -370,11 +370,23 @@ std::vector<Jobsystem::TaskID> VulkanRenderGraphExecutor::MapToTaskgraph(
     }
 
     // Edges: compiled DAG — a pass runs after all its dependencies (§8.5).
+    // Plus a chain in compiled order: every pass records into the one
+    // `targetCmd`, which is externally synchronized, and its commands must land
+    // in the order the barriers were compiled for. Two passes the DAG leaves
+    // independent (shadow cascades and a depth prepass) used to record at the
+    // same time, from two threads, into that buffer and into the renderer's
+    // shared state; the heap corruption that followed crashed the editor.
     for (u32 slot = 0; slot < resolved.passes.size(); ++slot)
     {
         const RGResolvedPass& pass = resolved.passes[slot];
+        bool afterPrevious = slot == 0;
         for (const u32 depId : pass.dependencies)
+        {
             graph.AddDependency(nodes[depId], nodes[slot]);
+            afterPrevious = afterPrevious || depId == slot - 1;
+        }
+        if (!afterPrevious)
+            graph.AddDependency(nodes[slot - 1], nodes[slot]);
     }
     return nodes;
 }

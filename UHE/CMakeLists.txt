@@ -49,6 +49,7 @@ target_include_directories(UHE PUBLIC
     "vendor/imGuizmo"
     "vendor/glm"
     "vendor/stb_image"
+    "vendor/renderdoc"
     "vendor/entt/include"
     "vendor/volk"
     "vendor/VulkanMemoryAllocator/include"

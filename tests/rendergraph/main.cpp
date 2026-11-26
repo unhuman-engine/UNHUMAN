@@ -293,12 +293,14 @@ int main()
         for (const RGCompiledImageBarrier& b : gbuffer.preImageBarriers)
         {
             if (b.oldState == ImageState::Undefined && b.newState == ImageState::DepthAttachment &&
-                b.srcStage == Stage::TopOfPipe)
+                b.srcStage == Stage::AllCommands && b.srcAccess == Access::MemoryWrite)
                 depthFresh = true;
             if (b.oldState == ImageState::Undefined && b.newState == ImageState::ColorAttachment)
                 albedoFresh = true;
         }
-        CHECK(depthFresh, "fresh depth: Undefined → DepthAttachment from TopOfPipe");
+        // A first use waits on everything before it: the pooled image may hold
+        // the previous frame's writes (sync validation flagged TopOfPipe).
+        CHECK(depthFresh, "fresh depth: Undefined → DepthAttachment after all prior writes");
         CHECK(albedoFresh, "fresh albedo: Undefined → ColorAttachment");
 
         CHECK(lighting.preImageBarriers.size() == 3,
@@ -312,7 +314,7 @@ int main()
             if (b.oldState == ImageState::DepthAttachment && b.newState == ImageState::ShaderRead)
                 depthToRead = true;
             if (b.oldState == ImageState::Present && b.newState == ImageState::ColorAttachment &&
-                b.srcStage == Stage::TopOfPipe && b.dstStage == Stage::ColorOutput)
+                b.srcStage == Stage::AllCommands && b.dstStage == Stage::ColorOutput)
                 swapAcquired = true;
         }
         CHECK(albedoToRead, "albedo: ColorAttachment → ShaderRead (ColorOutput → Fragment)");
@@ -501,6 +503,70 @@ int main()
                                       graph.GetNode(nodes[0]).dependents.end(),
                                       nodes[1]) != graph.GetNode(nodes[0]).dependents.end();
         CHECK(edgeOk, "GBuffer node lists Lighting as a dependent");
+    }
+
+    // ── A Load attachment depends on the previous writer ──────────────────
+    // "Copy" fills a transient that "Water" then draws over with LoadOp::Load.
+    // Nothing samples the copy, so with only read edges it was culled and the
+    // water pass loaded an uninitialized image.
+    {
+        VulkanRenderGraph rg;
+        RGTextureHandle out =
+            rg.ImportTexture("Viewport", 21, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        RGTextureHandle hdr = rg.CreateTexture({"HDR.Water", TextureFormat::RGBA16F, 16, 16});
+        rg.AddPass("Copy")
+            .Write(hdr)
+            .Color({hdr, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        rg.AddPass("Water")
+            .Write(hdr)
+            .Color({hdr, LoadOp::Load, StoreOp::Store, {0, 0, 0, 1}})
+            .Write(out)
+            .Color({out, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        const RGCompileResult compiled = rg.Compile();
+        CHECK(compiled.Ok(), "load-after-write frame compiles");
+        CHECK(compiled.frame.passes.size() == 2 && compiled.frame.culledPasses.empty(),
+              "the pass whose output is only loaded is kept");
+        if (compiled.frame.passes.size() == 2)
+            CHECK(compiled.frame.passes[1].dependencies.size() == 1 && compiled.frame.passes[1].dependencies[0] == 0,
+                  "the loading pass depends on the pass that wrote what it loads");
+    }
+
+    // ── Recording is serial: independent passes still record in compiled order ──
+    // Every pass records into one command buffer, so two passes the DAG leaves
+    // unrelated must not run at the same time (they did, from two threads).
+    {
+        VulkanRenderGraph rg;
+        RGTextureHandle a =
+            rg.ImportTexture("ShadowAtlas", 11, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        RGTextureHandle b = rg.ImportTexture("Prepass", 12, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
+        rg.AddPass("Shadows")
+            .Write(a)
+            .Color({a, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        rg.AddPass("Prepass")
+            .Write(b)
+            .Color({b, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute([](RGPassContext&) {});
+        const RGCompileResult compiled = rg.Compile();
+        CHECK(compiled.Ok() && compiled.frame.passes.size() == 2, "two independent passes compile");
+
+        VulkanRenderGraphExecutor executor;
+        executor.RegisterTexture(a, reinterpret_cast<VkImage>(0x51ull), reinterpret_cast<VkImageView>(0x52ull), 16, 16,
+                                 TextureFormat::RGBA8_UNORM);
+        executor.RegisterTexture(b, reinterpret_cast<VkImage>(0x53ull), reinterpret_cast<VkImageView>(0x54ull), 16, 16,
+                                 TextureFormat::RGBA8_UNORM);
+        std::vector<std::string> errors;
+        const RGResolvedFrame resolved = executor.Resolve(compiled.frame, rg.GetBuilder().Passes(), errors);
+        CHECK(errors.empty(), "independent passes resolve");
+
+        UHE::Jobsystem::TaskGraph graph;
+        VulkanBarrierEncoder scratchEncoder;
+        const std::vector<UHE::Jobsystem::TaskID> nodes = executor.MapToTaskgraph(
+            graph, resolved, rg.GetBuilder().Passes(), vk::CommandBuffer{nullptr}, scratchEncoder);
+        CHECK(nodes.size() == 2 && graph.GetNode(nodes[1]).dependencyCount == 1,
+              "the second pass waits for the first even with no data between them");
     }
 
     // ── Write after write: two rendering scopes on one attachment ─────────────

@@ -1,6 +1,7 @@
 #include "Renderer2D.h"
 #include <array>
 #include <glm/gtc/matrix_transform.hpp>
+#include <map>
 #include <vector>
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/RHI/RHICommandBuffer.h"
@@ -56,6 +57,18 @@ struct Renderer2DData
     RHI::ShaderHandle TextVertexShader;
     RHI::ShaderHandle TextFragmentShader;
     RHI::BufferHandle TextVertexBuffers[2];
+
+    /// The scene pass's colour format; the second attachment is always the entity IDs.
+    RHI::TextureFormat ColorFormat = RHI::TextureFormat::RGBA8_SRGB;
+    /// Pipelines for colour formats other than RGBA8_SRGB, built on first use.
+    struct FormatPipelines
+    {
+        RHI::PipelineHandle Quad = nullptr;
+        RHI::PipelineHandle Text = nullptr;
+    };
+    std::map<RHI::TextureFormat, FormatPipelines> OtherFormats;
+    RHI::GraphicsPipelineDesc QuadDesc{};
+    RHI::GraphicsPipelineDesc TextDesc{};
 
     uint32_t TextIndexCount = 0;
     TextVertex* TextVertexBufferBase = nullptr;
@@ -208,6 +221,7 @@ void Renderer2D::CreateShaderResources()
     pipeDesc.colorFormats[1] = RHI::TextureFormat::R32_SINT;
 
     s_Data.QuadPipeline = device.CreateGraphicsPipeline(pipeDesc);
+    s_Data.QuadDesc = pipeDesc;
     UHE_CORE_ASSERT(s_Data.QuadPipeline, "Failed to create QuadPipeline!");
 
     RHI::GraphicsPipelineDesc textPipeDesc{};
@@ -223,7 +237,32 @@ void Renderer2D::CreateShaderResources()
     textPipeDesc.colorFormats[1] = RHI::TextureFormat::R32_SINT;
 
     s_Data.TextPipeline = device.CreateGraphicsPipeline(textPipeDesc);
+    s_Data.TextDesc = textPipeDesc;
     UHE_CORE_ASSERT(s_Data.TextPipeline, "Failed to create TextPipeline!");
+}
+
+/// @brief The quad and text pipelines for the current colour format, built the first time it is asked for.
+static Renderer2DData::FormatPipelines PipelinesForTarget()
+{
+    if (s_Data.ColorFormat == RHI::TextureFormat::RGBA8_SRGB)
+        return {s_Data.QuadPipeline, s_Data.TextPipeline};
+    const auto it = s_Data.OtherFormats.find(s_Data.ColorFormat);
+    if (it != s_Data.OtherFormats.end())
+        return it->second;
+    auto& device = Renderer::GetDevice();
+    RHI::GraphicsPipelineDesc quad = s_Data.QuadDesc;
+    quad.colorFormats[0] = s_Data.ColorFormat;
+    quad.debugName = "Renderer2D.Quad.Format";
+    RHI::GraphicsPipelineDesc text = s_Data.TextDesc;
+    text.colorFormats[0] = s_Data.ColorFormat;
+    text.debugName = "Renderer2D.Text.Format";
+    Renderer2DData::FormatPipelines set{device.CreateGraphicsPipeline(quad), device.CreateGraphicsPipeline(text)};
+    return s_Data.OtherFormats.emplace(s_Data.ColorFormat, set).first->second;
+}
+
+void Renderer2D::SetColorFormat(RHI::TextureFormat format)
+{
+    s_Data.ColorFormat = format == RHI::TextureFormat::Undefined ? RHI::TextureFormat::RGBA8_SRGB : format;
 }
 
 void Renderer2D::DestroyShaderResources()
@@ -231,6 +270,12 @@ void Renderer2D::DestroyShaderResources()
     auto& device = Renderer::GetDevice();
 
     device.DestroyGraphicsPipeline(s_Data.QuadPipeline);
+    for (auto& [format, set] : s_Data.OtherFormats)
+    {
+        device.DestroyGraphicsPipeline(set.Quad);
+        device.DestroyGraphicsPipeline(set.Text);
+    }
+    s_Data.OtherFormats.clear();
     device.DestroyShader(s_Data.QuadVertexShader);
     device.DestroyShader(s_Data.QuadFragmentShader);
     device.DestroyGraphicsPipeline(s_Data.TextPipeline);
@@ -330,7 +375,7 @@ void Renderer2D::Flush()
         uint32_t dataSize = (uint32_t)((uint8_t*)s_Data.QuadVertexBufferPtr - (uint8_t*)s_Data.QuadVertexBufferBase);
         cmd.UpdateBuffer(s_Data.QuadVertexBuffers[frameIndex], s_Data.QuadVertexBufferBase, dataSize, 0);
 
-        cmd.BindPipeline(s_Data.QuadPipeline);
+        cmd.BindPipeline(PipelinesForTarget().Quad);
         cmd.BindVertexBuffer(s_Data.QuadVertexBuffers[frameIndex], 0);
         cmd.BindIndexBuffer(s_Data.QuadIndexBuffer, 0);
 
@@ -351,7 +396,7 @@ void Renderer2D::Flush()
         uint32_t dataSize = (uint32_t)((uint8_t*)s_Data.TextVertexBufferPtr - (uint8_t*)s_Data.TextVertexBufferBase);
         cmd.UpdateBuffer(s_Data.TextVertexBuffers[frameIndex], s_Data.TextVertexBufferBase, dataSize, 0);
 
-        cmd.BindPipeline(s_Data.TextPipeline);
+        cmd.BindPipeline(PipelinesForTarget().Text);
         cmd.BindVertexBuffer(s_Data.TextVertexBuffers[frameIndex], 0);
         cmd.BindIndexBuffer(s_Data.QuadIndexBuffer, 0);
 

@@ -1,6 +1,9 @@
 #include "uhepch.h"
 #include "Project.h"
+#include <algorithm>
+#include <cctype>
 #include <fstream>
+#include <string_view>
 #include <system_error>
 #include <yaml-cpp/yaml.h>
 #include "UHE/AssetsManager/VfsSystem.h"
@@ -37,6 +40,55 @@ bool Project::IsProject(const std::filesystem::path& path)
     return !manifest.empty() && std::filesystem::is_regular_file(manifest, ec);
 }
 
+std::filesystem::path Project::NormalizeRoot(const std::filesystem::path& path)
+{
+    if (path.empty())
+        return {};
+    std::filesystem::path root = path;
+    if (root.filename() == kManifestName)
+        root = root.parent_path();
+    // A bare "Project.uheproject" names the folder we are in.
+    if (root.empty())
+        root = ".";
+    std::error_code ec;
+    root = std::filesystem::absolute(root, ec).lexically_normal();
+    // lexically_normal keeps a trailing separator ("a/b/"): drop it, so the
+    // two spellings of a folder compare equal.
+    if (!root.has_filename() && root.has_relative_path())
+        root = root.parent_path();
+    return root;
+}
+
+std::string Project::CheckNewProject(const std::filesystem::path& parent, const std::string& name)
+{
+    if (name.empty())
+        return "Enter a name";
+    if (name == "." || name == "..")
+        return "'" + name + "' is not a folder name";
+    if (name.front() == ' ' || name.back() == ' ' || name.back() == '.')
+        return "The name cannot start or end with a space, or end with a dot";
+    for (const char c : name)
+    {
+        if (std::string_view("/\\:*?\"<>|").find(c) != std::string_view::npos || static_cast<unsigned char>(c) < 32)
+            return std::string("The name cannot contain '") + c + "'";
+    }
+    if (parent.empty())
+        return "Choose a folder to create the project in";
+
+    std::error_code ec;
+    const std::filesystem::path root = NormalizeRoot(parent / name);
+    if (std::filesystem::exists(root, ec))
+    {
+        if (!std::filesystem::is_directory(root, ec))
+            return "'" + root.string() + "' is a file";
+        if (IsProject(root))
+            return "'" + root.string() + "' is already a project; open it instead";
+        if (std::filesystem::directory_iterator(root, ec) != std::filesystem::directory_iterator())
+            return "'" + root.string() + "' already has files in it";
+    }
+    return {};
+}
+
 bool Project::EnsureAssetFolder(const ProjectInfo& info, std::string* error)
 {
     if (info.RootPath.empty())
@@ -69,7 +121,7 @@ bool Project::Create(const std::filesystem::path& root, const std::string& name,
     }
 
     std::error_code ec;
-    const std::filesystem::path absoluteRoot = std::filesystem::absolute(root, ec).lexically_normal();
+    const std::filesystem::path absoluteRoot = NormalizeRoot(root);
     const std::filesystem::path manifest = ManifestPath(absoluteRoot);
 
     if (std::filesystem::exists(manifest, ec))
@@ -127,12 +179,33 @@ bool Project::Load(const std::filesystem::path& path, ProjectInfo& out, std::str
     }
 
     ProjectInfo info;
-    info.RootPath = manifest.parent_path();
+    // Absolute: a relative root ("projects/Snake" from -project) would follow
+    // the working directory and end up in the recent list that way.
+    info.RootPath = NormalizeRoot(manifest);
     info.AssetPath = info.RootPath / kAssetFolderName;
     // A manifest without a name still opens: fall back to the folder name.
     info.Name = project["Name"] ? project["Name"].as<std::string>() : info.RootPath.filename().string();
     info.StartScene = project["StartScene"] ? project["StartScene"].as<std::string>() : std::string();
     info.EngineVersion = project["EngineVersion"] ? project["EngineVersion"].as<std::string>() : std::string();
+
+    // The game window. A missing block or field keeps its default; sizes are
+    // clamped, so a typo cannot open a 0 or 100000 pixel window.
+    if (const YAML::Node window = project["Window"]; window && window.IsMap())
+    {
+        ProjectWindowSettings& settings = info.Window;
+        const auto size = [&](const char* key, u32 fallback)
+        {
+            const i64 value = window[key] ? window[key].as<i64>(fallback) : fallback;
+            return static_cast<u32>(
+                std::clamp<i64>(value, ProjectWindowSettings::kMinSize, ProjectWindowSettings::kMaxSize));
+        };
+        settings.Title = window["Title"] ? window["Title"].as<std::string>(std::string()) : std::string();
+        settings.Width = size("Width", settings.Width);
+        settings.Height = size("Height", settings.Height);
+        settings.Mode = window["Mode"] ? ParseWindowMode(window["Mode"].as<std::string>(std::string()), settings.Mode)
+                                       : settings.Mode;
+        settings.VSync = window["VSync"] ? window["VSync"].as<bool>(settings.VSync) : settings.VSync;
+    }
 
     if (info.Name.empty())
         info.Name = info.RootPath.filename().string();
@@ -164,6 +237,13 @@ bool Project::Save(const ProjectInfo& info, std::string* error)
     out << YAML::Key << "EngineVersion" << YAML::Value
         << (info.EngineVersion.empty() ? EngineVersionString() : info.EngineVersion);
     out << YAML::Key << "StartScene" << YAML::Value << info.StartScene;
+    out << YAML::Key << "Window" << YAML::Value << YAML::BeginMap;
+    out << YAML::Key << "Title" << YAML::Value << info.Window.Title;
+    out << YAML::Key << "Width" << YAML::Value << info.Window.Width;
+    out << YAML::Key << "Height" << YAML::Value << info.Window.Height;
+    out << YAML::Key << "Mode" << YAML::Value << WindowModeName(info.Window.Mode);
+    out << YAML::Key << "VSync" << YAML::Value << info.Window.VSync;
+    out << YAML::EndMap;
     out << YAML::EndMap;
     out << YAML::EndMap;
 
@@ -189,6 +269,36 @@ void Project::Mount(const ProjectInfo& info, const std::filesystem::path& engine
         Vfs::Get().Mount("game:", info.AssetPath);
     if (!engineAssetPath.empty())
         Vfs::Get().Mount("engine:", engineAssetPath);
+}
+
+const char* WindowModeName(WindowMode mode)
+{
+    switch (mode)
+    {
+        case WindowMode::Borderless:
+            return "Borderless";
+        case WindowMode::Fullscreen:
+            return "Fullscreen";
+        case WindowMode::Windowed:
+            break;
+    }
+    return "Windowed";
+}
+
+WindowMode ParseWindowMode(const std::string& name, WindowMode fallback)
+{
+    std::string lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const WindowMode mode : {WindowMode::Windowed, WindowMode::Borderless, WindowMode::Fullscreen})
+    {
+        std::string candidate = WindowModeName(mode);
+        std::transform(candidate.begin(), candidate.end(), candidate.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower == candidate)
+            return mode;
+    }
+    return fallback;
 }
 
 std::filesystem::path Project::StartScenePath(const ProjectInfo& info)

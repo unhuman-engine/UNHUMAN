@@ -18,17 +18,22 @@
 // links no RHI and needs no Vulkan device.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <concepts>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <glm/glm.hpp>
+#include <iterator>
 #include <meshoptimizer.h>
 #include <string>
 #include <string_view>
 #include <vector>
+#include "UHE/AssetsManager/CookedFile.h"
+#include "UHE/AssetsManager/PrimitiveGltf.h"
 #include "UHE/Core/Log.h"
 #include "UHE/Renderer3D/LightSystem.h"
 #include "UHE/Renderer3D/LoadModel.h"
@@ -107,6 +112,11 @@ bool closeTo(const glm::vec3& a, const glm::vec3& b, float eps = 1e-4f)
 }
 
 namespace fs = std::filesystem;
+
+std::size_t GeometryCount(const UHE::RD3d::Model& model)
+{
+    return model.GetGeometry().size();
+}
 
 // A scratch directory that cleans itself up, so a failed run leaves nothing
 // behind in the source tree.
@@ -1522,6 +1532,70 @@ int main()
         check(!model.loadModel(dir.path() / "does_not_exist.gltf"), "missing file returns false");
     }
 
+    // ---------------------------------------------------------------------
+    section("starter shapes load with outward normals");
+    {
+        // What a new project's scene is built from: a ground plane and a cube,
+        // with normals (the engine's own cube.gltf has none and draws black).
+        struct Case
+        {
+            const char* file;
+            UHE::PrimitiveShape shape;
+            std::size_t vertices;
+            std::size_t indices;
+        };
+        for (const Case& c : {Case{"starter_plane.gltf", UHE::PrimitiveShape::Plane, 4, 6},
+                              Case{"starter_cube.gltf", UHE::PrimitiveShape::Cube, 24, 36}})
+        {
+            std::string error;
+            const fs::path path = dir.path() / c.file;
+            check(UHE::WritePrimitiveGltf(path, c.shape, {0.8f, 0.4f, 0.2f, 1.0f}, 0.6f, &error), "shape is written");
+            UHE::RD3d::Model model;
+            if (!model.loadModel(path) || model.GetGeometry().empty() || model.GetGeometry()[0].primitive.empty())
+            {
+                check(false, "shape loads");
+                continue;
+            }
+            const auto& prim = model.GetGeometry()[0].primitive[0];
+            check(prim.indices.size() == c.indices, "every triangle is there");
+            check(prim.vertices.size() == c.vertices, "one vertex per face corner");
+            bool outward = true;
+            for (const auto& v : prim.vertices)
+            {
+                // Each face's normal points the same way as its centre does from the origin.
+                const glm::vec3 n = v.normal;
+                outward &= std::fabs(glm::length(n) - 1.0f) < 1e-4f &&
+                           (c.shape == UHE::PrimitiveShape::Plane ? n.y > 0.99f : glm::dot(n, v.position) > 0.0f);
+            }
+            check(outward, "normals are unit length and face outwards");
+            check(!model.GetMaterials().empty() &&
+                      closeTo(glm::vec3(model.GetMaterials()[0].BaseColorFactor), glm::vec3(0.8f, 0.4f, 0.2f)),
+                  "the material carries the colour");
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    section("a truncated buffer is refused, not read past its end");
+    {
+        // A .bin cut short (a broken download or copy): every view past the
+        // cut used to hand fastgltf an empty span that it indexed anyway, an
+        // abort in a checked build and a wild read in Release.
+        AssetSpec spec;
+        spec.meshCount = 2;
+        const fs::path path = writeAsset(dir, "truncated.gltf", spec);
+        const fs::path bin = dir.path() / "truncated.bin";
+        std::error_code ec;
+        fs::resize_file(bin, fs::file_size(bin) / 3, ec);
+        check(!ec, "the buffer is cut to a third");
+
+        UHE::RD3d::Model model;
+        check(!model.loadModel(path), "the damaged model is refused");
+        check(model.GetMesh().empty() && model.GetGeometry().empty(), "nothing of it is kept");
+
+        UHE::RD3d::Model intact;
+        check(intact.loadModel(writeAsset(dir, "intact.gltf", spec)), "the same model, whole, still loads");
+    }
+
     // =====================================================================
     // Materials. Every default here is one the spec defines and that is easy to
     // get wrong by habit - emissive being black rather than white is the one
@@ -1701,6 +1775,65 @@ int main()
             check(prim.indices.size() % 3 == 0, "index count is a whole number of triangles");
             check(prim.indices.size() / 3 == Quad::kIndexCount / 3,
                   "triangle count is unchanged by tangent generation");
+        }
+    }
+
+    section("a skinned mesh stands on its skeleton without an animation");
+    {
+        // glTF places a skinned mesh by its joints and ignores the mesh node's
+        // own transform. Exports often put a Z-up correction on that node
+        // (here: 90 degrees about X); applying it laid characters on their
+        // backs. The skin's rest palette (joint world x inverse bind) is what
+        // the renderer draws with when no clip plays.
+        const fs::path bin = dir.path() / "rest_pose_skin.bin";
+        {
+            std::vector<float> data = {// POSITION: one triangle, 3 x vec3
+                                       0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                       // WEIGHTS_0: all on joint 0, 3 x vec4
+                                       1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                                       // inverse bind matrix of joint 0 (at y = 1): translate(0, -1, 0), column-major
+                                       1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                                       -1.0f, 0.0f, 1.0f};
+            std::vector<u8> joints(12, 0); // JOINTS_0: 3 x u8vec4, all joint 0
+            std::ofstream out(bin, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(data.data()), 36 + 48);
+            out.write(reinterpret_cast<const char*>(joints.data()), 12);
+            out.write(reinterpret_cast<const char*>(data.data() + 21), 64);
+        }
+        const fs::path path = dir.path() / "rest_pose_skin.gltf";
+        {
+            std::ofstream out(path);
+            out << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
+"nodes":[{"mesh":0,"skin":0,"rotation":[0.7071068,0,0,0.7071068]},{"name":"joint","translation":[0,1,0]}],
+"skins":[{"joints":[1],"inverseBindMatrices":3}],
+"meshes":[{"primitives":[{"attributes":{"POSITION":0,"WEIGHTS_0":1,"JOINTS_0":2}}]}],
+"buffers":[{"uri":"rest_pose_skin.bin","byteLength":160}],
+"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":48},
+{"buffer":0,"byteOffset":84,"byteLength":12},{"buffer":0,"byteOffset":96,"byteLength":64}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+{"bufferView":1,"componentType":5126,"count":3,"type":"VEC4"},
+{"bufferView":2,"componentType":5121,"count":3,"type":"VEC4"},
+{"bufferView":3,"componentType":5126,"count":1,"type":"MAT4"}]})";
+        }
+
+        UHE::RD3d::Model model;
+        if (check(model.loadModel(path), "skinned model with a rotated mesh node loads"))
+        {
+            check(model.GetMesh().size() == 1 && model.GetMesh()[0].skinIndex == 0,
+                  "the mesh records the skin it deforms with");
+            const UHE::RD3d::Skin* skin = model.GetSkin(0);
+            check(skin != nullptr && skin->RestPalette.size() == 1, "the skin has one rest matrix per joint");
+            if (skin != nullptr && skin->RestPalette.size() == 1)
+            {
+                // Joint at y = 1 times its inverse bind: the identity, so the
+                // triangle stands where it was authored, not rotated by its node.
+                const glm::mat4& rest = skin->RestPalette[0];
+                float error = 0.0f;
+                for (int c = 0; c < 4; ++c)
+                    for (int r = 0; r < 4; ++r)
+                        error = std::max(error, std::abs(rest[c][r] - (c == r ? 1.0f : 0.0f)));
+                check(error < 1e-5f, "the rest palette is joint world x inverse bind (identity here)");
+            }
         }
     }
 
@@ -3155,6 +3288,227 @@ int main()
         const UHE::RHI::SamplerDesc desc;
         check(desc.maxAnisotropy == 1, "anisotropy defaults to off (1)");
         check(desc.maxLod == 1000.0f, "maxLod defaults to VK_LOD_CLAMP_NONE (whole chain)");
+    }
+
+    section("cooked container: sections round-trip and damage is caught (issue #45)");
+    {
+        using namespace UHE::Cooked;
+        BinaryWriter w;
+        w.Put<u32>(7);
+        w.PutString("hello");
+        w.PutVector(std::vector<float>{1.0f, 2.0f, 3.0f});
+        std::vector<u8> big(100000, 42); // compresses
+        Writer writer;
+        writer.AddSection(FourCC("SMAL"), w.Take());
+        writer.AddSection(FourCC("BIG_"), big);
+        writer.AddSection(FourCC("RAW_"), {1, 2, 3}, false);
+        const fs::path file = dir.path() / "container.cooked";
+        std::string error;
+        check(writer.Write(file, FourCC("TEST"), 0x1234, &error), "the container writes");
+
+        Reader reader;
+        if (check(reader.Open(file, &error), "it opens: " + error))
+        {
+            check(reader.AssetType() == FourCC("TEST") && reader.SourceHash() == 0x1234 &&
+                      reader.Version() == kFormatVersion,
+                  "header fields read back");
+            check(reader.Sections().size() == 3 && reader.Sections()[1].Compression == Codec::Zstd &&
+                      reader.Sections()[1].StoredSize < 1000,
+                  "a compressible section is stored with zstd");
+            for (const SectionInfo& info : reader.Sections())
+                check(info.Offset % 16 == 0, "section " + FourCCName(info.Id) + " is 16-byte aligned");
+            std::vector<u8> bytes;
+            check(reader.ReadSection(FourCC("BIG_"), bytes, &error) && bytes == big, "zstd section decompresses");
+            check(reader.ReadSection(FourCC("SMAL"), bytes, &error), "small section reads");
+            BinaryReader r(bytes);
+            std::vector<float> floats;
+            const u32 seven = r.Get<u32>();
+            const std::string hello = r.GetString();
+            r.GetVector(floats);
+            check(r.Ok() && seven == 7 && hello == "hello" && floats == std::vector<float>{1.0f, 2.0f, 3.0f} &&
+                      r.AtEnd(),
+                  "values read back as written");
+            (void)r.Get<u32>();
+            check(!r.Ok(), "reading past the end fails the reader instead of reading garbage");
+            check(!reader.ReadSection(FourCC("NONE"), bytes, &error), "a missing section is an error");
+        }
+
+        // Damage: one flipped byte in a section, a wrong magic, a newer version, another byte order.
+        std::vector<u8> original;
+        {
+            std::ifstream in(file, std::ios::binary);
+            original.assign(std::istreambuf_iterator<char>(in), {});
+        }
+        auto damaged = original;
+        damaged.back() ^= 0xFF; // inside RAW_, the last section
+        Reader corrupt;
+        std::vector<u8> bytes;
+        check(corrupt.OpenMemory(damaged, &error) && !corrupt.ReadSection(FourCC("RAW_"), bytes, &error) &&
+                  error.find("checksum") != std::string::npos,
+              "a flipped byte fails the section's checksum");
+        damaged = original;
+        damaged[0] = 'X';
+        check(!Reader().OpenMemory(damaged, &error), "a wrong magic is refused");
+        damaged = original;
+        damaged[8] = 99; // version
+        check(!Reader().OpenMemory(damaged, &error) && error.find("newer") != std::string::npos,
+              "a newer format version is refused: recook");
+        damaged = original;
+        std::swap(damaged[12], damaged[15]);
+        std::swap(damaged[13], damaged[14]);
+        check(!Reader().OpenMemory(damaged, &error) && error.find("byte order") != std::string::npos,
+              "a file from the other byte order is refused");
+        damaged.assign(original.begin(), original.begin() + 70);
+        check(!Reader().OpenMemory(damaged, &error), "a truncated table is refused");
+    }
+
+    section("a cooked model loads the same model as its glTF (issue #45)");
+    {
+        AssetSpec spec;
+        spec.meshCount = 2;
+        spec.materialCount = 2;
+        spec.nested = true;
+        spec.lights.push_back({"point", {1.0, 0.5, 0.25}, 3.0, true, 7.0});
+        spec.nodeLightIndices = {0, -1};
+        MaterialSpec ms;
+        ms.baseColorTexture = true;
+        ms.metallicRoughnessTexture = true;
+        ms.emissiveTexture = true;
+        ms.doubleSided = true;
+        ms.alphaMode = "MASK";
+        ms.alphaCutoff = 0.3f;
+        spec.material = ms;
+        const fs::path source = writeAsset(dir, "cook_me.gltf", spec);
+
+        UHE::RD3d::ModelLoadOptions cookOptions;
+        cookOptions.keepTextureSources = true;
+        cookOptions.upload = false;
+        UHE::StubReset();
+        UHE::RD3d::Model original;
+        if (check(original.loadModel(source, cookOptions), "the source loads for cooking"))
+        {
+            check(UHE::StubTextureCreateCallCount() == 0, "cooking creates no GPU texture");
+            check(!original.GetTextureSources().empty() && !original.GetTextureSources()[0].Bytes.empty(),
+                  "the encoded images are kept");
+            const fs::path cooked = UHE::RD3d::Model::CookedPathFor(source);
+            std::string error;
+            check(original.SaveCooked(cooked, UHE::Cooked::HashFile(source), &error), "it cooks: " + error);
+
+            UHE::StubReset();
+            UHE::RD3d::Model loaded;
+            if (check(loaded.LoadCooked(cooked, {}, &error), "the cooked model loads: " + error))
+            {
+                const auto& a = original;
+                const auto& b = loaded;
+                bool geometry = a.GetGeometry().size() == b.GetGeometry().size();
+                for (std::size_t g = 0; geometry && g < a.GetGeometry().size(); ++g)
+                {
+                    const auto& pa = a.GetGeometry()[g].primitive;
+                    const auto& pb = b.GetGeometry()[g].primitive;
+                    geometry = pa.size() == pb.size();
+                    for (std::size_t p = 0; geometry && p < pa.size(); ++p)
+                        geometry = pa[p].indices == pb[p].indices && pa[p].vertices.size() == pb[p].vertices.size() &&
+                                   std::memcmp(pa[p].vertices.data(), pb[p].vertices.data(),
+                                               pa[p].vertices.size() * sizeof(UHE::RD3d::Vertex)) == 0 &&
+                                   pa[p].materialIndex == pb[p].materialIndex;
+                }
+                check(geometry, "geometry is identical, vertex for vertex");
+                check(a.GetMesh().size() == b.GetMesh().size() && a.GetNodes().size() == b.GetNodes().size() &&
+                          a.GetRootNodes() == b.GetRootNodes(),
+                      "meshes, nodes and roots match");
+                bool nodes = true;
+                for (std::size_t n = 0; nodes && n < a.GetNodes().size(); ++n)
+                    nodes = a.GetNodes()[n].Name == b.GetNodes()[n].Name &&
+                            a.GetNodes()[n].Parent == b.GetNodes()[n].Parent &&
+                            a.GetNodes()[n].Children == b.GetNodes()[n].Children &&
+                            a.GetNodes()[n].LightIndex == b.GetNodes()[n].LightIndex &&
+                            a.GetNodes()[n].WorldTransform == b.GetNodes()[n].WorldTransform;
+                check(nodes, "the node tree and its transforms match");
+                check(b.GetPunctualLights().size() == 1 && b.GetPunctualLights()[0].Range == 7.0f &&
+                          closeTo(b.GetPunctualLights()[0].Color, a.GetPunctualLights()[0].Color),
+                      "lights match");
+                const auto& ma = a.GetMaterials();
+                const auto& mb = b.GetMaterials();
+                check(mb.size() == 2 && mb[0].DoubleSided && mb[0].Alpha == UHE::RD3d::AlphaMode::Mask &&
+                          mb[0].AlphaCutoff == ma[0].AlphaCutoff && mb[0].BaseColorFactor == ma[0].BaseColorFactor,
+                      "material values match");
+                check(b.GetMaterialTextureSources() == a.GetMaterialTextureSources(),
+                      "each slot samples the same image");
+                check(UHE::StubTextureCreateCallCount() == static_cast<int>(a.GetTextureSources().size()),
+                      "every stored image becomes one texture (" + std::to_string(UHE::StubTextureCreateCallCount()) +
+                          ")");
+                bool samplers = UHE::StubRequestedSamplers().size() == a.GetTextureSources().size();
+                for (std::size_t t = 0; samplers && t < a.GetTextureSources().size(); ++t)
+                    samplers =
+                        UHE::StubRequestedSamplers()[t].colorSpace == a.GetTextureSources()[t].Sampler.colorSpace &&
+                        UHE::StubRequestedSamplers()[t].wrapS == a.GetTextureSources()[t].Sampler.wrapS;
+                check(samplers, "each texture keeps its sampler and colour space");
+                bool drawable = !b.GetMesh().empty();
+                for (const auto& mesh : b.GetMesh())
+                    for (const auto& prim : mesh.primitive)
+                        drawable = drawable && prim.VertexBuffer != nullptr && prim.IndexCount > 0;
+                check(drawable, "the cooked model is uploaded and every node can draw");
+            }
+
+            // loadModel prefers the cook while it is newer than the source...
+            UHE::RD3d::Model viaPath;
+            fs::last_write_time(cooked, fs::last_write_time(source) + std::chrono::seconds(5));
+            UHE::StubReset();
+            check(viaPath.loadModel(source) && viaPath.GetGeometry().size() == GeometryCount(original),
+                  "loadModel reads the newer cook");
+            // ...and ignores it once the source changed after it.
+            fs::last_write_time(cooked, fs::last_write_time(source) - std::chrono::seconds(5));
+            std::vector<u8> before;
+            {
+                std::ifstream in(cooked, std::ios::binary);
+                before.assign(std::istreambuf_iterator<char>(in), {});
+            }
+            {
+                std::ofstream out(cooked, std::ios::binary | std::ios::trunc);
+                out << "not a cook";
+            }
+            fs::last_write_time(cooked, fs::last_write_time(source) + std::chrono::seconds(5));
+            check(viaPath.loadModel(source) && !viaPath.GetGeometry().empty(),
+                  "a damaged cook falls back to the source instead of failing");
+            // An exported game: the cook alone, no glTF next to it.
+            {
+                std::ofstream out(cooked, std::ios::binary | std::ios::trunc);
+                out.write(reinterpret_cast<const char*>(before.data()), static_cast<std::streamsize>(before.size()));
+            }
+            const fs::path shipped = dir.path() / "shipped";
+            fs::create_directories(shipped);
+            fs::copy_file(cooked, UHE::RD3d::Model::CookedPathFor(shipped / "cook_me.gltf"),
+                          fs::copy_options::overwrite_existing);
+            UHE::RD3d::Model game;
+            check(game.loadModel(shipped / "cook_me.gltf") && !game.GetMesh().empty(),
+                  "with only the cook shipped, the glTF path still loads (no glTF parsed)");
+        }
+    }
+
+    section("a skinned model cooks with its skin and rest palette (issue #45)");
+    {
+        const fs::path source = dir.path() / "rest_pose_skin.gltf";
+        UHE::RD3d::ModelLoadOptions cookOptions;
+        cookOptions.keepTextureSources = true;
+        cookOptions.upload = false;
+        UHE::RD3d::Model original;
+        std::string error;
+        if (check(original.loadModel(source, cookOptions), "the skinned source loads"))
+        {
+            const fs::path cooked = dir.path() / "skin.uhemodel";
+            check(original.SaveCooked(cooked, 0, &error), "it cooks");
+            UHE::RD3d::Model loaded;
+            check(loaded.loadModel(cooked), "a .uhemodel path loads directly");
+            check(loaded.GetSkins().size() == original.GetSkins().size() && !loaded.GetSkins().empty() &&
+                      loaded.GetSkins()[0].RestPalette == original.GetSkins()[0].RestPalette &&
+                      loaded.GetSkins()[0].JointNodes == original.GetSkins()[0].JointNodes,
+                  "skins and rest palettes match");
+            check(loaded.GetMesh().size() == original.GetMesh().size() &&
+                      loaded.GetMesh()[0].skinIndex == original.GetMesh()[0].skinIndex,
+                  "the mesh keeps its skin");
+            UHE::RD3d::Model unsaved;
+            check(!unsaved.SaveCooked(cooked, 0, &error), "a model loaded without its sources refuses to cook");
+        }
     }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);

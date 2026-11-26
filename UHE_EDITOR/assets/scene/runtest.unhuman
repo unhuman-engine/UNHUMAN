@@ -101,7 +101,7 @@ Entities:
       ProjectionType: 1
       PerspectiveFOV: 0.7853982
       PerspectiveNear: 0.01
-      PerspectiveFar: 1
+      PerspectiveFar: 1000
       OrthographicSize: 2
       OrthographicNear: -1
       OrthographicFar: 1

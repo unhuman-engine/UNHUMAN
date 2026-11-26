@@ -58,6 +58,9 @@ struct SamplerDesc
     {
         Linear,
         SRGB,
+        /// Linear half floats (RGBA16F), values above 1 kept: .hdr images.
+        /// The pixels handed to the upload are 4 x 16-bit halves, not bytes.
+        HalfFloat,
     };
 
     ColorSpace colorSpace = ColorSpace::SRGB;

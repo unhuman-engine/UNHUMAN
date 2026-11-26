@@ -10,6 +10,7 @@
 #include "Platform/Vulkan/VulkanDescriptorManager.h"
 #include "Platform/Vulkan/VulkanExtensionCheck.h"
 #include "Platform/Vulkan/VulkanFrameContext.h"
+#include "Platform/Vulkan/VulkanGpuTimer.h"
 #include "Platform/Vulkan/VulkanInstance.h"
 #include "Platform/Vulkan/VulkanLogicalDevice.h"
 #include "Platform/Vulkan/VulkanPhysicalDevice.h"
@@ -95,6 +96,9 @@ public:
     [[nodiscard]] bool FrameSkipped() const override { return m_FrameSkipped; }
     /// Recreates the swapchain after the next present (\copydoc RHIDevice::OnFramebufferResized).
     void OnFramebufferResized() override { m_FramebufferResized = true; }
+    /// \copydoc RHIDevice::SetVSync
+    void SetVSync(bool enabled) override;
+    [[nodiscard]] bool IsVSync() const override { return m_VSync; }
 
     // Set by VulkanCommandBuffer::BeginRenderPass when a frame's legacy scene
     // pass rendered directly into the swapchain (leaving it in the Present
@@ -138,6 +142,13 @@ public:
     [[nodiscard]] inline VulkanSwapChain& getSwapChainClass() { return m_SwapChain; }
     /// \copydoc RHIDevice::GetSwapchainFormat
     [[nodiscard]] TextureFormat GetSwapchainFormat() override { return m_SwapChain.GetSwapchainFormat(); }
+    /// \copydoc RHIDevice::GetMaxPushConstantsSize
+    [[nodiscard]] u32 GetMaxPushConstantsSize() const override;
+    /// \copydoc RHIDevice::GetGpuPassTimings
+    [[nodiscard]] const std::vector<GpuPassTiming>& GetGpuPassTimings() const override { return m_GpuTimer.Last(); }
+    /// @brief Timestamps around one frame graph pass's recording (the bridge calls these).
+    void BeginGpuPass(const std::string& name);
+    void EndGpuPass();
     [[nodiscard]] bool SupportsWireframe() const override { return m_ExtensionCheck.SupportsWireframe(); }
     [[nodiscard]] inline const u32& ImageIndex() { return m_ImageIndex; }
     [[nodiscard]] inline VulkanDescriptorManager* GetDescriptorManager() { return &m_DescriptorManager; }
@@ -194,6 +205,7 @@ private:
     u32 m_CurrentFrame = 0;
     u32 m_ImageIndex = 0; // Current swapchain image index
     bool m_FramebufferResized = false;
+    bool m_VSync = true;                    // FIFO when set; MAILBOX or IMMEDIATE otherwise
     bool m_FrameSkipped = false;            // acquire failed → recreate the swapchain and skip the frame
     bool m_FrameGraphFailed = false;        // graph compile/resolve failed → recovery path
     bool m_LegacySwapchainRendered = false; // legacy BeginRenderPass wrote the swapchain this frame
@@ -201,6 +213,7 @@ private:
     // Render graph execution (§8.5/§8.6): resolves RG handles to the live
     // swapchain images each frame and encodes compiler-derived barriers.
     VulkanRenderGraphExecutor m_RenderGraphExecutor;
+    VulkanGpuTimer m_GpuTimer;
     VulkanBarrierEncoder m_BarrierEncoder;
 
     // Frame graph + TaskGraph mapping (§14 step 5): per-frame declare →

@@ -366,6 +366,22 @@ template <typename Component> static void DrawBodyTypeProperty(Component& compon
     }
 }
 
+/**
+ * @brief One Add Component entry, adding \p T to \p entity when clicked.
+ *
+ * Greyed out rather than hidden once the entity has \p T: adding a component
+ * twice trips entt's "Slot not available" assert and aborts the editor, and a
+ * disabled entry still shows the component exists.
+ */
+template <typename T> static void AddComponentMenuItem(Entity entity, const char* label)
+{
+    if (ImGui::MenuItem(label, nullptr, false, !entity.HasComponent<T>()))
+    {
+        entity.AddComponent<T>();
+        ImGui::CloseCurrentPopup();
+    }
+}
+
 /// @brief Width left for a path field once \p buttonsWidth of buttons share its line.
 static float PathFieldWidth(float buttonsWidth, int buttonCount)
 {
@@ -424,94 +440,68 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
         EditorUI::SearchField("##AddComponentSearch", addFilter, sizeof(addFilter), "Search components...", 260.0f);
         ImGui::Separator();
 
-        if (match("Camera") && ImGui::MenuItem("Camera"))
-        {
-            m_SelectionContext.AddComponent<CameraComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Sprite Renderer") && ImGui::MenuItem("Sprite Renderer"))
-        {
-            m_SelectionContext.AddComponent<SpriteRendererComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Text Node") && ImGui::MenuItem("Text Node"))
-        {
-            m_SelectionContext.AddComponent<TextComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Sprite Animation") && ImGui::MenuItem("Sprite Animation"))
-        {
-            m_SelectionContext.AddComponent<SpriteAnimationComponent>();
-            ImGui::CloseCurrentPopup();
-        }
+        if (match("Camera"))
+            AddComponentMenuItem<CameraComponent>(m_SelectionContext, "Camera");
+        if (match("Sprite Renderer"))
+            AddComponentMenuItem<SpriteRendererComponent>(m_SelectionContext, "Sprite Renderer");
+        if (match("Text Node"))
+            AddComponentMenuItem<TextComponent>(m_SelectionContext, "Text Node");
+        if (match("Sprite Animation"))
+            AddComponentMenuItem<SpriteAnimationComponent>(m_SelectionContext, "Sprite Animation");
         ImGui::Separator();
-        if (match("Rigid Body 2D") && ImGui::MenuItem("Rigid Body 2D"))
-        {
-            m_SelectionContext.AddComponent<RigidBody2DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Box Collider 2D") && ImGui::MenuItem("Box Collider 2D"))
-        {
-            m_SelectionContext.AddComponent<BoxColliderComponent>();
-            ImGui::CloseCurrentPopup();
-        }
+        if (match("Rigid Body 2D"))
+            AddComponentMenuItem<RigidBody2DComponent>(m_SelectionContext, "Rigid Body 2D");
+        if (match("Box Collider 2D"))
+            AddComponentMenuItem<BoxColliderComponent>(m_SelectionContext, "Box Collider 2D");
         ImGui::Separator();
-        if (match("Model 3D") && ImGui::MenuItem("Model 3D"))
-        {
-            m_SelectionContext.AddComponent<Model3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Rigid Body 3D") && ImGui::MenuItem("Rigid Body 3D"))
-        {
-            m_SelectionContext.AddComponent<RigidBody3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Box Collider 3D") && ImGui::MenuItem("Box Collider 3D"))
-        {
-            m_SelectionContext.AddComponent<BoxCollider3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Sphere Collider 3D") && ImGui::MenuItem("Sphere Collider 3D"))
-        {
-            m_SelectionContext.AddComponent<SphereCollider3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Capsule Collider 3D") && ImGui::MenuItem("Capsule Collider 3D"))
-        {
-            m_SelectionContext.AddComponent<CapsuleCollider3DComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Animator 3D") && ImGui::MenuItem("Animator 3D"))
-        {
-            m_SelectionContext.AddComponent<AnimatorComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Audio Source") && ImGui::MenuItem("Audio Source"))
-        {
-            m_SelectionContext.AddComponent<AudioSourceComponent>();
-            ImGui::CloseCurrentPopup();
-        }
+        if (match("Model 3D"))
+            AddComponentMenuItem<Model3DComponent>(m_SelectionContext, "Model 3D");
+        if (match("Rigid Body 3D"))
+            AddComponentMenuItem<RigidBody3DComponent>(m_SelectionContext, "Rigid Body 3D");
+        if (match("Box Collider 3D"))
+            AddComponentMenuItem<BoxCollider3DComponent>(m_SelectionContext, "Box Collider 3D");
+        if (match("Sphere Collider 3D"))
+            AddComponentMenuItem<SphereCollider3DComponent>(m_SelectionContext, "Sphere Collider 3D");
+        if (match("Capsule Collider 3D"))
+            AddComponentMenuItem<CapsuleCollider3DComponent>(m_SelectionContext, "Capsule Collider 3D");
+        if (match("Animator 3D"))
+            AddComponentMenuItem<AnimatorComponent>(m_SelectionContext, "Animator 3D");
+        if (match("Audio Source"))
+            AddComponentMenuItem<AudioSourceComponent>(m_SelectionContext, "Audio Source");
+        // Foliage bends a model's vertices, so it is offered only where there is a model to bend.
+        if (m_SelectionContext.HasComponent<Model3DComponent>() && match("Foliage"))
+            AddComponentMenuItem<FoliageComponent>(m_SelectionContext, "Foliage");
         ImGui::Separator();
-        if (match("Directional Light") && ImGui::MenuItem("Directional Light"))
-        {
-            m_SelectionContext.AddComponent<DirectionalLightComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Point Light") && ImGui::MenuItem("Point Light"))
-        {
-            m_SelectionContext.AddComponent<PointLightComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Script") && ImGui::MenuItem("Script (Lua)"))
-        {
-            m_SelectionContext.AddComponent<ScriptComponent>();
-            ImGui::CloseCurrentPopup();
-        }
-        if (match("Spot Light") && ImGui::MenuItem("Spot Light"))
-        {
-            m_SelectionContext.AddComponent<SpotLightComponent>();
-            ImGui::CloseCurrentPopup();
-        }
+        if (match("Directional Light"))
+            AddComponentMenuItem<DirectionalLightComponent>(m_SelectionContext, "Directional Light");
+        if (match("Point Light"))
+            AddComponentMenuItem<PointLightComponent>(m_SelectionContext, "Point Light");
+        if (match("Script"))
+            AddComponentMenuItem<ScriptComponent>(m_SelectionContext, "Script (Lua)");
+        if (match("Spot Light"))
+            AddComponentMenuItem<SpotLightComponent>(m_SelectionContext, "Spot Light");
+        if (match("Area Light"))
+            AddComponentMenuItem<AreaLightComponent>(m_SelectionContext, "Area Light");
+        if (match("Water"))
+            AddComponentMenuItem<WaterComponent>(m_SelectionContext, "Water");
+        if (match("Wind"))
+            AddComponentMenuItem<WindComponent>(m_SelectionContext, "Wind");
+        if (match("Terrain"))
+            AddComponentMenuItem<TerrainComponent>(m_SelectionContext, "Terrain");
+        if (match("Sequencer"))
+            AddComponentMenuItem<SequencerComponent>(m_SelectionContext, "Sequencer");
+        if (match("Joint 3D"))
+            AddComponentMenuItem<Joint3DComponent>(m_SelectionContext, "Joint 3D");
+        if (match("UI Rect"))
+            AddComponentMenuItem<UIRectComponent>(m_SelectionContext, "UI Rect");
+        if (match("UI Image"))
+            AddComponentMenuItem<UIImageComponent>(m_SelectionContext, "UI Image");
+        if (match("UI Text"))
+            AddComponentMenuItem<UITextComponent>(m_SelectionContext, "UI Text");
+        if (match("UI Button"))
+            AddComponentMenuItem<UIButtonComponent>(m_SelectionContext, "UI Button");
+        if (match("UI Progress Bar"))
+            AddComponentMenuItem<UIProgressBarComponent>(m_SelectionContext, "UI Progress Bar");
         ImGui::EndPopup();
     }
 
@@ -660,6 +650,97 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             ImGui::SameLine();
             ImGui::Checkbox("Z", &components.AllowedDOFs[5]);
             ImGui::PopID();
+        });
+
+    ::UHE::DrawComponents<Joint3DComponent>(
+        "Joint 3D", entity,
+        [this](Joint3DComponent& joint)
+        {
+            static constexpr const char* kTypes[] = {"Fixed", "Hinge", "Slider", "Ball"};
+            PropertyLabel("Type", "Fixed welds; Hinge rotates about the axis; Slider moves along it; Ball pivots.");
+            int type = static_cast<int>(joint.Type);
+            if (ImGui::Combo("##JointType", &type, kTypes, IM_ARRAYSIZE(kTypes)))
+                joint.Type = static_cast<Joint3DComponent::JointType>(type);
+
+            // The other body: any entity with a 3D rigid body, or the world.
+            PropertyLabel("Connected To", "The other body. World pins this one in place.");
+            std::string current = "World";
+            if (joint.ConnectedEntity != 0)
+            {
+                Entity other = m_Context->GetEntityWithUUID(joint.ConnectedEntity);
+                current = other ? other.GetComponent<TagComponent>().Tag : "(missing)";
+            }
+            if (ImGui::BeginCombo("##JointConnected", current.c_str()))
+            {
+                if (ImGui::Selectable("World", joint.ConnectedEntity == 0))
+                    joint.ConnectedEntity = 0;
+                auto bodies = m_Context->GetRegistry().view<RigidBody3DComponent, TagComponent, IDComponent>();
+                for (auto handle : bodies)
+                {
+                    const u64 uuid = bodies.get<IDComponent>(handle).ID;
+                    if (handle == static_cast<entt::entity>(m_SelectionContext))
+                        continue;
+                    ImGui::PushID(static_cast<int>(uuid & 0x7fffffff));
+                    if (ImGui::Selectable(bodies.get<TagComponent>(handle).Tag.c_str(), joint.ConnectedEntity == uuid))
+                        joint.ConnectedEntity = uuid;
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+
+            DrawVec3Control("Anchor", joint.Anchor);
+            if (joint.Type == Joint3DComponent::JointType::Hinge || joint.Type == Joint3DComponent::JointType::Slider)
+            {
+                DrawVec3Control("Axis", joint.Axis);
+                const bool hinge = joint.Type == Joint3DComponent::JointType::Hinge;
+                PropertyLabel("Limits");
+                ImGui::Checkbox("##JointLimits", &joint.LimitsEnabled);
+                if (joint.LimitsEnabled)
+                {
+                    PropertyLabel(hinge ? "Range (deg)" : "Range (m)");
+                    float range[2] = {hinge ? glm::degrees(joint.LimitMin) : joint.LimitMin,
+                                      hinge ? glm::degrees(joint.LimitMax) : joint.LimitMax};
+                    if (ImGui::DragFloat2("##JointRange", range, hinge ? 0.5f : 0.01f, hinge ? -180.0f : -100.0f,
+                                          hinge ? 180.0f : 100.0f, "%.2f"))
+                    {
+                        joint.LimitMin = hinge ? glm::radians(std::min(range[0], 0.0f)) : std::min(range[0], 0.0f);
+                        joint.LimitMax = hinge ? glm::radians(std::max(range[1], 0.0f)) : std::max(range[1], 0.0f);
+                    }
+                }
+                PropertyLabel(hinge ? "Friction (N m)" : "Friction (N)");
+                ImGui::DragFloat("##JointFriction", &joint.Friction, 0.01f, 0.0f, 10000.0f);
+
+                static constexpr const char* kMotors[] = {"Off", "Velocity", "Position"};
+                PropertyLabel("Motor", "Scripts drive it with SetJointMotor; read back with GetJointPosition.");
+                int motor = static_cast<int>(joint.Motor);
+                if (ImGui::Combo("##JointMotor", &motor, kMotors, IM_ARRAYSIZE(kMotors)))
+                    joint.Motor = static_cast<Joint3DComponent::MotorMode>(motor);
+                if (joint.Motor != Joint3DComponent::MotorMode::Off)
+                {
+                    const bool velocity = joint.Motor == Joint3DComponent::MotorMode::Velocity;
+                    PropertyLabel(velocity ? (hinge ? "Target (rad/s)" : "Target (m/s)")
+                                           : (hinge ? "Target (rad)" : "Target (m)"));
+                    ImGui::DragFloat("##JointTarget", &joint.MotorTarget, 0.01f);
+                    PropertyLabel(hinge ? "Max Torque" : "Max Force");
+                    ImGui::DragFloat("##JointMaxForce", &joint.MotorMaxForce, 0.5f, 0.0f, 1e6f);
+                    if (!velocity)
+                    {
+                        PropertyLabel("Stiffness (Hz)");
+                        ImGui::DragFloat("##JointFrequency", &joint.MotorFrequency, 0.05f, 0.0f, 100.0f);
+                        PropertyLabel("Damping");
+                        ImGui::DragFloat("##JointDamping", &joint.MotorDamping, 0.01f, 0.0f, 10.0f);
+                    }
+                }
+                if (joint.RuntimeConstraint != nullptr)
+                {
+                    // In Play: the encoder, read the way a script reads it.
+                    PropertyLabel("Encoder");
+                    if (hinge)
+                        ImGui::Text("%.1f deg, %.2f rad/s", glm::degrees(joint.RuntimePosition), joint.RuntimeVelocity);
+                    else
+                        ImGui::Text("%.3f m, %.3f m/s", joint.RuntimePosition, joint.RuntimeVelocity);
+                }
+            }
         });
 
     ::UHE::DrawComponents<BoxCollider3DComponent>(
@@ -1028,20 +1109,42 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
             PropertyLabel("Intensity");
             ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
+            PropertyLabel("Cast Shadows", "The first directional light with this set casts the scene's shadows. "
+                                          "Tune them in Environment > Shadows.");
+            ImGui::Checkbox("##Cast Shadows", &light.CastShadows);
             PropertyNote("Rotate the entity's Transform to change light direction.");
         });
 
-    ::UHE::DrawComponents<PointLightComponent>("Point Light", entity,
-                                               [](PointLightComponent& light)
-                                               {
-                                                   PropertyLabel("Color");
-                                                   ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
-                                                   PropertyLabel("Intensity");
-                                                   ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f,
-                                                                    100.0f);
-                                                   PropertyLabel("Radius");
-                                                   ImGui::DragFloat("##Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
-                                               });
+    ::UHE::DrawComponents<FoliageComponent>(
+        "Foliage", entity,
+        [entity](FoliageComponent& foliage)
+        {
+            static constexpr const char* kWindHint = "Sways in the scene's wind; see Environment > Wind";
+            PropertyLabel("Bend", kWindHint);
+            ImGui::SliderFloat("##Bend", &foliage.Bend, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("%s", kWindHint);
+            PropertyLabel("Height", "Model-space height where the bend reaches full strength; the base stays put.");
+            ImGui::DragFloat("##Height", &foliage.Height, 0.05f, 0.1f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            UHE::Entity owner = entity;
+            if (!owner.HasComponent<Model3DComponent>())
+                PropertyNote("Requires a 3D Model on the entity.");
+        });
+
+    ::UHE::DrawComponents<PointLightComponent>(
+        "Point Light", entity,
+        [](PointLightComponent& light)
+        {
+            PropertyLabel("Color");
+            ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
+            PropertyLabel("Intensity");
+            ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f);
+            PropertyLabel("Radius");
+            ImGui::DragFloat("##Radius", &light.Radius, 0.5f, 0.0f, 1000.0f);
+            PropertyLabel("Cast Shadows", "Six shadow tiles (one per cube face): the costliest "
+                                          "light to shadow.");
+            ImGui::Checkbox("##Cast Shadows", &light.CastShadows);
+        });
 
     ::UHE::DrawComponents<SpotLightComponent>(
         "Spot Light", entity,
@@ -1063,7 +1166,338 @@ void SceneHierarchyPanel::DrawComponents(Entity entity)
             PropertyLabel("Outer Cone (deg)");
             if (ImGui::DragFloat("##Outer Cone (deg)", &outerDeg, 0.5f, 0.0f, 89.0f))
                 light.OuterConeAngle = glm::radians(glm::max(outerDeg, glm::degrees(light.InnerConeAngle)));
+            PropertyLabel("Cast Shadows", "One shadow tile.");
+            ImGui::Checkbox("##Cast Shadows", &light.CastShadows);
             PropertyNote("Rotate the entity's Transform to aim the cone.");
+        });
+
+    ::UHE::DrawComponents<AreaLightComponent>(
+        "Area Light", entity,
+        [](AreaLightComponent& light)
+        {
+            PropertyLabel("Color");
+            ImGui::ColorEdit3("##Color", glm::value_ptr(light.Color));
+            PropertyLabel("Intensity");
+            ImGui::DragFloat("##Intensity", &light.Intensity, 0.1f, 0.0f, 100.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            // A zero-area panel has no form factor, so the size stops short of 0.
+            PropertyLabel("Width", "Panel size along the entity's local X.");
+            ImGui::DragFloat("##Width", &light.Width, 0.05f, 0.01f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Height", "Panel size along the entity's local Y.");
+            ImGui::DragFloat("##Height", &light.Height, 0.05f, 0.01f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Range", "Distance at which the light fades out.");
+            ImGui::DragFloat("##Range", &light.Range, 0.1f, 0.1f, 200.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Two Sided", "Also light the side behind the panel.");
+            ImGui::Checkbox("##Two Sided", &light.TwoSided);
+            PropertyLabel("Cast Shadows", "One shadow tile, cast from the panel's centre.");
+            ImGui::Checkbox("##Cast Shadows", &light.CastShadows);
+            PropertyNote("Shines along the entity's local -Z; rotate the Transform to aim the panel.");
+        });
+
+    ::UHE::DrawComponents<WaterComponent>(
+        "Water", entity,
+        [](WaterComponent& water)
+        {
+            PropertyLabel("Size", "Extent on the entity's local X and Z, in metres.");
+            ImGui::DragFloat2("##Size", glm::value_ptr(water.Size), 0.1f, 0.1f, 10000.0f, "%.1f",
+                              ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Resolution", "Grid cells per side: vertex detail of the waves.");
+            ImGui::DragInt("##Resolution", &water.Resolution, 1.0f, 8, 512, "%d", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Shallow Color");
+            ImGui::ColorEdit3("##Shallow Color", glm::value_ptr(water.ShallowColor));
+            PropertyLabel("Deep Color");
+            ImGui::ColorEdit3("##Deep Color", glm::value_ptr(water.DeepColor));
+            PropertyLabel("Clarity", "Metres of water before the bottom fades into the deep colour.");
+            ImGui::DragFloat("##Clarity", &water.Clarity, 0.05f, 0.1f, 50.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Wave Height", "Amplitude of the largest wave, in metres.");
+            ImGui::DragFloat("##Wave Height", &water.WaveHeight, 0.01f, 0.0f, 3.0f, "%.2f",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Wave Length", "Wavelength of the largest wave, in metres.");
+            ImGui::DragFloat("##Wave Length", &water.WaveLength, 0.1f, 0.5f, 100.0f, "%.1f",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Wave Speed", "Multiplies the physical (deep water) wave speed.");
+            ImGui::DragFloat("##Wave Speed", &water.WaveSpeed, 0.01f, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Choppiness", "0 = rolling swell, 1 = sharp crests.");
+            ImGui::SliderFloat("##Choppiness", &water.Choppiness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Follow Wind", "Waves travel with the scene's wind; see Environment > Wind.");
+            ImGui::Checkbox("##Follow Wind", &water.FollowWind);
+            // The wind supplies the direction while followed, so the field is shown but not editable.
+            PropertyLabel("Direction (deg)", "Travel direction on the ground plane, used when not following the wind.");
+            ImGui::BeginDisabled(water.FollowWind);
+            ImGui::SliderFloat("##Direction (deg)", &water.Direction, 0.0f, 360.0f, "%.0f",
+                               ImGuiSliderFlags_AlwaysClamp);
+            ImGui::EndDisabled();
+            PropertyLabel("Foam", "Shoreline and crest foam.");
+            ImGui::SliderFloat("##Foam", &water.Foam, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        });
+
+    ::UHE::DrawComponents<UIRectComponent>(
+        "UI Rect", entity,
+        [](UIRectComponent& rect)
+        {
+            // Presets for the anchors people use most; the fields stay editable.
+            struct Preset
+            {
+                const char* Name;
+                glm::vec2 Min, Max, Pivot;
+            };
+            static const Preset kPresets[] = {
+                {"Top Left", {0, 0}, {0, 0}, {0, 0}},
+                {"Top", {0.5f, 0}, {0.5f, 0}, {0.5f, 0}},
+                {"Top Right", {1, 0}, {1, 0}, {1, 0}},
+                {"Left", {0, 0.5f}, {0, 0.5f}, {0, 0.5f}},
+                {"Center", {0.5f, 0.5f}, {0.5f, 0.5f}, {0.5f, 0.5f}},
+                {"Right", {1, 0.5f}, {1, 0.5f}, {1, 0.5f}},
+                {"Bottom Left", {0, 1}, {0, 1}, {0, 1}},
+                {"Bottom", {0.5f, 1}, {0.5f, 1}, {0.5f, 1}},
+                {"Bottom Right", {1, 1}, {1, 1}, {1, 1}},
+                {"Stretch", {0, 0}, {1, 1}, {0.5f, 0.5f}},
+                {"Stretch Top", {0, 0}, {1, 0}, {0.5f, 0}},
+                {"Stretch Bottom", {0, 1}, {1, 1}, {0.5f, 1}},
+            };
+            PropertyLabel("Anchor Preset", "Pins the element to a point or edge of its parent (or the screen).");
+            if (ImGui::BeginCombo("##AnchorPreset", "Choose..."))
+            {
+                for (const Preset& preset : kPresets)
+                {
+                    if (ImGui::Selectable(preset.Name))
+                    {
+                        rect.AnchorMin = preset.Min;
+                        rect.AnchorMax = preset.Max;
+                        rect.Pivot = preset.Pivot;
+                        rect.Position = glm::vec2(0.0f);
+                        // Stretched axes start with no margin.
+                        if (preset.Min.x != preset.Max.x)
+                            rect.Size.x = 0.0f;
+                        if (preset.Min.y != preset.Max.y)
+                            rect.Size.y = 0.0f;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            PropertyLabel("Position", "Pixels from the anchor to the pivot (y down).");
+            ImGui::DragFloat2("##UIPosition", glm::value_ptr(rect.Position), 1.0f);
+            PropertyLabel("Size", "Pixels; on a stretched axis, added to the stretched size (negative = margins).");
+            ImGui::DragFloat2("##UISize", glm::value_ptr(rect.Size), 1.0f);
+            PropertyLabel("Anchor Min", "Fractions of the parent: (0,0) top left, (1,1) bottom right.");
+            ImGui::DragFloat2("##AnchorMin", glm::value_ptr(rect.AnchorMin), 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Anchor Max");
+            ImGui::DragFloat2("##AnchorMax", glm::value_ptr(rect.AnchorMax), 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Pivot", "The point of the element that sits at Position.");
+            ImGui::DragFloat2("##Pivot", glm::value_ptr(rect.Pivot), 0.01f, 0.0f, 1.0f);
+            PropertyLabel("Order", "Among siblings: higher draws on top and gets the mouse first.");
+            ImGui::DragInt("##UIOrder", &rect.Order);
+            PropertyLabel("Visible");
+            ImGui::Checkbox("##UIVisible", &rect.Visible);
+        });
+
+    ::UHE::DrawComponents<UIImageComponent>(
+        "UI Image", entity,
+        [](UIImageComponent& image)
+        {
+            PropertyLabel("Color", "Multiplies the image; a button replaces it with its state colours.");
+            ImGui::ColorEdit4("##UIImageColor", glm::value_ptr(image.Color));
+            PropertyLabel("Image", "A texture in the project's assets; empty for a plain box. Drop one here.");
+            char path[512];
+            std::snprintf(path, sizeof(path), "%s", image.TexturePath.c_str());
+            if (ImGui::InputTextWithHint("##UIImagePath", "none", path, sizeof(path),
+                                         ImGuiInputTextFlags_EnterReturnsTrue))
+                image.TexturePath = path;
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("Content_Browser_item"))
+                {
+                    const std::filesystem::path dropped(static_cast<const char*>(payload->Data));
+                    std::string stored = dropped.generic_string();
+                    std::error_code ec;
+                    for (const auto& [scheme, root] : Vfs::Get().GetMounts())
+                    {
+                        const std::filesystem::path relative =
+                            std::filesystem::weakly_canonical(dropped, ec)
+                                .lexically_relative(std::filesystem::weakly_canonical(root, ec));
+                        if (!relative.empty() && *relative.begin() != "..")
+                        {
+                            stored = relative.generic_string();
+                            break;
+                        }
+                    }
+                    image.TexturePath = stored;
+                }
+                ImGui::EndDragDropTarget();
+            }
+            PropertyLabel("Corner Radius", "Pixels.");
+            ImGui::DragFloat("##UICorner", &image.CornerRadius, 0.25f, 0.0f, 500.0f, "%.1f",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Border Width", "Pixels; 0 for none.");
+            ImGui::DragFloat("##UIBorder", &image.BorderWidth, 0.1f, 0.0f, 50.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Border Color");
+            ImGui::ColorEdit4("##UIBorderColor", glm::value_ptr(image.BorderColor));
+        });
+
+    ::UHE::DrawComponents<UITextComponent>(
+        "UI Text", entity,
+        [](UITextComponent& text)
+        {
+            PropertyLabel("Text", "Several lines: press Enter for a new line.");
+            char buffer[1024];
+            std::snprintf(buffer, sizeof(buffer), "%s", text.Text.c_str());
+            if (ImGui::InputTextMultiline("##UIText", buffer, sizeof(buffer), ImVec2(-1.0f, 54.0f)))
+                text.Text = buffer;
+            PropertyLabel("Font Size", "Pixels per line.");
+            ImGui::DragFloat("##UIFontSize", &text.FontSize, 0.25f, 4.0f, 400.0f, "%.1f px",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Color");
+            ImGui::ColorEdit4("##UITextColor", glm::value_ptr(text.Color));
+            const char* alignments[] = {"Left", "Center", "Right"};
+            int align = static_cast<int>(text.Align);
+            PropertyLabel("Align");
+            if (ImGui::Combo("##UIAlign", &align, alignments, 3))
+                text.Align = static_cast<UITextComponent::Alignment>(align);
+            PropertyLabel("Font", "A .ttf in the assets; empty for the engine's font.");
+            char font[512];
+            std::snprintf(font, sizeof(font), "%s", text.FontPath.c_str());
+            if (ImGui::InputTextWithHint("##UIFont", "default", font, sizeof(font),
+                                         ImGuiInputTextFlags_EnterReturnsTrue))
+                text.FontPath = font;
+        });
+
+    ::UHE::DrawComponents<UIButtonComponent>("UI Button", entity,
+                                             [](UIButtonComponent& button)
+                                             {
+                                                 PropertyLabel("Normal");
+                                                 ImGui::ColorEdit4("##UINormal", glm::value_ptr(button.NormalColor));
+                                                 PropertyLabel("Hover");
+                                                 ImGui::ColorEdit4("##UIHover", glm::value_ptr(button.HoverColor));
+                                                 PropertyLabel("Pressed");
+                                                 ImGui::ColorEdit4("##UIPressed", glm::value_ptr(button.PressedColor));
+                                                 PropertyLabel("Interactable");
+                                                 ImGui::Checkbox("##UIInteractable", &button.Interactable);
+                                                 PropertyNote("A click calls OnClick(self) in this entity's script.");
+                                             });
+
+    ::UHE::DrawComponents<UIProgressBarComponent>(
+        "UI Progress Bar", entity,
+        [](UIProgressBarComponent& bar)
+        {
+            PropertyLabel("Value", "0..1; SetValue in a script.");
+            ImGui::SliderFloat("##UIValue", &bar.Value, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Fill");
+            ImGui::ColorEdit4("##UIFill", glm::value_ptr(bar.FillColor));
+            PropertyLabel("Background");
+            ImGui::ColorEdit4("##UIBarBackground", glm::value_ptr(bar.BackgroundColor));
+            PropertyLabel("Corner Radius", "Pixels.");
+            ImGui::DragFloat("##UIBarCorner", &bar.CornerRadius, 0.25f, 0.0f, 100.0f, "%.1f",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Slider", "The mouse drags the value in Play.");
+            ImGui::Checkbox("##UISlider", &bar.Interactable);
+        });
+
+    ::UHE::DrawComponents<TerrainComponent>(
+        "Terrain", entity,
+        [](TerrainComponent& terrain)
+        {
+            PropertyLabel("Heightmap", "A grayscale image in the project's assets: white is Height. Empty: "
+                                       "generated noise. Drop an image here.");
+            char path[512];
+            std::snprintf(path, sizeof(path), "%s", terrain.HeightmapPath.c_str());
+            if (ImGui::InputTextWithHint("##Heightmap", "generated", path, sizeof(path),
+                                         ImGuiInputTextFlags_EnterReturnsTrue))
+                terrain.HeightmapPath = path;
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("Content_Browser_item"))
+                {
+                    // Stored relative to the mount it is under, as scenes store paths.
+                    const std::filesystem::path dropped(static_cast<const char*>(payload->Data));
+                    std::string stored = dropped.generic_string();
+                    std::error_code ec;
+                    for (const auto& [scheme, root] : Vfs::Get().GetMounts())
+                    {
+                        const std::filesystem::path relative =
+                            std::filesystem::weakly_canonical(dropped, ec)
+                                .lexically_relative(std::filesystem::weakly_canonical(root, ec));
+                        if (!relative.empty() && *relative.begin() != "..")
+                        {
+                            stored = relative.generic_string();
+                            break;
+                        }
+                    }
+                    terrain.HeightmapPath = stored;
+                }
+                ImGui::EndDragDropTarget();
+            }
+            PropertyLabel("Size", "Width and depth in metres, centred on the entity.");
+            ImGui::DragFloat("##TerrainSize", &terrain.Size, 0.5f, 1.0f, 10000.0f, "%.1f m",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Height", "Metres between the lowest and the highest point.");
+            ImGui::DragFloat("##TerrainHeight", &terrain.Height, 0.1f, 0.0f, 2000.0f, "%.1f m",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Resolution", "Quads per side. Higher is smoother and slower to rebuild.");
+            ImGui::DragInt("##TerrainResolution", &terrain.Resolution, 1.0f, 8, 1024, "%d",
+                           ImGuiSliderFlags_AlwaysClamp);
+
+            ImGui::BeginDisabled(!terrain.HeightmapPath.empty());
+            PropertyLabel("Seed", "Another seed, other hills.");
+            ImGui::DragInt("##TerrainSeed", &terrain.Seed, 1.0f);
+            PropertyLabel("Feature Size", "Metres across the largest hills.");
+            ImGui::DragFloat("##FeatureSize", &terrain.FeatureSize, 0.2f, 1.0f, 2000.0f, "%.1f m",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Octaves", "Layers of finer detail.");
+            ImGui::SliderInt("##Octaves", &terrain.Octaves, 1, 8, "%d", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Roughness", "How much each finer layer adds.");
+            ImGui::SliderFloat("##Roughness", &terrain.Roughness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            ImGui::EndDisabled();
+
+            PropertyLabel("Sand");
+            ImGui::ColorEdit3("##Sand", glm::value_ptr(terrain.SandColor));
+            PropertyLabel("Grass");
+            ImGui::ColorEdit3("##Grass", glm::value_ptr(terrain.GrassColor));
+            PropertyLabel("Rock");
+            ImGui::ColorEdit3("##Rock", glm::value_ptr(terrain.RockColor));
+            PropertyLabel("Snow");
+            ImGui::ColorEdit3("##Snow", glm::value_ptr(terrain.SnowColor));
+            PropertyLabel("Sand Level", "Below this fraction of the height: sand.");
+            ImGui::SliderFloat("##SandLevel", &terrain.SandLevel, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Snow Level", "Above this fraction of the height: snow.");
+            ImGui::SliderFloat("##SnowLevel", &terrain.SnowLevel, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Rock Slope", "Steeper than this: rock.");
+            ImGui::SliderFloat("##RockSlope", &terrain.RockSlope, 1.0f, 89.0f, "%.0f\xC2\xB0",
+                               ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Collider", "A static heightfield body in Play: bodies rest and drive on it.");
+            ImGui::Checkbox("##TerrainCollider", &terrain.Collider);
+        });
+
+    ::UHE::DrawComponents<SequencerComponent>(
+        "Sequencer", entity,
+        [](SequencerComponent& sequencer)
+        {
+            PropertyLabel("Length", "Seconds; playback ends (or loops) here.");
+            ImGui::DragFloat("##SeqLength", &sequencer.Data.Duration, 0.05f, 0.1f, 3600.0f, "%.2f s",
+                             ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Loop", "Start over at the end instead of stopping.");
+            ImGui::Checkbox("##SeqLoop", &sequencer.Data.Loop);
+            PropertyLabel("Play on Start", "Plays from 0 when Play starts; otherwise a script calls PlaySequence.");
+            ImGui::Checkbox("##SeqPlayOnStart", &sequencer.PlayOnStart);
+            PropertyLabel("Speed", "Playback rate; negative plays backwards without events.");
+            ImGui::DragFloat("##SeqSpeed", &sequencer.Speed, 0.01f, -4.0f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+            std::size_t keys = 0;
+            for (const SequenceTrack& track : sequencer.Data.Tracks)
+                keys += track.Keys.size();
+            ImGui::TextDisabled("%zu tracks, %zu keys. Edit them in View > Sequencer.", sequencer.Data.Tracks.size(),
+                                keys);
+        });
+
+    ::UHE::DrawComponents<WindComponent>(
+        "Wind", entity,
+        [](WindComponent& wind)
+        {
+            PropertyLabel("Strength", "Steady wind.");
+            ImGui::SliderFloat("##Strength", &wind.Strength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Gust Strength", "Extra wind that comes and goes.");
+            ImGui::SliderFloat("##Gust Strength", &wind.GustStrength, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+            PropertyLabel("Gust Frequency", "Gusts per second.");
+            ImGui::SliderFloat("##Gust Frequency", &wind.GustFrequency, 0.0f, 2.0f, "%.2f",
+                               ImGuiSliderFlags_AlwaysClamp);
+            PropertyNote("Direction: the entity's forward axis (rotate it).");
         });
 
     ::UHE::DrawComponents<AnimatorComponent>(

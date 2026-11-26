@@ -52,13 +52,21 @@ void VulkanTexture::Init(VulkanDevice& device, const TextureDesc& desc)
 
     if (desc.usage & TextureUsage::Sampled)
     {
+        // Clamped: these are render targets read back at screen UVs (post
+        // effects, shadow maps, depth), where repeat would filter the opposite
+        // edge into the border.
         textureSampler = CreateSampler(vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
-                                       vk::SamplerAddressMode::eRepeat, static_cast<float>(m_MipLevels));
-        if (!(aspect & vk::ImageAspectFlagBits::eDepth))
+                                       vk::SamplerAddressMode::eClampToEdge, static_cast<float>(m_MipLevels));
+        vk::ImageView sampledView = *textureImageView;
+        if (aspect & vk::ImageAspectFlagBits::eDepth)
         {
-            m_TextureIndex = device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle, *textureImageView,
-                                                                        *textureSampler);
+            // A sampled view names one aspect: a depth-stencil image is read
+            // through a depth-only view, while attachments keep the full one.
+            m_SampledDepthView = CreateImageView(textureImage, format, vk::ImageAspectFlagBits::eDepth, m_MipLevels);
+            sampledView = *m_SampledDepthView;
         }
+        m_TextureIndex =
+            device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle, sampledView, *textureSampler);
     }
 }
 
@@ -70,14 +78,22 @@ VulkanTexture::~VulkanTexture()
         auto image = textureImage;
         auto imageMemory = textureImageMemory;
 
-        auto imageViewPtr = new vk::raii::ImageView(std::move(textureImageView));
-        auto samplerPtr = new vk::raii::Sampler(std::move(textureSampler));
+        // The views and sampler move into the deferred deletion, which runs
+        // once no frame in flight can still read them.
+        struct Owned
+        {
+            vk::raii::ImageView View;
+            vk::raii::ImageView DepthView;
+            vk::raii::Sampler Sampler;
+        };
+        auto owned = std::make_shared<Owned>(
+            Owned{std::move(textureImageView), std::move(m_SampledDepthView), std::move(textureSampler)});
         auto ds = m_ImGuiDescriptorSet;
         auto slot = m_TextureIndex;
         auto* descriptorManager = m_Device->GetDescriptorManager();
 
         m_Device->DeferDestruction(
-            [allocator, image, imageMemory, imageViewPtr, samplerPtr, ds, slot, descriptorManager]()
+            [allocator, image, imageMemory, owned, ds, slot, descriptorManager]() mutable
             {
                 if (ds != VK_NULL_HANDLE && ImGui::GetCurrentContext() != nullptr)
                 {
@@ -91,8 +107,7 @@ VulkanTexture::~VulkanTexture()
                 {
                     descriptorManager->UnbindTexture(slot);
                 }
-                delete imageViewPtr;
-                delete samplerPtr;
+                owned.reset();
             });
 
         textureImage = nullptr;
@@ -107,6 +122,7 @@ VulkanTexture::~VulkanTexture()
             m_ImGuiDescriptorSet = VK_NULL_HANDLE;
         }
 
+        m_SampledDepthView.clear();
         textureImageView.clear();
         textureSampler.clear();
 
@@ -179,7 +195,16 @@ static vk::SamplerAddressMode ToVkAddressMode(SamplerDesc::Wrap wrap)
 // every sample, which corrupts them.
 static vk::Format ToVkTextureFormat(SamplerDesc::ColorSpace colorSpace)
 {
-    return colorSpace == SamplerDesc::ColorSpace::Linear ? vk::Format::eR8G8B8A8Unorm : vk::Format::eR8G8B8A8Srgb;
+    switch (colorSpace)
+    {
+        case SamplerDesc::ColorSpace::Linear:
+            return vk::Format::eR8G8B8A8Unorm;
+        case SamplerDesc::ColorSpace::HalfFloat:
+            return vk::Format::eR16G16B16A16Sfloat;
+        case SamplerDesc::ColorSpace::SRGB:
+            break;
+    }
+    return vk::Format::eR8G8B8A8Srgb;
 }
 
 void VulkanTexture::CreateTexture(VulkanDevice& device, const void* pixelData, u32 width, u32 height, size_t dataSize)

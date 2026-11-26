@@ -9,22 +9,29 @@
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 #include <string>
+#include <utility>
 #include <vector>
+#include "EditorDebugSettings.h"
 #include "EditorTheme.h"
 #include "EditorUI.h"
 #include "ImGuizmo.h"
 #include "UHE/AssetsManager/AssetImport.h"
+#include "UHE/AssetsManager/GameExporter.h"
+#include "UHE/AssetsManager/PrimitiveGltf.h"
 #include "UHE/AssetsManager/Project.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Audio/AudioEngine.h"
 #include "UHE/Core/CommandLine.h"
 #include "UHE/Core/Console.h"
+#include "UHE/Debug/RenderDoc.h"
 #include "UHE/Math/Math.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHITexture.h"
 #include "UHE/Renderer/ShaderCache.h"
+#include "UHE/Renderer/UIRenderer.h"
 #include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Renderer3D/SceneRenderer.h"
 #include "UHE/Scripting/ScriptEngine.h"
 
 ImVec2 m_ViewportPos;
@@ -41,6 +48,9 @@ Editor::Editor()
 void Editor::OnAttach()
 {
     EditorTheme::LoadSelected(); // pick up the persisted theme before first frame
+    // Window mode, size and VSync before the first frame, so it opens as it was left.
+    m_DisplaySettings.Load();
+    m_DisplaySettings.ApplyAll(Application::Get().GetWindow());
 
     // Shader and script edits show up without a restart while the editor is open;
     // a game build leaves this off, since it ships no sources to watch.
@@ -120,13 +130,28 @@ void Editor::OnAttach()
     m_IconPause = Texture2D::Create((rootPath / "assets/icon/pause.png").string());
     m_IconStop = Texture2D::Create((rootPath / "assets/icon/stop.png").string());
 
-    // An explicit -project wins. Otherwise the most recent project that is still
+    // An explicit -new-project or -project wins. Otherwise the most recent project that is still
     // on disk is reopened, so relaunching the editor lands back in the project
     // that was open rather than making the user find it again. `-launcher` asks
     // for the manager instead, and File > Project Manager... returns to it from
     // inside a project.
     const std::string requestedProject = CommandLine::GetValue("-project");
-    if (!requestedProject.empty())
+    // -new-project <folder>: what the manager's Create does, with the starter scene.
+    const std::string newProject = CommandLine::GetValue("-new-project");
+    if (!newProject.empty())
+    {
+        const std::filesystem::path root = Project::NormalizeRoot(newProject);
+        const std::string problem = Project::CheckNewProject(root.parent_path(), root.filename().string());
+        ProjectInfo created;
+        std::string error;
+        if (!problem.empty())
+            m_ProjectLauncher.SetMessage("Could not create '" + root.string() + "': " + problem);
+        else if (!Project::Create(root, root.filename().string(), created, &error))
+            m_ProjectLauncher.SetMessage("Could not create '" + root.string() + "': " + error);
+        else
+            SetProject(std::move(created), true);
+    }
+    else if (!requestedProject.empty())
     {
         if (!OpenProject(requestedProject))
             m_ProjectLauncher.SetMessage("Could not open '" + requestedProject + "'");
@@ -143,17 +168,34 @@ void Editor::OnAttach()
     }
 
     RegisterConsoleEntries();
+
+    // -exec "<console line>[; <console line>...]": run console commands at start-up,
+    // for scripted runs (a capture of one buffer view, a fixed tick rate).
+    const std::string startup = CommandLine::GetValue("-exec");
+    size_t begin = 0;
+    while (begin < startup.size())
+    {
+        const size_t end = std::min(startup.find(';', begin), startup.size());
+        const std::string line = startup.substr(begin, end - begin);
+        if (line.find_first_not_of(' ') != std::string::npos)
+            UHE_CORE_INFO("-exec {0}: {1}", line, Console::Get().Execute(line));
+        begin = end + 1;
+    }
 }
 
 void Editor::OnDetach()
 {
+    m_DisplaySettings.CaptureWindowSize(Application::Get().GetWindow());
+    m_DisplaySettings.Save();
     UnregisterConsoleEntries();
 }
 
 namespace
 {
 /// @brief Every console entry the editor owns, so OnDetach removes exactly these.
-constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "scene.stats", "clear"};
+constexpr const char* kEditorConsoleEntries[] = {"script.budget", "sim.tickrate", "gpu.capture",
+                                                 "view.shading",  "view.buffer",  "scene.stats",
+                                                 "scene.select",  "view.panel",   "clear"};
 } // namespace
 
 void Editor::RegisterConsoleEntries()
@@ -188,6 +230,53 @@ void Editor::RegisterConsoleEntries()
                                 return text;
                             });
 
+    console.RegisterCommand("gpu.capture",
+                            "gpu.capture [note]: capture the next frame with RenderDoc (start with -renderdoc); the "
+                            "note is saved in the capture's comments",
+                            [](const std::vector<std::string>& args) -> std::string
+                            {
+                                if (!RenderDoc::Available())
+                                    return "RenderDoc is not attached; start with -renderdoc";
+                                std::string note;
+                                for (const std::string& word : args)
+                                    note += (note.empty() ? "" : " ") + word;
+                                RenderDoc::TriggerCapture(note);
+                                return "capturing the next frame";
+                            });
+
+    console.RegisterCommand(
+        "view.shading", "view.shading [lit|unlit|solid|normals|wireframe|overdraw|lights]: the viewport's shading mode",
+        [this](const std::vector<std::string>& args) -> std::string
+        {
+            static constexpr const char* kNames[] = {"lit",       "unlit",    "solid", "normals",
+                                                     "wireframe", "overdraw", "lights"};
+            if (!args.empty())
+            {
+                const auto* found = std::find_if(std::begin(kNames), std::end(kNames),
+                                                 [&](const char* name) { return args.front() == name; });
+                if (found == std::end(kNames))
+                    return "expected lit, unlit, solid, normals, wireframe, overdraw or lights";
+                SetViewMode(static_cast<Renderer3D::ViewMode>(found - std::begin(kNames)));
+            }
+            return std::string("view.shading = ") + kNames[std::clamp(static_cast<int>(m_ViewMode), 0, 6)];
+        });
+
+    console.RegisterCommand("view.buffer", "view.buffer [image|ao|depth|bloom]: what the lit viewport shows",
+                            [this](const std::vector<std::string>& args) -> std::string
+                            {
+                                static constexpr const char* kNames[] = {"image", "ao", "depth", "bloom"};
+                                if (!args.empty())
+                                {
+                                    const auto* found =
+                                        std::find_if(std::begin(kNames), std::end(kNames),
+                                                     [&](const char* name) { return args.front() == name; });
+                                    if (found == std::end(kNames))
+                                        return "expected image, ao, depth or bloom";
+                                    m_DebugBuffer = static_cast<int>(found - std::begin(kNames));
+                                }
+                                return std::string("view.buffer = ") + kNames[std::clamp(m_DebugBuffer, 0, 3)];
+                            });
+
     console.RegisterCommand("scene.stats", "entity count and simulation tick of the active scene",
                             [this](const std::vector<std::string>&) -> std::string
                             {
@@ -196,6 +285,39 @@ void Editor::RegisterConsoleEntries()
                                 const auto entities = m_ActiveScene->GetRegistry().view<TagComponent>().size();
                                 return std::to_string(entities) + " entities, tick " +
                                        std::to_string(m_ActiveScene->GetSimulationClock().GetTickIndex());
+                            });
+
+    console.RegisterCommand("scene.select", "scene.select <name>: select the first entity with that name",
+                            [this](const std::vector<std::string>& args) -> std::string
+                            {
+                                if (!m_ActiveScene || args.empty())
+                                    return "usage: scene.select <name>";
+                                std::string name;
+                                for (const std::string& word : args)
+                                    name += (name.empty() ? "" : " ") + word;
+                                auto view = m_ActiveScene->GetRegistry().view<TagComponent>();
+                                for (auto handle : view)
+                                {
+                                    if (view.get<TagComponent>(handle).Tag == name)
+                                    {
+                                        m_SceneHireacyPanel.SetSelectedEntity(Entity{handle, m_ActiveScene.get()});
+                                        return "selected " + name;
+                                    }
+                                }
+                                return "no entity named " + name;
+                            });
+
+    console.RegisterCommand("view.panel", "view.panel <name>: bring a panel's tab to the front (e.g. Sequencer)",
+                            [this](const std::vector<std::string>& args) -> std::string
+                            {
+                                if (args.empty())
+                                    return "usage: view.panel <name>";
+                                std::string name;
+                                for (const std::string& word : args)
+                                    name += (name.empty() ? "" : " ") + word;
+                                // Applied once the window exists: -exec runs before the first frame.
+                                m_PendingPanelFocus = name;
+                                return "focusing " + name;
                             });
 
     console.RegisterCommand("clear", "clear the console log",
@@ -215,13 +337,16 @@ void Editor::UnregisterConsoleEntries()
 void Editor::OnUpdate(UHE::Timestep ts)
 {
     UHE_PROFILE_FUNCTION();
+    // Before this frame's UI: a window mode switch resizes the framebuffer.
+    m_DisplaySettings.ApplyPending(Application::Get().GetWindow());
     m_Notifications.Update(ts.GetSeconds());
     m_SecondsSinceTransformPush += ts.GetSeconds();
     m_CameraController.OnUpdate(ts);
-    // The scene targets follow the viewport panel: the frame graph creates
-    // them at this size, so a resize is a new size here and nothing else.
-    const u32 sceneWidth = std::clamp(static_cast<u32>(m_ViewPortSize.x), 1u, kMaxSceneSize);
-    const u32 sceneHeight = std::clamp(static_cast<u32>(m_ViewPortSize.y), 1u, kMaxSceneSize);
+    // The scene targets follow the viewport panel times the render scale: the
+    // frame graph creates them at this size, so a resize or a new scale is a
+    // new size here and nothing else. The panel still shows them at its size.
+    const u32 sceneWidth = m_DisplaySettings.ScaledSize(m_ViewPortSize.x, kMaxSceneSize);
+    const u32 sceneHeight = m_DisplaySettings.ScaledSize(m_ViewPortSize.y, kMaxSceneSize);
     if (m_ViewPortSize.x > 0.0f && m_ViewPortSize.y > 0.0f &&
         (sceneWidth != m_SceneWidth || sceneHeight != m_SceneHeight))
     {
@@ -319,65 +444,90 @@ void Editor::DeclareSceneGraphPass(Timestep ts, bool runtime)
 {
     using namespace RHI;
     FrameGraph* graph = Renderer::GetDevice().GetFrameGraph();
-    if (graph == nullptr)
+    if (graph == nullptr || !m_ActiveScene)
         return;
 
     const u32 width = m_SceneWidth;
     const u32 height = m_SceneHeight;
     if (width == 0 || height == 0)
         return; // the viewport has not been laid out yet
+    m_SceneTime += ts.GetSeconds();
 
-    // All three targets are the graph's: it allocates them at this size and
-    // retires the old size after a resize. Depth lives only inside the pass.
-    struct SceneTargets
+    // Every target is the graph's: it allocates them at this size and retires
+    // the old size after a resize.
+    SceneRenderer::Desc desc;
+    desc.Width = width;
+    desc.Height = height;
+    desc.SceneData = m_ActiveScene;
+    desc.Runtime = runtime;
+    desc.Lit = m_ViewMode == Renderer3D::ViewMode::Lit;
+    desc.DebugBuffer = m_DebugBuffer;
+    desc.Time = m_SceneTime;
+    // Editing clears to a neutral grey, like Blender's and Godot's viewports,
+    // so the grid and dark objects read; the running game keeps its own black.
+    desc.ClearColor =
+        runtime ? std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f} : std::array<float, 4>{0.038f, 0.040f, 0.046f, 1.0f};
+    desc.ColorName = kSceneColor;
+    desc.EntityName = kSceneEntity;
+    // The scene this frame was declared with, not whatever m_ActiveScene is when
+    // the passes run: Play and Stop in the UI swap it in between.
+    desc.ResolveView = [this, runtime, scene = m_ActiveScene]()
     {
-        FGHandle<FGTexture> Color, Entity, Depth;
-    };
-    const SceneTargets& scene = graph->AddPass<SceneTargets>(
-        "Editor.Scene",
-        [&](FGBuilder& builder, SceneTargets& targets)
+        if (runtime)
         {
-            // Editing clears to a neutral grey, like Blender's and Godot's
-            // viewports, so the grid and dark objects read; the running game
-            // keeps its own black.
-            FGAttachment background;
-            background.ClearColor = runtime ? std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}
-                                            : std::array<float, 4>{0.038f, 0.040f, 0.046f, 1.0f};
-            targets.Color = builder.Write(builder.Create(kSceneColor, {width, height, TextureFormat::RGBA8_SRGB}),
-                                          FGWrite::RenderTarget, background);
-            // Entity IDs clear to -1: "no entity" under the cursor.
-            FGAttachment noEntity;
-            noEntity.ClearColor = {-1.0f, -1.0f, -1.0f, -1.0f};
-            targets.Entity = builder.Write(builder.Create(kSceneEntity, {width, height, TextureFormat::R32_SINT}),
-                                           FGWrite::RenderTarget, noEntity);
-            targets.Depth =
-                builder.Write(builder.Create("Editor.Scene.Depth", {width, height, TextureFormat::D24_UNORM_S8}),
-                              FGWrite::DepthTarget);
-        },
-        [this, ts, runtime](const SceneTargets&, FGContext& context) { RecordSceneGraphPass(context, ts, runtime); });
+            if (std::optional<SceneRenderView> view = scene->GetPrimaryCameraView())
+                return *view;
+        }
+        SceneRenderView view;
+        view.View = m_EditorCamera.GetViewMatrix();
+        view.Projection = m_EditorCamera.GetProjection();
+        view.Position = m_EditorCamera.GetPosition();
+        return view;
+    };
+    desc.DrawScene = [this, ts, runtime, scene = m_ActiveScene](FGContext& context)
+    { RecordSceneGraphPass(context, *scene, ts, runtime); };
+    // Lit and editing: the grid goes over the water, as an overlay.
+    if (desc.Lit && !runtime)
+        desc.DrawOverlays = [scene = m_ActiveScene](FGContext&) { scene->RenderEditorGrid(); };
+    const SceneRenderer::Output scene = SceneRenderer::AddPasses(*graph, desc);
+    if (!scene.Color.IsValid())
+        return;
+
+    // The game UI over the viewport, in edit mode too (a preview of the
+    // layout); it takes the mouse only in Play. The viewport image is shown
+    // flipped (ImGui::Image with swapped v), so the UI is drawn flipped.
+    const bool mouseDown = Input::IsMouseButtonPressed(UHE_MOUSE_BUTTON_LEFT);
+    UI::Pointer pointer;
+    pointer.Active = runtime && m_ViewportPointerInside;
+    pointer.Position = m_ViewportPointer;
+    pointer.Down = mouseDown;
+    pointer.Pressed = mouseDown && !m_UIMouseWasDown;
+    pointer.Released = !mouseDown && m_UIMouseWasDown;
+    m_UIMouseWasDown = mouseDown;
+    m_ActiveScene->UpdateUI(glm::vec2(static_cast<f32>(width), static_cast<f32>(height)), pointer);
+    const FGHandle<FGTexture> color = m_ShowGameUI
+                                          ? UIRenderer::AddPass(*graph, scene.Color, TextureFormat::RGBA8_SRGB, width,
+                                                                height, true, m_ActiveScene->GetUIDrawList())
+                                          : scene.Color;
 
     // Read after the frame: the viewport panel samples the colour, and
     // picking copies one pixel out of the entity IDs.
-    graph->Export(scene.Color);
+    graph->Export(color);
     graph->Export(scene.Entity, {.FinalState = FGState::ShaderRead, .CopySource = true});
 }
 
-void Editor::RecordSceneGraphPass(RHI::FGContext& context, Timestep ts, bool runtime)
+void Editor::RecordSceneGraphPass(RHI::FGContext& context, Scene& scene, Timestep ts, bool runtime)
 {
     if (context.Width() == 0 || context.Height() == 0)
         return;
-
-    RHI::RHICommandBuffer& cmd = context.Cmd();
-    cmd.SetViewport(0.0f, 0.0f, static_cast<f32>(context.Width()), static_cast<f32>(context.Height()));
-    cmd.SetScissor(0, 0, context.Width(), context.Height());
 
     // The shading mode is the viewport's, not the scene's: set for this pass
     // only, so nothing else that renders models inherits it.
     Renderer3D::SetViewMode(m_ViewMode);
     if (runtime)
-        m_ActiveScene->RenderRuntimeScene(ts);
+        scene.RenderRuntimeScene(ts);
     else
-        m_ActiveScene->RenderEditorScene(ts, m_EditorCamera);
+        scene.RenderEditorScene(ts, m_EditorCamera, m_ViewMode != Renderer3D::ViewMode::Lit);
     Renderer3D::SetViewMode(Renderer3D::ViewMode::Lit);
 }
 
@@ -515,6 +665,8 @@ void Editor::OnScreenPlay()
 {
     if (m_SceneState == SceneState::Edit)
     {
+        // The running copy starts from the scene as saved, not as previewed.
+        m_SequencerPanel.EndPreview();
         m_HoverdEntity = {};
         m_EditorScene = m_ActiveScene;
         m_ActiveScene = Scene::Copy(m_EditorScene);
@@ -894,6 +1046,7 @@ bool Editor::onKeyPressed(KeyPressedEvent& e)
 
 void Editor::NewScene(bool notify)
 {
+    m_SequencerPanel.EndPreview();
     OnSceneStop();
     m_ActiveScene = CreateRef<Scene>();
     m_ActiveScene->OnViewportResize((u32)m_ViewPortSize.x, (u32)m_ViewPortSize.y);
@@ -918,6 +1071,7 @@ void Editor::OpenScene()
 
 void Editor::OpenScene(const std::filesystem::path& path, bool notify)
 {
+    m_SequencerPanel.EndPreview();
     std::string filepath = path.string();
 
     if (!filepath.empty())
@@ -962,11 +1116,13 @@ bool Editor::OpenProject(const std::filesystem::path& path)
     return true;
 }
 
-void Editor::SetProject(ProjectInfo info)
+void Editor::SetProject(ProjectInfo info, bool starterScene)
 {
     std::string error;
     if (!Project::EnsureAssetFolder(info, &error))
         UHE_CORE_WARN("Project '{0}': {1}", info.Name, error);
+    if (starterScene)
+        WriteStarterScene(info);
 
     // "game:" -> the project's Assets folder, "engine:" -> the folder shipped
     // next to the binary. Mounting the project last keeps it ahead of the engine
@@ -993,9 +1149,76 @@ void Editor::SetProject(ProjectInfo info)
     Notify(NotificationCenter::Kind::Success, "Project opened", projectName);
 }
 
+bool Editor::WriteStarterScene(ProjectInfo& project)
+{
+    // Its own shapes rather than the engine's sample models: the project
+    // keeps working, and exports, without anything outside its folder.
+    const std::filesystem::path models = project.AssetPath / "Models";
+    std::string error;
+    if (!WritePrimitiveGltf(models / "Ground.gltf", PrimitiveShape::Plane, {0.20f, 0.30f, 0.15f, 1.0f}, 0.9f, &error) ||
+        !WritePrimitiveGltf(models / "Cube.gltf", PrimitiveShape::Cube, {0.75f, 0.26f, 0.10f, 1.0f}, 0.5f, &error))
+    {
+        UHE_CORE_ERROR("Starter scene for '{0}': {1}", project.Name, error);
+        return false;
+    }
+
+    Ref<Scene> scene = CreateRef<Scene>();
+    const auto place = [&](const char* name, glm::vec3 position, glm::vec3 rotation, glm::vec3 scale)
+    {
+        Entity entity = scene->CreateEntity(name);
+        auto& transform = entity.GetComponent<TransformComponent>();
+        transform.Translation = position;
+        transform.Rotation = rotation;
+        transform.Scale = scale;
+        return entity;
+    };
+    place("Ground", glm::vec3(0.0f), glm::vec3(0.0f), glm::vec3(30.0f, 1.0f, 30.0f))
+        .AddComponent<Model3DComponent>()
+        .ModelPath = "Models/Ground.gltf";
+    place("Cube", glm::vec3(0.0f, 0.5f, 0.0f), glm::vec3(0.0f, 0.2f, 0.0f), glm::vec3(1.0f))
+        .AddComponent<Model3DComponent>()
+        .ModelPath = "Models/Cube.gltf";
+    // From the side of the view, not from behind the camera: light from
+    // behind lights every face alike and hides the cube's shadow behind it.
+    place("Sun", glm::vec3(0.0f, 6.0f, 0.0f), glm::vec3(-0.8f, 2.4f, 0.0f), glm::vec3(1.0f))
+        .AddComponent<DirectionalLightComponent>()
+        .Intensity = 1.6f;
+    // Up and to the side, looking at the cube.
+    const glm::vec3 eye(4.0f, 2.6f, 6.0f);
+    const float yaw = std::atan2(eye.x, eye.z);
+    const float pitch = -std::atan2(eye.y - 0.5f, glm::length(glm::vec2(eye.x, eye.z)));
+    auto& camera = place("Camera", eye, glm::vec3(pitch, yaw, 0.0f), glm::vec3(1.0f)).AddComponent<CameraComponent>();
+    camera.Camera.SetProjectionType(SceneCamera::ProjectionType::Perpective);
+    camera.Primary = true;
+
+    const std::filesystem::path scenePath = project.AssetPath / "Scenes" / "Main.unhuman";
+    std::error_code ec;
+    std::filesystem::create_directories(scenePath.parent_path(), ec);
+    SceneSerializer(scene).Serialize(scenePath.string());
+    if (!std::filesystem::is_regular_file(scenePath, ec))
+    {
+        UHE_CORE_ERROR("Starter scene for '{0}': could not write '{1}'", project.Name, scenePath.string());
+        return false;
+    }
+
+    project.StartScene = std::filesystem::relative(scenePath, project.RootPath, ec).generic_string();
+    if (!Project::Save(project, &error))
+        UHE_CORE_WARN("Starter scene for '{0}': the manifest was not saved: {1}", project.Name, error);
+    return true;
+}
+
 void Editor::CloseProject()
 {
+    m_SequencerPanel.EndPreview();
+    // Nothing of the project keeps running behind the manager: Play stops
+    // (scripts, physics, audio) and its scene is let go.
+    OnSceneStop();
+    m_ActiveScene = CreateRef<Scene>();
+    m_EditorScene = m_ActiveScene;
+    m_SceneHireacyPanel.SetContext(m_ActiveScene);
+    m_CurrentScenePath.clear();
     m_Project.reset();
+    m_ProjectLauncher.Refresh();
     m_ShowLauncher = true;
     m_ProjectLauncher.SetMessage("");
     m_UndoStack.clear();
@@ -1370,8 +1593,45 @@ void DrawConsolePanel()
     ImGui::End();
 }
 
+void Editor::ExportGame()
+{
+    if (!m_Project)
+        return;
+    const std::string folder = FileDialogs::SelectFolder("Export Game To", m_Project->RootPath.parent_path().string());
+    if (folder.empty())
+        return;
+
+    ExportOptions options;
+    options.OutputDir = folder;
+    // The runtime is built next to the editor, into the same folder.
+    options.RuntimeDir = CommandLine::GetExecutablePath().parent_path();
+    options.EngineAssets = FileSystem::Get().GetRootPath() / "assets";
+    options.CookModel = RD3d::CookModelFile; // the game loads cooked models, never glTF
+    const ExportReport report = GameExporter::Export(*m_Project, options);
+    for (const std::string& warning : report.Warnings)
+        UHE_CORE_WARN("Export: {0}", warning);
+    if (report.Ok)
+    {
+        UHE_CORE_INFO("Exported '{0}': {1} files, {2} MB, run {3}", m_Project->Name, report.FilesCopied,
+                      report.BytesCopied / (std::uintmax_t{1024} * 1024), report.Executable.string());
+        if (report.Warnings.empty())
+            Notify(NotificationCenter::Kind::Success, "Game exported", report.Executable.string());
+        else
+            Notify(NotificationCenter::Kind::Warning, "Game exported with warnings",
+                   std::to_string(report.Warnings.size()) + " references will not load; see the console");
+    }
+    else
+    {
+        for (const std::string& error : report.Errors)
+            UHE_CORE_ERROR("Export: {0}", error);
+        Notify(NotificationCenter::Kind::Error, "Export failed", report.Errors.empty() ? "" : report.Errors.front());
+    }
+}
+
 void Editor::SaveSceneAs()
 {
+    // A preview's poses are not the scene: put them back before writing it.
+    m_SequencerPanel.EndPreview();
     std::string filepath = FileDialogs::SaveFile("UHE Scene (*.unhuman)\0.unhuman\0", ProjectAssetPath().string());
 
     if (!filepath.empty())
@@ -1409,12 +1669,18 @@ namespace
         ImGui::DockBuilderDockWindow("Scene Hierarchy", leftTop);
         ImGui::DockBuilderDockWindow("Settings", leftBottom);
         ImGui::DockBuilderDockWindow("Properties", inspector);
+        ImGui::DockBuilderDockWindow("Environment", inspector);
+        // A new tab bar selects its last tab; Properties is the one to see first.
+        // The ID is ImGuiWindow::TabId, GetID("#TAB") seeded with the window's ID.
+        if (ImGuiDockNode* inspectorNode = ImGui::DockBuilderGetNode(inspector))
+            inspectorNode->SelectedTabId = ImHashStr("#TAB", 0, ImHashStr("Properties"));
         ImGui::DockBuilderDockWindow("Viewport", centerTop);
         ImGui::DockBuilderDockWindow("Content Browser", bottomLeft);
         ImGui::DockBuilderDockWindow("Console", bottomRight);
         ImGui::DockBuilderDockWindow("Profiler", bottomRight);
         ImGui::DockBuilderDockWindow("Scripts", bottomRight);
         ImGui::DockBuilderDockWindow("Audio", bottomRight);
+        ImGui::DockBuilderDockWindow("Sequencer", bottomRight);
         // The graph needs canvas space: share the central node with the
         // viewport rather than squeezing into a bottom tab.
         ImGui::DockBuilderDockWindow("Animation Graph", centerTop);
@@ -1431,9 +1697,8 @@ void Editor::OnImGuiRender()
     // editor. Nothing else is submitted, so no panel can touch a missing asset root.
     if (m_ShowLauncher && !m_Project)
     {
-        ProjectInfo opened;
-        if (m_ProjectLauncher.OnImGuiRender(opened))
-            SetProject(std::move(opened));
+        if (std::optional<ProjectLauncherPanel::Result> picked = m_ProjectLauncher.OnImGuiRender())
+            SetProject(std::move(picked->Project), picked->Created && picked->StarterScene);
         else
         {
             m_CommandPalette.Close();
@@ -1496,6 +1761,11 @@ void Editor::OnImGuiRender()
         m_SceneHireacyPanel.OnImGuiRender(m_ShowHierarchy, m_ShowInspector);
     m_SceneHireacyPanel.ApplyQueuedMutations(); // Issue #17: apply tree edits outside registry iteration
 
+    // Set every frame, like the Scripts panel: play, stop, new and open all replace the active scene.
+    m_EnvironmentPanel.SetContext(m_ActiveScene);
+    if (m_ShowEnvironment)
+        m_EnvironmentPanel.OnImGuiRender(m_ShowEnvironment);
+
     if (m_ShowContentBrowser)
         m_ContentBrowserPanel.OnImGuiRender();
 
@@ -1518,6 +1788,11 @@ void Editor::OnImGuiRender()
 
     if (m_ShowAnimationGraph)
         m_AnimationGraphPanel.OnImGuiRender(m_ShowAnimationGraph, m_SceneHireacyPanel.GetSelectedEntity());
+    if (m_ShowSequencer)
+        m_SequencerPanel.OnImGuiRender(m_ShowSequencer, m_ActiveScene.get(), m_SceneHireacyPanel.GetSelectedEntity(),
+                                       m_SceneState == SceneState::Edit);
+    else
+        m_SequencerPanel.EndPreview(); // a closed panel leaves no preview behind
 
     if (m_ShowAudio)
         m_AudioPanel.OnImGuiRender(m_ShowAudio);
@@ -1598,16 +1873,26 @@ void Editor::OnImGuiRender()
     int mouseX = (int)mx;
     int mouseY = (int)my;
 
+    // The game UI's mouse, in scene pixels (the scene is the panel times the render scale).
+    m_ViewportPointerInside = mouseX >= 0 && mouseY >= 0 && mouseX < (int)viewportSize.x &&
+                              mouseY < (int)viewportSize.y && ImGui::IsWindowHovered();
+    m_ViewportPointer = glm::vec2(mx * static_cast<f32>(m_SceneWidth) / std::max(viewportSize.x, 1.0f),
+                                  my * static_cast<f32>(m_SceneHeight) / std::max(viewportSize.y, 1.0f));
+
     if (mouseX >= 0 && mouseY >= 0 && mouseX < (int)viewportSize.x && mouseY < (int)viewportSize.y)
     {
+        // The entity IDs are the scene's size (panel times render scale) and
+        // the image is stretched over the panel: scale the cursor the same way.
+        const int pixelX = static_cast<int>(mx * static_cast<f32>(m_SceneWidth) / viewportSize.x);
+        const int pixelY = static_cast<int>(my * static_cast<f32>(m_SceneHeight) / viewportSize.y);
         RHI::TextureHandle entityIds = Renderer::GetDevice().GetExportedTexture(kSceneEntity);
-        if (m_FramesSinceResize > 1 && entityIds != nullptr && static_cast<u32>(mouseX) < m_SceneWidth &&
-            static_cast<u32>(mouseY) < m_SceneHeight)
+        if (m_FramesSinceResize > 1 && entityIds != nullptr && pixelX >= 0 && pixelY >= 0 &&
+            std::cmp_less(pixelX, m_SceneWidth) && std::cmp_less(pixelY, m_SceneHeight))
         {
             // Async: the blocking read waited on the GPU every hovered frame.
             // -1 until the first read lands, and where no entity was drawn.
             int pixelData = -1;
-            if (!Renderer::GetDevice().ReadPixelAsync(entityIds, mouseX, mouseY, &pixelData))
+            if (!Renderer::GetDevice().ReadPixelAsync(entityIds, pixelX, pixelY, &pixelData))
                 pixelData = -1;
             if (pixelData < 0)
             {
@@ -1692,7 +1977,17 @@ void Editor::OnImGuiRender()
 
     // Record the finished edit after the gizmo and inspector have run, then
     // draw the editor-level overlays on top of every docked panel.
-    PollTransformUndo();
+    if (!m_PendingPanelFocus.empty() && ImGui::FindWindowByName(m_PendingPanelFocus.c_str()) != nullptr)
+    {
+        ImGui::SetWindowFocus(m_PendingPanelFocus.c_str());
+        m_PendingPanelFocus.clear();
+    }
+
+    // The sequencer's preview moves transforms: those are not edits to undo.
+    if (m_SequencerPanel.IsPreviewing())
+        ResetTransformBaseline();
+    else
+        PollTransformUndo();
     m_Notifications.Draw();
     m_CommandPalette.OnImGuiRender(BuildCommands());
 }
@@ -1851,6 +2146,7 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
     add("New Scene", "File", "Ctrl+N", true, [this] { NewScene(); });
     add("Open Scene...", "File", "Ctrl+O", true, [this] { OpenScene(); });
     add("Save Scene As...", "File", "Ctrl+S", true, [this] { SaveSceneAs(); });
+    add("Export Game...", "File", "", m_Project.has_value(), [this] { ExportGame(); });
     add("Open Project...", "File", "", true,
         [this]
         {
@@ -1869,11 +2165,13 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
 
     add("Toggle Hierarchy", "View", "", true, [this] { m_ShowHierarchy = !m_ShowHierarchy; });
     add("Toggle Inspector", "View", "", true, [this] { m_ShowInspector = !m_ShowInspector; });
+    add("Toggle Environment", "View", "", true, [this] { m_ShowEnvironment = !m_ShowEnvironment; });
     add("Toggle Content Browser", "View", "", true, [this] { m_ShowContentBrowser = !m_ShowContentBrowser; });
     add("Toggle Console", "View", "", true, [this] { m_ShowConsole = !m_ShowConsole; });
     add("Toggle Profiler", "View", "", true, [this] { m_ShowProfiler = !m_ShowProfiler; });
     add("Toggle Scripts", "View", "", true, [this] { m_ShowScripts = !m_ShowScripts; });
     add("Toggle Animation Graph", "View", "", true, [this] { m_ShowAnimationGraph = !m_ShowAnimationGraph; });
+    add("Toggle Sequencer", "View", "", true, [this] { m_ShowSequencer = !m_ShowSequencer; });
     add("Toggle Audio", "View", "", true, [this] { m_ShowAudio = !m_ShowAudio; });
     add("Toggle Settings", "View", "", true, [this] { m_ShowSettings = !m_ShowSettings; });
     add("Toggle Viewport", "View", "", true, [this] { m_ShowViewport = !m_ShowViewport; });
@@ -1898,6 +2196,10 @@ std::vector<CommandPalette::Command> Editor::BuildCommands()
         [this] { SetViewMode(Renderer3D::ViewMode::Lit); });
     add("Shading: Normals", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::Normals,
         [this] { SetViewMode(Renderer3D::ViewMode::Normals); });
+    add("Shading: Overdraw", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::Overdraw,
+        [this] { SetViewMode(Renderer3D::ViewMode::Overdraw); });
+    add("Shading: Light Complexity", "Viewport", "", m_ViewMode != Renderer3D::ViewMode::LightComplexity,
+        [this] { SetViewMode(Renderer3D::ViewMode::LightComplexity); });
     add("Toggle Grid", "Viewport", "", true,
         [] { Scene::GetEditorOverlays().Grid = !Scene::GetEditorOverlays().Grid; });
     add("Toggle Light Icons", "Viewport", "", true,
@@ -1959,6 +2261,8 @@ void Editor::DrawMainMenuBar()
         }
         if (ImGui::MenuItem("Project Manager..."))
             CloseProject();
+        if (ImGui::MenuItem("Export Game...", nullptr, false, m_Project.has_value()))
+            ExportGame();
         ImGui::Separator();
         if (ImGui::MenuItem("Reload Shaders", "Ctrl+Shift+R"))
         {
@@ -2015,6 +2319,33 @@ void Editor::DrawMainMenuBar()
             CreateEntityFromMenu("Point Light", 5);
         if (ImGui::MenuItem("Spot Light"))
             CreateEntityFromMenu("Spot Light", 6);
+        if (ImGui::MenuItem("Area Light"))
+            CreateEntityFromMenu("Area Light", 7);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Water"))
+            CreateEntityFromMenu("Water", 8);
+        if (ImGui::MenuItem("Wind"))
+            CreateEntityFromMenu("Wind", 9);
+        if (ImGui::MenuItem("Terrain"))
+            CreateEntityFromMenu("Terrain", 10);
+        if (ImGui::MenuItem("Sequence"))
+            CreateEntityFromMenu("Sequence", 11);
+        ImGui::Separator();
+        if (ImGui::BeginMenu("UI"))
+        {
+            // Inside the selected UI element, when one is selected.
+            if (ImGui::MenuItem("Panel"))
+                CreateUIElement(0);
+            if (ImGui::MenuItem("Text"))
+                CreateUIElement(1);
+            if (ImGui::MenuItem("Button"))
+                CreateUIElement(2);
+            if (ImGui::MenuItem("Progress Bar"))
+                CreateUIElement(3);
+            if (ImGui::MenuItem("Slider"))
+                CreateUIElement(4);
+            ImGui::EndMenu();
+        }
         ImGui::EndDisabled();
         ImGui::EndMenu();
     }
@@ -2023,11 +2354,13 @@ void Editor::DrawMainMenuBar()
     {
         EditorUI::ToggleMenuItem("Hierarchy", &m_ShowHierarchy);
         EditorUI::ToggleMenuItem("Inspector", &m_ShowInspector);
+        EditorUI::ToggleMenuItem("Environment", &m_ShowEnvironment);
         EditorUI::ToggleMenuItem("Content Browser", &m_ShowContentBrowser);
         EditorUI::ToggleMenuItem("Console", &m_ShowConsole);
         EditorUI::ToggleMenuItem("Profiler", &m_ShowProfiler);
         EditorUI::ToggleMenuItem("Scripts", &m_ShowScripts);
         EditorUI::ToggleMenuItem("Animation Graph", &m_ShowAnimationGraph);
+        EditorUI::ToggleMenuItem("Sequencer", &m_ShowSequencer);
         EditorUI::ToggleMenuItem("Audio", &m_ShowAudio);
         EditorUI::ToggleMenuItem("Settings", &m_ShowSettings);
         EditorUI::ToggleMenuItem("Viewport", &m_ShowViewport);
@@ -2259,6 +2592,31 @@ void Editor::DrawViewportCameraMenu()
         m_EditorCamera.SetSpeedMultiplier(speed);
     if (ImGui::MenuItem("Frame Selected", "F"))
         FocusSelectedEntity();
+    ImGui::SeparatorText("Buffer");
+    // What the lit view shows: the image, or one of the buffers it is made from.
+    static constexpr const char* kBuffers[] = {"Final Image", "Ambient Occlusion", "Depth", "Bloom"};
+    for (int i = 0; i < 4; ++i)
+    {
+        if (ImGui::MenuItem(kBuffers[i], nullptr, m_DebugBuffer == i))
+            m_DebugBuffer = i;
+    }
+    if (m_ViewMode != Renderer3D::ViewMode::Lit)
+        ImGui::TextDisabled("Buffers show in the Lit shading mode.");
+    ImGui::SeparatorText("GPU Capture");
+    if (RenderDoc::Available())
+    {
+        if (ImGui::MenuItem("Capture Frame (RenderDoc)"))
+            RenderDoc::TriggerCapture();
+        ImGui::BeginDisabled(RenderDoc::CaptureCount() == 0);
+        if (ImGui::MenuItem("Open Last Capture"))
+            RenderDoc::LaunchReplayUI();
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("%u captures", RenderDoc::CaptureCount());
+    }
+    else
+    {
+        ImGui::TextDisabled("Start the editor with -renderdoc to capture frames.");
+    }
     ImGui::SeparatorText("Window");
     if (ImGui::MenuItem("Fullscreen Viewport", "Ctrl+Shift+F", m_IsViewportFullScreen))
         m_IsViewportFullScreen = !m_IsViewportFullScreen;
@@ -2282,6 +2640,7 @@ void Editor::DrawViewportOverlaysMenu()
     ImGui::Unindent();
     ImGui::EndDisabled();
     ImGui::Checkbox("Light Icons", &overlays.LightIcons);
+    ImGui::Checkbox("Game UI", &m_ShowGameUI);
 
     ImGui::SeparatorText("Viewport");
     ImGui::Checkbox("Navigation Gizmo", &m_ShowNavigationGizmo);
@@ -2388,7 +2747,7 @@ void Editor::DrawPreferencesContent()
 {
     UHE_PROFILE_FUNCTION();
     EditorUI::SectionHeader("Rendering");
-    const char* shadingModes[] = {"Lit", "Unlit", "Solid", "Normals", "Wireframe"};
+    const char* shadingModes[] = {"Lit", "Unlit", "Solid", "Normals", "Wireframe", "Overdraw", "Light Complexity"};
     int shading = static_cast<int>(m_ViewMode);
     if (ImGui::Combo("Viewport Shading", &shading, shadingModes, IM_ARRAYSIZE(shadingModes)))
         SetViewMode(static_cast<Renderer3D::ViewMode>(shading));
@@ -2426,6 +2785,11 @@ void Editor::DrawPreferencesContent()
     if (ImGui::Button("Focus Selected (F)"))
         FocusSelectedEntity();
 
+    EditorUI::SectionHeader("Display");
+    m_DisplaySettings.Draw(Application::Get().GetWindow());
+    if (m_SceneWidth > 0 && m_SceneHeight > 0)
+        ImGui::TextDisabled("Viewport renders at %u x %u", m_SceneWidth, m_SceneHeight);
+
     EditorUI::SectionHeader("Appearance");
     const char* themeLabel = EditorTheme::GetName(EditorTheme::GetSelected());
     if (ImGui::BeginCombo("Theme", themeLabel))
@@ -2455,6 +2819,9 @@ void Editor::DrawPreferencesContent()
         EditorTheme::SetCustomAccentEnabled(customEnabled);
     if (customEnabled && ImGui::Button("Reset Accent"))
         EditorTheme::SetCustomAccentEnabled(false);
+
+    EditorUI::SectionHeader("GPU Debugging");
+    EditorDebugSettings::Draw();
 
     EditorUI::SectionHeader("Layout");
     if (ImGui::Button("Reset Layout"))
@@ -2501,7 +2868,57 @@ void Editor::DrawPreferencesContent()
             ImGui::SetTooltip("Save the current scene inside the project first");
 
         ImGui::SameLine();
-        if (ImGui::Button("Close Project"))
+        // Closed after the rest of the section: the rows below still read the project this frame.
+        const bool closeProject = ImGui::Button("Close Project");
+
+        // The window an exported game opens (Project.uheproject, Window block).
+        EditorUI::SectionHeader("Game Window");
+        ProjectWindowSettings& window = m_Project->Window;
+        bool changed = false;
+        char title[128];
+        std::snprintf(title, sizeof(title), "%s", window.Title.c_str());
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputTextWithHint("##GameTitle", m_Project->Name.c_str(), title, sizeof(title)))
+            window.Title = title;
+        changed |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Window title; empty uses the project name");
+
+        int size[2] = {static_cast<int>(window.Width), static_cast<int>(window.Height)};
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::DragInt2("##GameSize", size, 1.0f, ProjectWindowSettings::kMinSize, ProjectWindowSettings::kMaxSize,
+                            "%d px", ImGuiSliderFlags_AlwaysClamp))
+        {
+            window.Width = static_cast<u32>(size[0]);
+            window.Height = static_cast<u32>(size[1]);
+        }
+        changed |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Windowed size (width, height)");
+
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::BeginCombo("Mode##GameMode", WindowModeName(window.Mode)))
+        {
+            for (const WindowMode mode : {WindowMode::Windowed, WindowMode::Borderless, WindowMode::Fullscreen})
+            {
+                if (ImGui::Selectable(WindowModeName(mode), mode == window.Mode))
+                {
+                    window.Mode = mode;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("VSync##GameVSync", &window.VSync);
+
+        if (changed)
+        {
+            std::string error;
+            if (!Project::Save(*m_Project, &error))
+                UHE_CORE_WARN("Could not save the project manifest: {0}", error);
+        }
+        if (closeProject)
             CloseProject();
     }
 
@@ -2574,7 +2991,78 @@ void Editor::CreateEntityFromMenu(const char* name, int componentKind)
         case 4: entity.AddComponent<DirectionalLightComponent>(); break;
         case 5: entity.AddComponent<PointLightComponent>(); break;
         case 6: entity.AddComponent<SpotLightComponent>(); break;
+        case 7:
+        {
+            // The panel shines along local -Z; tilted to face down from 3 m it lights the ground as soon as it exists.
+            entity.AddComponent<AreaLightComponent>();
+            auto& transform = entity.GetComponent<TransformComponent>();
+            transform.Translation = glm::vec3(0.0f, 3.0f, 0.0f);
+            transform.Rotation.x = glm::radians(-90.0f);
+            break;
+        }
+        // Water stays at the origin, where CreateEntity puts it.
+        case 8:
+            entity.AddComponent<WaterComponent>();
+            break;
+        case 9:
+            // Raised off the ground so its viewport gizmo is not buried in the floor.
+            entity.AddComponent<WindComponent>();
+            entity.GetComponent<TransformComponent>().Translation = glm::vec3(0.0f, 2.0f, 0.0f);
+            break;
+        // Terrain is centred on the origin; its lowest point is the entity's height.
+        case 10:
+            entity.AddComponent<TerrainComponent>();
+            break;
+        // A director entity: its timeline moves the others (Sequencer panel).
+        case 11:
+            entity.AddComponent<SequencerComponent>();
+            m_ShowSequencer = true;
+            break;
         default: break;
+    }
+    m_SceneHireacyPanel.SetSelectedEntity(entity);
+}
+
+void Editor::CreateUIElement(int kind)
+{
+    if (!m_ActiveScene || m_SceneState != SceneState::Edit)
+        return;
+    static constexpr const char* kNames[] = {"Panel", "Text", "Button", "Progress Bar", "Slider"};
+    kind = std::clamp(kind, 0, 4);
+    Entity selected = m_SceneHireacyPanel.GetSelectedEntity();
+    Entity entity = selected && selected.HasComponent<UIRectComponent>()
+                        ? m_ActiveScene->CreateChildEntity(selected, kNames[kind])
+                        : m_ActiveScene->CreateEntity(kNames[kind]);
+    auto& rect = entity.AddComponent<UIRectComponent>();
+    switch (kind)
+    {
+        case 0:
+            rect.Size = {320.0f, 200.0f};
+            entity.AddComponent<UIImageComponent>();
+            break;
+        case 1:
+            rect.Size = {240.0f, 40.0f};
+            entity.AddComponent<UITextComponent>();
+            break;
+        case 2:
+        {
+            rect.Size = {160.0f, 44.0f};
+            auto& image = entity.AddComponent<UIImageComponent>();
+            image.CornerRadius = 8.0f;
+            entity.AddComponent<UIButtonComponent>();
+            auto& text = entity.AddComponent<UITextComponent>();
+            text.Text = "Button";
+            text.FontSize = 20.0f;
+            break;
+        }
+        default:
+        {
+            rect.Size = {240.0f, 18.0f};
+            auto& bar = entity.AddComponent<UIProgressBarComponent>();
+            bar.Value = 0.6f;
+            bar.Interactable = kind == 4;
+            break;
+        }
     }
     m_SceneHireacyPanel.SetSelectedEntity(entity);
 }

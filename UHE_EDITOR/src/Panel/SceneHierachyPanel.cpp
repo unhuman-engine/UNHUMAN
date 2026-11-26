@@ -32,6 +32,9 @@ enum class EntityKind : std::uint8_t
     DirectionalLight,
     PointLight,
     SpotLight,
+    AreaLight,
+    Water,
+    Wind,
     Sprite,
     Text,
     Mesh,
@@ -64,6 +67,12 @@ EntityKind ClassifyEntity(Entity entity)
         return EntityKind::PointLight;
     if (entity.HasComponent<SpotLightComponent>())
         return EntityKind::SpotLight;
+    if (entity.HasComponent<AreaLightComponent>())
+        return EntityKind::AreaLight;
+    if (entity.HasComponent<WaterComponent>())
+        return EntityKind::Water;
+    if (entity.HasComponent<WindComponent>())
+        return EntityKind::Wind;
     if (entity.HasComponent<SpriteRendererComponent>() || entity.HasComponent<SpriteAnimationComponent>())
         return EntityKind::Sprite;
     if (entity.HasComponent<TextComponent>())
@@ -108,7 +117,14 @@ ImVec4 EntityKindColor(EntityKind kind)
         case EntityKind::DirectionalLight:
         case EntityKind::PointLight:
         case EntityKind::SpotLight:
+        case EntityKind::AreaLight:
             return light ? ImVec4(0.72f, 0.50f, 0.02f, 1.0f) : ImVec4(1.00f, 0.82f, 0.38f, 1.0f);
+        case EntityKind::Water:
+            // Deeper and bluer than Text's cyan, so the two stay apart in a list.
+            return light ? ImVec4(0.10f, 0.36f, 0.78f, 1.0f) : ImVec4(0.36f, 0.62f, 1.00f, 1.0f);
+        case EntityKind::Wind:
+            // A pale grey-blue, the colour of air: present but quieter than the lights and water.
+            return light ? ImVec4(0.34f, 0.42f, 0.54f, 1.0f) : ImVec4(0.78f, 0.85f, 0.94f, 1.0f);
         case EntityKind::Camera:
             return light ? ImVec4(0.38f, 0.34f, 0.80f, 1.0f) : ImVec4(0.66f, 0.64f, 1.00f, 1.0f);
         case EntityKind::Sprite:
@@ -163,6 +179,36 @@ void DrawEntityIcon(ImDrawList* draw, const ImVec2& c, float size, EntityKind ki
             draw->AddLine(p(-0.12f, -0.20f), p(-0.40f, 0.36f), col, t);
             draw->AddLine(p(0.12f, -0.20f), p(0.40f, 0.36f), col, t);
             draw->AddLine(p(-0.40f, 0.36f), p(0.40f, 0.36f), col, t);
+            break;
+        case EntityKind::AreaLight:
+            // A lit panel with parallel rays: the rectangle is what tells it from the point and spot lights.
+            draw->AddRectFilled(p(-0.42f, -0.40f), p(0.42f, -0.16f), col, 0.04f * u);
+            for (const float x : {-0.28f, 0.0f, 0.28f})
+                draw->AddLine(p(x, -0.04f), p(x * 1.25f, 0.40f), col, t);
+            break;
+        case EntityKind::Water:
+        {
+            // Three stacked waves, two periods each across the icon.
+            constexpr int kSegments = 12;
+            std::array<ImVec2, kSegments + 1> wave{};
+            for (const float y : {-0.24f, 0.02f, 0.28f})
+            {
+                for (int i = 0; i <= kSegments; ++i)
+                {
+                    const float f = static_cast<float>(i) / static_cast<float>(kSegments);
+                    wave[i] = p(-0.42f + 0.84f * f, y + 0.08f * std::sin(f * 4.0f * std::numbers::pi_v<float>));
+                }
+                draw->AddPolyline(wave.data(), static_cast<int>(wave.size()), col, ImDrawFlags_None, t);
+            }
+            break;
+        }
+        case EntityKind::Wind:
+            // Three gust strokes: straight lines whose ends curl, the outer two away from the middle one.
+            draw->AddLine(p(-0.42f, -0.20f), p(0.14f, -0.20f), col, t);
+            draw->AddBezierCubic(p(0.14f, -0.20f), p(0.40f, -0.20f), p(0.38f, -0.44f), p(0.18f, -0.40f), col, t);
+            draw->AddLine(p(-0.30f, 0.02f), p(0.42f, 0.02f), col, t);
+            draw->AddLine(p(-0.42f, 0.24f), p(0.06f, 0.24f), col, t);
+            draw->AddBezierCubic(p(0.06f, 0.24f), p(0.32f, 0.24f), p(0.30f, 0.48f), p(0.10f, 0.44f), col, t);
             break;
         case EntityKind::Sprite:
             draw->AddRect(p(-0.42f, -0.34f), p(0.42f, 0.34f), col, 0.08f * u, 0, t);

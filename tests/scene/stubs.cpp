@@ -15,6 +15,7 @@
 #include "UHE/Renderer3D/LightSystem.h"
 #include "UHE/Renderer3D/LoadModel.h"
 #include "UHE/Renderer3D/Renderer3D.h"
+#include "UHE/Renderer3D/WaterRenderer.h"
 
 namespace UHE
 {
@@ -58,6 +59,14 @@ void Renderer2D::NextBatch() {}
 void Renderer3D::Init() {}
 void Renderer3D::Shutdown() {}
 Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Animator*) { return {}; }
+Renderer3D::BoneBinding Renderer3D::PrepareBoneBinding(const RD3d::Model&, const RD3d::Animator*)
+{
+    return {};
+}
+Renderer3D::BoneBinding Renderer3D::PrepareSkinBinding(const RD3d::Model&, const RD3d::Animator*, int)
+{
+    return {};
+}
 Renderer3D::MaterialBinding Renderer3D::PrepareMaterialBinding(const RD3d::Model&) { return {}; }
 void Renderer3D::BeginScene(const EditorCamera&, const std::vector<RD3d::LightData>&) {}
 void Renderer3D::BeginScene(const Camera&, const glm::mat4&, const std::vector<RD3d::LightData>&) {}
@@ -67,6 +76,8 @@ void Renderer3D::SubmitMesh(const RD3d::Mesh&, const glm::mat4&, int, const RD3d
                             const MaterialBinding&, int, int) {}
 void Renderer3D::DrawGrid() {}
 void Renderer3D::DrawGrid(const GridOptions&) {}
+void Renderer3D::SetFoliage(float, float) {}
+void WaterRenderer::Submit(const glm::mat4&, const WaterComponent&, int) {}
 bool Renderer3D::IsLightingEnabled() { return false; }
 void Renderer3D::SetLightingEnabled(bool) {}
 void Renderer3D::RestartMaterialRegion() {}
@@ -116,6 +127,17 @@ float Animator::GetNormalizedTime() const
     return 0.0f;
 }
 std::vector<LightData> LightSystem::ExtractLights(entt::registry&) { return {}; }
+// Terrain meshes: kept on the CPU only (no device to upload to).
+bool Model::LoadFromPrimitives(const std::string& name, std::vector<Primitive> primitives,
+                               std::vector<Material> materials)
+{
+    m_LoadedMaterials = std::move(materials);
+    Mesh mesh;
+    mesh.name = name;
+    mesh.primitive = std::move(primitives);
+    m_LoadedMeshes.push_back(std::move(mesh));
+    return !m_LoadedMeshes.back().primitive.empty();
+}
 Model::~Model()
 {
     // Real dtor destroys GPU buffers via the device; headless tests never

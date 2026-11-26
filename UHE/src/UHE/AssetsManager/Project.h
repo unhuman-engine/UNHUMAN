@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include "UHE/Core/Core.h"
+#include "UHE/Core/Window.h"
 
 namespace UHE
 {
@@ -16,6 +17,30 @@ namespace UHE
  * while the engine's own assets (shaders, icons, fonts) stay reachable
  * through the `engine:` mount. Nothing here touches the GPU or ImGui.
  */
+/**
+ * @brief The window an exported game opens (the `Window` block of the manifest).
+ *
+ * The runtime creates its window from these; the player can still override
+ * the mode, size and VSync on the command line (-windowed, -borderless,
+ * -fullscreen, -width, -height, -vsync on|off).
+ */
+struct UHE_API ProjectWindowSettings
+{
+    static constexpr u32 kMinSize = 320;
+    static constexpr u32 kMaxSize = 16384;
+
+    std::string Title; ///< empty: the project's name
+    u32 Width = 1280;  ///< windowed size, within [kMinSize, kMaxSize]
+    u32 Height = 720;
+    WindowMode Mode = WindowMode::Windowed; ///< Borderless and Fullscreen use the monitor's desktop resolution
+    bool VSync = true;
+};
+
+/// @brief "Windowed", "Borderless" or "Fullscreen".
+UHE_API const char* WindowModeName(WindowMode mode);
+/// @brief The mode named \p name (any case); \p fallback when it names none.
+UHE_API WindowMode ParseWindowMode(const std::string& name, WindowMode fallback);
+
 struct UHE_API ProjectInfo
 {
     std::string Name;                // display name
@@ -23,6 +48,7 @@ struct UHE_API ProjectInfo
     std::filesystem::path AssetPath; // RootPath / "Assets"
     std::string StartScene;          // optional, path relative to RootPath
     std::string EngineVersion;       // informational, written on create/save
+    ProjectWindowSettings Window;    // the exported game's window
 
     [[nodiscard]] bool IsValid() const { return !Name.empty() && !RootPath.empty(); }
 };
@@ -36,6 +62,25 @@ public:
     // Accepts either a project directory or the manifest path itself.
     [[nodiscard]] static std::filesystem::path ManifestPath(const std::filesystem::path& path);
     [[nodiscard]] static bool IsProject(const std::filesystem::path& path);
+
+    /**
+     * @brief The one spelling of a project folder: absolute, normalized, with
+     *        no trailing separator and without the manifest's file name.
+     *
+     * Recent lists and comparisons use it, so "projects/Snake",
+     * "/repo/projects/Snake/" and ".../Snake/Project.uheproject" are one project.
+     */
+    [[nodiscard]] static std::filesystem::path NormalizeRoot(const std::filesystem::path& path);
+
+    /**
+     * @brief Why a new project called \p name cannot be created in \p parent,
+     *        or an empty string when it can.
+     *
+     * The name becomes a folder: it must not be empty, ".", "..", start or end
+     * with a space, or hold a path separator or a character Windows forbids in
+     * file names. The folder must not exist yet, or be empty.
+     */
+    [[nodiscard]] static std::string CheckNewProject(const std::filesystem::path& parent, const std::string& name);
 
     // Writes <root>/Project.uheproject and creates <root>/Assets. Fails when a
     // manifest is already there or the directories cannot be created.

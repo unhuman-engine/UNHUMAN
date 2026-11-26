@@ -13,3 +13,6 @@ default:
 # no matching attachment is invalid: the entity-id target only exists in the
 # editor's pass, so this variant drops it.
 no_entity_id: UHE_NO_ENTITY_ID=1
+
+# Shadow maps and the depth prepass: depth only, with the alpha cutout.
+depth_only: UHE_DEPTH_ONLY=1

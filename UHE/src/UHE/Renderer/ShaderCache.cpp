@@ -40,11 +40,15 @@ std::string Trim(std::string text)
     return text;
 }
 
+/// The file's modification time; the earliest time there is when it is missing.
+/// Not file_time_type{}: libstdc++'s file clock counts from 2174, so a missing
+/// source looked newer than every artifact, and a shipped game (which carries
+/// the .spv but not the sources) tried to compile shaders it does not have.
 std::filesystem::file_time_type ModificationTime(const std::filesystem::path& path)
 {
     std::error_code ec;
     const auto time = std::filesystem::last_write_time(path, ec);
-    return ec ? std::filesystem::file_time_type{} : time;
+    return ec ? std::filesystem::file_time_type::min() : time;
 }
 
 std::string Describe(const std::filesystem::path& path)

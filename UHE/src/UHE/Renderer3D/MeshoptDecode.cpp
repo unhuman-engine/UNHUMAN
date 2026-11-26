@@ -24,6 +24,110 @@ std::byte* AlignedPointer(std::byte* base)
 
 } // namespace
 
+namespace
+{
+/// The loaded size of buffer \p index; nothing when its data was not loaded.
+std::optional<std::size_t> LoadedBufferSize(const fastgltf::Asset& asset, std::size_t index)
+{
+    return std::visit(
+        fastgltf::visitor{
+            [](const fastgltf::sources::Array& array) -> std::optional<std::size_t> { return array.bytes.size(); },
+            [](const fastgltf::sources::Vector& vector) -> std::optional<std::size_t> { return vector.bytes.size(); },
+            [](const fastgltf::sources::ByteView& view) -> std::optional<std::size_t> { return view.bytes.size(); },
+            [](const auto&) -> std::optional<std::size_t> { return std::nullopt; }},
+        asset.buffers[index].data);
+}
+
+/// \p count elements of \p element bytes, \p stride apart, from \p offset, all
+/// end by \p limit. Written without the multiplication a hostile count overflows.
+bool Fits(std::size_t offset, std::size_t count, std::size_t stride, std::size_t element, std::size_t limit)
+{
+    if (offset > limit)
+        return false;
+    if (count == 0)
+        return true;
+    if (element > limit - offset)
+        return false;
+    const std::size_t room = limit - offset - element;
+    return stride == 0 || count - 1 <= room / stride;
+}
+} // namespace
+
+bool ValidateBufferRanges(const fastgltf::Asset& asset, std::string& error)
+{
+    for (std::size_t i = 0; i < asset.bufferViews.size(); ++i)
+    {
+        const auto& view = asset.bufferViews[i];
+        // A compressed view's own range is its decoded size; the bytes read
+        // from the buffer are the extension's.
+        const std::size_t bufferIndex =
+            view.meshoptCompression ? view.meshoptCompression->bufferIndex : view.bufferIndex;
+        const std::size_t offset = view.meshoptCompression ? view.meshoptCompression->byteOffset : view.byteOffset;
+        const std::size_t length = view.meshoptCompression ? view.meshoptCompression->byteLength : view.byteLength;
+        if (bufferIndex >= asset.buffers.size())
+        {
+            error = "buffer view " + std::to_string(i) + " names buffer " + std::to_string(bufferIndex) +
+                    ", which does not exist";
+            return false;
+        }
+        const std::optional<std::size_t> size = LoadedBufferSize(asset, bufferIndex);
+        if (!size)
+        {
+            error = "buffer " + std::to_string(bufferIndex) + " was not loaded";
+            return false;
+        }
+        if (!Fits(offset, 1, 0, length, *size))
+        {
+            error = "buffer view " + std::to_string(i) + " (" + std::to_string(length) + " bytes at " +
+                    std::to_string(offset) + ") ends past its buffer (" + std::to_string(*size) +
+                    " bytes); is the .bin truncated?";
+            return false;
+        }
+    }
+
+    const auto viewLength = [&](std::size_t index) -> std::optional<std::size_t>
+    {
+        if (index >= asset.bufferViews.size())
+            return std::nullopt;
+        return asset.bufferViews[index].byteLength;
+    };
+    for (std::size_t i = 0; i < asset.accessors.size(); ++i)
+    {
+        const auto& accessor = asset.accessors[i];
+        const std::size_t element = fastgltf::getElementByteSize(accessor.type, accessor.componentType);
+        const std::string name = "accessor " + std::to_string(i);
+        if (accessor.bufferViewIndex)
+        {
+            const std::optional<std::size_t> length = viewLength(*accessor.bufferViewIndex);
+            if (!length)
+            {
+                error = name + " names a buffer view that does not exist";
+                return false;
+            }
+            const auto& stride = asset.bufferViews[*accessor.bufferViewIndex].byteStride;
+            if (!Fits(accessor.byteOffset, accessor.count, stride ? *stride : element, element, *length))
+            {
+                error = name + " (" + std::to_string(accessor.count) + " elements) ends past its buffer view";
+                return false;
+            }
+        }
+        if (accessor.sparse)
+        {
+            const auto& sparse = *accessor.sparse;
+            const std::size_t index = fastgltf::getComponentByteSize(sparse.indexComponentType);
+            const std::optional<std::size_t> indices = viewLength(sparse.indicesBufferView);
+            const std::optional<std::size_t> values = viewLength(sparse.valuesBufferView);
+            if (!indices || !values || !Fits(sparse.indicesByteOffset, sparse.count, index, index, *indices) ||
+                !Fits(sparse.valuesByteOffset, sparse.count, element, element, *values))
+            {
+                error = name + "'s sparse indices or values end past their buffer views";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 std::span<const std::byte> GetBufferViewBytes(const fastgltf::Asset& asset, std::size_t bufferViewIndex,
                                               std::vector<std::byte>& scratch)
 {

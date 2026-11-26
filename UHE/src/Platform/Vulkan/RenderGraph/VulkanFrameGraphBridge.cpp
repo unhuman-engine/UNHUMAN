@@ -1,6 +1,7 @@
 #include "uhepch.h"
 #include "Platform/Vulkan/RenderGraph/VulkanFrameGraphBridge.h"
 #include <algorithm>
+#include <cstdlib>
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
 #include "Platform/Vulkan/VulkanDevice.h"
 
@@ -110,6 +111,8 @@ TextureDesc PhysicalDesc(const FGLoweredFrame& frame, u32 resource)
     desc.usage = UsageOf(frame, resource);
     if (logical.Exported)
         desc.usage = desc.usage | ExportUsage(logical);
+    // The frame graph's name ("Scene.HDR", "SSAO.Raw") names the image in a GPU debugger.
+    desc.debugName = logical.Name.c_str();
     return desc;
 }
 
@@ -206,6 +209,33 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
 
     const FGLoweredFrame frame = frontend.Lower();
 
+    // Pass interval each resource is used in. Passes compile in declaration
+    // order (single queue, ties toward declaration), so these are the
+    // compiled lifetimes, or wider when a pass is culled. Two created textures
+    // of one shape whose intervals do not touch share an image (#32): the
+    // second's first barrier discards and waits on everything before it.
+    // UHE_RENDERGRAPH_NO_ALIAS=1 gives every texture its own image, for an A/B.
+    static const bool aliasing = []
+    {
+        const char* off = std::getenv("UHE_RENDERGRAPH_NO_ALIAS");
+        return off == nullptr || *off == '\0' || std::string(off) == "0";
+    }();
+    std::vector<std::pair<u32, u32>> lifetimes(frame.Resources.size(), {TransientTexturePool::kWholeFrame, 0});
+    for (u32 p = 0; p < frame.Passes.size(); ++p)
+    {
+        for (const FGLoweredAccess& access : frame.Passes[p].Accesses)
+        {
+            if (access.Resource >= lifetimes.size())
+                continue;
+            auto& [first, last] = lifetimes[access.Resource];
+            first = std::min(first, p);
+            last = std::max(last, p);
+        }
+    }
+
+    const u64 aliasedBefore = m_Pool.AliasedCount();
+    u32 createdTextures = 0;
+
     // Resources first: every physical object must exist before a pass names it.
     std::vector<RGTextureHandle> rgTextures(frame.Resources.size());
     std::vector<RGBufferHandle> rgBuffers(frame.Resources.size());
@@ -294,7 +324,9 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
             m_PendingExports.emplace_back(resource.Name, resource.FinalState);
             continue;
         }
-        m_Textures[i] = m_Pool.Acquire(desc);
+        ++createdTextures;
+        const auto [first, last] = lifetimes[i];
+        m_Textures[i] = aliasing && first <= last ? m_Pool.Acquire(desc, first, last) : m_Pool.Acquire(desc);
         if (m_Textures[i] == nullptr)
         {
             errors.push_back("'" + resource.Name + "': could not allocate a " + std::to_string(desc.width) + "x" +
@@ -311,6 +343,14 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
         rgDesc.sampleCount = resource.Texture.SampleCount;
         rgDesc.usage = desc.usage;
         rgTextures[i] = graph.CreateTexture(rgDesc);
+    }
+
+    // Said once, so a capture log shows whether aliasing is doing anything.
+    if (static bool reported = false; !reported && m_Pool.AliasedCount() > aliasedBefore)
+    {
+        reported = true;
+        UHE_CORE_INFO("[RENDERGRAPH] aliasing: {0} of {1} transient textures share an image with another this frame",
+                      m_Pool.AliasedCount() - aliasedBefore, createdTextures);
     }
 
     for (const FGLoweredPass& pass : frame.Passes)
@@ -369,7 +409,9 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
             {
                 VulkanFGContext fgContext(name, frontend.Board(), m_Device.GetCurrentCommandBuffer(), context.Extent(),
                                           m_Textures, m_Buffers, declared);
+                m_Device.BeginGpuPass(name);
                 frontend.ExecutePass(index, fgContext);
+                m_Device.EndGpuPass();
             });
     }
 

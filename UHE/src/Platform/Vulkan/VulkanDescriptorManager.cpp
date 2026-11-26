@@ -1,4 +1,5 @@
 #include "uhepch.h"
+#include "Platform/Vulkan/VulkanDebugUtils.h"
 #include "VulkanDescriptorPool.h"
 #include "VulkanDescriptorSet.h"
 #include "VulkanDevice.h"
@@ -115,6 +116,19 @@ void VulkanDescriptorManager::init(VulkanDevice& device)
 
         m_GlobalDescriptorSet.BuildLayout(mdevice);
         m_GlobalDescriptorSet.AllocateSet(mdevice, &m_FallbackDescriptorPool);
+        // Named for GPU debuggers: every shader reads through this one set.
+        const auto device = static_cast<VkDevice>(mdevice);
+        DebugUtils::Name(
+            device, static_cast<int>(vk::ObjectType::eDescriptorSetLayout),
+            reinterpret_cast<std::uint64_t>(static_cast<VkDescriptorSetLayout>(m_GlobalDescriptorSet.GetLayout())),
+            "Bindless.Layout");
+        DebugUtils::Name(device, static_cast<int>(vk::ObjectType::eDescriptorSet),
+                         reinterpret_cast<std::uint64_t>(static_cast<VkDescriptorSet>(m_GlobalDescriptorSet.GetSet())),
+                         "Bindless.Set");
+        DebugUtils::Name(device, static_cast<int>(vk::ObjectType::eDescriptorPool),
+                         reinterpret_cast<std::uint64_t>(
+                             static_cast<VkDescriptorPool>(*m_FallbackDescriptorPool.GetDescriptorPool())),
+                         "Bindless.Pool");
     }
     else
     {

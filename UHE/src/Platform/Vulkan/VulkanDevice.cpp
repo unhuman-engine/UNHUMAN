@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <iostream>
+#include "Platform/Vulkan/VulkanDebugUtils.h"
 
 // ─── Frame-loop timeouts (§9.1.5: bounded waits, never UINT64_MAX) ──────────
 // One second of GPU silence on a live submission means the device is gone or a
@@ -62,6 +63,7 @@ VulkanDevice::VulkanDevice(const SwapchainDesc& swapDesc)
     m_WindowHandle = static_cast<GLFWwindow*>(swapDesc.nativeWindow);
     m_WindowWidth = swapDesc.width;
     m_WindowHeight = swapDesc.height;
+    m_VSync = swapDesc.vsync;
     InitVulkan(swapDesc);
 }
 
@@ -100,7 +102,7 @@ void VulkanDevice::InitVulkan(const SwapchainDesc& swapDesc)
     m_Allocator = m_LogicalDevice.getAllocator();
 
     m_SwapChain.createSwapChain(m_LogicalDevice.getLogicalDevice(), m_PhysicalDevice.getPhysicalDevice(),
-                                m_LogicalDevice.getSurface(), m_WindowHandle);
+                                m_LogicalDevice.getSurface(), m_WindowHandle, m_VSync);
 
     for (auto& frame : m_Frames)
     {
@@ -137,6 +139,8 @@ void VulkanDevice::InitVulkan(const SwapchainDesc& swapDesc)
     m_Context.graphicsQueue = &m_LogicalDevice.getGraphicsQueue();
     m_Context.surface = &m_LogicalDevice.getSurface();
     m_Context.graphicsQueueFamilyIndex = m_LogicalDevice.getGraphicsQueueFamilyIndex();
+    m_GpuTimer.Init(m_LogicalDevice.getLogicalDevice(), m_PhysicalDevice.getPhysicalDevice(),
+                    m_Context.graphicsQueueFamilyIndex);
 
     // Frame timelines (§9.1.1/D1 v1): one per frame slot, CPU-observable pacing.
     // On the Legacy tier these degrade to binary semaphores and the timeline
@@ -171,6 +175,7 @@ void VulkanDevice::CleanupVulkan()
     g_VulkanContext = nullptr;
 
     WaitIdle();
+    m_GpuTimer.Shutdown();
 
     // Pooled frame graph textures go the way of any texture: through the
     // deletion queues the frame cleanup below flushes.
@@ -218,7 +223,7 @@ void VulkanDevice::RecreateSwapchain()
     WaitIdle();
     m_SwapChain.cleanupSwapChain();
     m_SwapChain.createSwapChain(m_LogicalDevice.getLogicalDevice(), m_PhysicalDevice.getPhysicalDevice(),
-                                m_LogicalDevice.getSurface(), m_WindowHandle);
+                                m_LogicalDevice.getSurface(), m_WindowHandle, m_VSync);
 
     // §9.1.4: registrations bound to the dead swapchain are gone — next
     // Begin() re-registers the fresh images (which is why resize rebuilds the
@@ -235,6 +240,16 @@ void VulkanDevice::RecreateSwapchain()
         vk::SemaphoreCreateInfo semaphoreInfo{.flags = {}};
         m_RenderFinishedSemaphores.emplace_back(m_LogicalDevice.getLogicalDevice(), semaphoreInfo);
     }
+}
+
+void VulkanDevice::SetVSync(bool enabled)
+{
+    if (enabled == m_VSync)
+        return;
+    m_VSync = enabled;
+    // The present mode is fixed at swapchain creation: take the resize path,
+    // which recreates the swapchain right after the next present.
+    m_FramebufferResized = true;
 }
 
 // ─── Resource Management Stubs  ───
@@ -270,6 +285,10 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc)
 
     VmaMemoryUsage memUsage = desc.hostVisible ? VMA_MEMORY_USAGE_CPU_TO_GPU : VMA_MEMORY_USAGE_GPU_ONLY;
     buffer->init(m_Allocator, desc.size, usage, memUsage);
+    if (desc.debugName != nullptr)
+        DebugUtils::Name(static_cast<VkDevice>(*m_LogicalDevice.getLogicalDevice()),
+                         static_cast<int>(vk::ObjectType::eBuffer),
+                         reinterpret_cast<std::uint64_t>(static_cast<VkBuffer>(buffer->GetHandle())), desc.debugName);
     return reinterpret_cast<BufferHandle>(buffer);
 }
 
@@ -338,6 +357,10 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
 {
     auto* texture = new VulkanTexture();
     texture->Init(*this, desc);
+    if (desc.debugName != nullptr)
+        DebugUtils::Name(static_cast<VkDevice>(*m_LogicalDevice.getLogicalDevice()),
+                         static_cast<int>(vk::ObjectType::eImage),
+                         reinterpret_cast<std::uint64_t>(static_cast<VkImage>(texture->GetImage())), desc.debugName);
     return reinterpret_cast<TextureHandle>(texture);
 }
 ShaderHandle VulkanDevice::CreateShader(const ShaderDesc& desc)
@@ -354,6 +377,11 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         {
             auto* pipeline = new VulkanGraphicPipeline();
             pipeline->createGraphicsPipeline(m_LogicalDevice, m_DescriptorManager, m_Context, desc);
+            if (desc.debugName != nullptr)
+                DebugUtils::Name(static_cast<VkDevice>(*m_LogicalDevice.getLogicalDevice()),
+                                 static_cast<int>(vk::ObjectType::ePipeline),
+                                 reinterpret_cast<std::uint64_t>(static_cast<VkPipeline>(pipeline->GetPipeline())),
+                                 desc.debugName);
             return reinterpret_cast<PipelineHandle>(static_cast<VulkanPipelineState*>(pipeline));
         });
 }
@@ -445,6 +473,7 @@ void VulkanDevice::Begin()
                                                                        VK_TRUE, UINT64_MAX);
     UHE_CORE_ASSERT(waitResult == vk::Result::eSuccess, "Failed to wait for in-flight fence!");
     CollectPixelReadback(); // this slot's fence passed: its copy has landed
+    m_GpuTimer.Collect(m_CurrentFrame);
 
     // ── Acquire ONCE (§9.1.4): no retry loop. Out-of-date → recreate + skip
     // the frame; the fresh swapchain is acquired on the next Begin.
@@ -490,6 +519,21 @@ void VulkanDevice::Begin()
     m_Frames[m_CurrentFrame].GetDeletionQueue().Flush();
     m_Frames[m_CurrentFrame].GetCommandBuffer().Reset();
     m_Frames[m_CurrentFrame].GetCommandBuffer().BeginCommandBuffer(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+    m_GpuTimer.BeginFrame(*m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), m_CurrentFrame);
+}
+
+void VulkanDevice::BeginGpuPass(const std::string& name)
+{
+    const vk::CommandBuffer cmd = *m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle();
+    DebugUtils::BeginLabel(static_cast<VkCommandBuffer>(cmd), name.c_str());
+    m_GpuTimer.BeginPass(cmd, name);
+}
+
+void VulkanDevice::EndGpuPass()
+{
+    const vk::CommandBuffer cmd = *m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle();
+    m_GpuTimer.EndPass(cmd);
+    DebugUtils::EndLabel(static_cast<VkCommandBuffer>(cmd));
 }
 
 void VulkanDevice::End()
@@ -1101,6 +1145,13 @@ void VulkanDevice::CollectFrameCapture()
     m_FrameCapture = {};
     if (!frame.Rgba.empty())
         callback(frame);
+}
+
+u32 VulkanDevice::GetMaxPushConstantsSize() const
+{
+    if (m_Context.physicalDeviceHandle == nullptr)
+        return 128; // the guarantee, until a device exists
+    return m_Context.physicalDeviceHandle->getProperties().limits.maxPushConstantsSize;
 }
 
 } // namespace UHE::RHI::VULKAN

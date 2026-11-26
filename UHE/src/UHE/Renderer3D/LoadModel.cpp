@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/tools.hpp>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <tuple>
 #include "MeshoptDecode.h"
@@ -97,6 +99,64 @@ void Model::Destroy()
     m_RootNodes.clear();
     m_NodeToMesh.clear();
     m_PunctualLights.clear();
+    m_TextureSources.clear();
+    m_MaterialTextureSources.clear();
+    m_HasTransparentMaterials = false;
+}
+
+bool Model::LoadFromPrimitives(const std::string& name, std::vector<Primitive> primitives,
+                               std::vector<Material> materials)
+{
+    Destroy();
+    m_Options = {};
+    if (materials.empty())
+        materials.emplace_back();
+    m_LoadedMaterials = std::move(materials);
+
+    Geometry geometry;
+    geometry.name = name;
+    for (Primitive& prim : primitives)
+    {
+        if (prim.vertices.empty() || prim.indices.empty())
+            continue;
+        prim.geometryIndex = 0;
+        prim.usesSharedGeometry = false;
+        prim.IndexCount = static_cast<u32>(prim.indices.size());
+        prim.materialIndex = std::min(prim.materialIndex, m_LoadedMaterials.size() - 1);
+        geometry.primitive.push_back(std::move(prim));
+    }
+    if (geometry.primitive.empty())
+        return false;
+    m_Geometry.push_back(std::move(geometry));
+    ComputeBounds(m_Geometry[0]);
+    UploadGeometry(m_Geometry[0], 0);
+
+    const Geometry& geom = m_Geometry[0];
+    Mesh mesh;
+    mesh.name = name;
+    mesh.geometryIndex = 0;
+    mesh.hasBounds = geom.hasBounds;
+    mesh.boundsMin = geom.boundsMin;
+    mesh.boundsMax = geom.boundsMax;
+    for (const Primitive& source : geom.primitive)
+    {
+        Primitive prim;
+        prim.materialIndex = source.materialIndex;
+        prim.geometryIndex = 0;
+        prim.usesSharedGeometry = true; // borrows the geometry's buffers, like a loaded node
+        prim.VertexBuffer = source.VertexBuffer;
+        prim.IndexBuffer = source.IndexBuffer;
+        prim.IndexCount = source.IndexCount;
+        prim.hasVertexColor = source.hasVertexColor;
+        mesh.primitive.push_back(prim);
+    }
+    m_LoadedMeshes.push_back(std::move(mesh));
+
+    ModelNode& node = m_Nodes.emplace_back();
+    node.Name = name;
+    node.MeshIndex = 0;
+    m_RootNodes.push_back(0);
+    return true;
 }
 
 glm::mat4 Model::NodeLocalTransform(const fastgltf::Node& node)
@@ -120,16 +180,51 @@ glm::mat4 Model::NodeLocalTransform(const fastgltf::Node& node)
     return local;
 }
 
+namespace
+{
+std::string Lower(std::string text)
+{
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+} // namespace
+
 bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOptions& options)
 {
     // Models referenced by scenes and components store project-relative paths.
     const std::filesystem::path resolved = ResolveAssetPath(filepath.string());
     if (!std::filesystem::exists(resolved))
     {
+        // An exported game ships the cook alone: the glTF path names it.
+        const std::filesystem::path cookedOnly = ResolveAssetPath(CookedPathFor(filepath).string());
+        if (std::error_code ec; std::filesystem::exists(cookedOnly, ec))
+        {
+            std::string error;
+            if (LoadCooked(cookedOnly, options, &error))
+                return true;
+            UHE_CORE_ERROR("Model '{0}': {1}", filepath.string(), error);
+            return false;
+        }
         UHE_CORE_ERROR("File not Found {0}", filepath.string());
         return false;
     }
     const std::filesystem::path& modelPath = resolved;
+
+    // A cook of this source, when the source is gone (an exported game) or older:
+    // the runtime then reads the cooked binary and never parses the glTF.
+    const std::filesystem::path cooked = CookedPathFor(modelPath);
+    if (Lower(modelPath.extension().string()) == ".uhemodel")
+        return LoadCooked(modelPath, options);
+    if (std::error_code ec;
+        std::filesystem::exists(cooked, ec) && !options.keepTextureSources &&
+        std::filesystem::last_write_time(cooked, ec) >= std::filesystem::last_write_time(modelPath, ec))
+    {
+        if (std::string error; LoadCooked(cooked, options, &error))
+            return true;
+        else
+            UHE_CORE_WARN("Model: cooked '{0}' not used ({1}); loading the source", cooked.filename().string(), error);
+    }
 
     Destroy();
     m_Options = options;
@@ -144,18 +239,28 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
     auto gltfFile = fastgltf::MappedGltfFile::FromPath(modelPath);
     if (!gltfFile)
     {
-        UHE_CORE_ERROR("Failed to open/map glTF file: {0}", fastgltf::getErrorMessage(gltfFile.error()));
+        UHE_CORE_ERROR("glTF '{0}' could not be opened: {1}", modelPath.filename().string(),
+                       fastgltf::getErrorMessage(gltfFile.error()));
         return false;
     }
 
     auto assetResult = parser.loadGltf(gltfFile.get(), modelPath.parent_path(), gltfOption);
     if (assetResult.error() != fastgltf::Error::None)
     {
-        UHE_CORE_ERROR("Failed to parse glTF data: {0}", fastgltf::getErrorMessage(assetResult.error()));
+        UHE_CORE_ERROR("glTF '{0}' could not be parsed: {1}", modelPath.filename().string(),
+                       fastgltf::getErrorMessage(assetResult.error()));
         return false;
     }
 
     fastgltf::Asset asset = std::move(assetResult.get());
+
+    // Everything below iterates accessors and trusts their ranges; a file that
+    // points past its own data is refused here instead of read out of bounds.
+    if (std::string rangeError; !ValidateBufferRanges(asset, rangeError))
+    {
+        UHE_CORE_ERROR("glTF '{0}' is damaged: {1}", modelPath.filename().string(), rangeError);
+        return false;
+    }
 
     // Record extensions the file declares that this loader does not implement.
     // The parser is constructed with every extension enabled, so an unsupported
@@ -202,7 +307,8 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
     for (size_t i = 0; i < m_Geometry.size(); ++i)
     {
         ComputeBounds(m_Geometry[i]);
-        UploadGeometry(m_Geometry[i], i);
+        if (m_Options.upload)
+            UploadGeometry(m_Geometry[i], i);
     }
 
     if (m_HasUnsupportedExtensions)
@@ -332,9 +438,14 @@ UVTransform EngineUVTransform(const fastgltf::TextureTransform& t)
 void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::path& filepath)
 {
     m_LoadedMaterials.resize(asset.materials.size());
+    MaterialTextureSources noSources;
+    noSources.fill(-1);
+    m_MaterialTextureSources.assign(asset.materials.size(), noSources);
 
-    // Per-load texture cache; see the dedup note inside loadTexture.
-    std::map<std::tuple<size_t, int, size_t>, Ref<Texture2D>> textureCache;
+    // Per-load texture cache; see the dedup note inside loadTexture. Each entry
+    // also remembers its TextureSource (-1 when sources are not kept).
+    std::map<std::tuple<size_t, int, size_t>, std::pair<Ref<Texture2D>, i32>> textureCache;
+    i32 lastSource = -1; // the source of the texture loadTexture returned last
 
     for (size_t i = 0; i < asset.materials.size(); ++i)
     {
@@ -359,6 +470,7 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
                                RHI::SamplerDesc::ColorSpace colorSpace =
                                    RHI::SamplerDesc::ColorSpace::SRGB) -> Ref<Texture2D>
         {
+            lastSource = -1;
             if (!texInfo)
                 return nullptr;
             auto textureIndex = texInfo->textureIndex;
@@ -389,7 +501,10 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
                 std::make_tuple(*imageIndex, static_cast<int>(colorSpace),
                                 gltfTexture.samplerIndex.value_or(std::numeric_limits<size_t>::max()));
             if (const auto found = textureCache.find(cacheKey); found != textureCache.end())
-                return found->second;
+            {
+                lastSource = found->second.second;
+                return found->second.first;
+            }
 
             auto& image = asset.images[imageIndex.value()];
 
@@ -400,28 +515,52 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             RHI::SamplerDesc sampler = SamplerDescForTexture(asset, textureIndex, colorSpace);
 
             Ref<Texture2D> result = nullptr;
+            // Cooking keeps the encoded image; a load without a device creates no texture.
+            const bool keep = m_Options.keepTextureSources;
+            const bool upload = m_Options.upload;
+            std::vector<u8> encoded;
+            const auto keepBytes = [&](const void* data, size_t size)
+            {
+                if (keep && data != nullptr)
+                    encoded.assign(static_cast<const u8*>(data), static_cast<const u8*>(data) + size);
+            };
             std::visit(
                 fastgltf::visitor{
                     [&](const fastgltf::sources::URI& filePath)
                     {
                         std::filesystem::path imgPath = filepath.parent_path() / filePath.uri.path();
-                        result = Texture2D::Create(imgPath.string(), sampler);
+                        if (keep)
+                        {
+                            std::ifstream in(imgPath, std::ios::binary);
+                            encoded.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+                            if (encoded.empty())
+                                UHE_CORE_WARN("Material {0}: image '{1}' could not be read for cooking", matIdx,
+                                              imgPath.string());
+                        }
+                        if (upload)
+                            result = Texture2D::Create(imgPath.string(), sampler);
                     },
                     [&](const fastgltf::sources::Array& array)
                     {
-                        result = Texture2D::CreateFromMemory(array.bytes.data(), array.bytes.size(), sampler);
+                        keepBytes(array.bytes.data(), array.bytes.size());
+                        if (upload)
+                            result = Texture2D::CreateFromMemory(array.bytes.data(), array.bytes.size(), sampler);
                         UHE_CORE_INFO("Loaded texture for material {0} from Array, size: {1}", matIdx,
                                       array.bytes.size());
                     },
                     [&](const fastgltf::sources::ByteView& byteView)
                     {
-                        result = Texture2D::CreateFromMemory(byteView.bytes.data(), byteView.bytes.size(), sampler);
+                        keepBytes(byteView.bytes.data(), byteView.bytes.size());
+                        if (upload)
+                            result = Texture2D::CreateFromMemory(byteView.bytes.data(), byteView.bytes.size(), sampler);
                         UHE_CORE_INFO("Loaded texture for material {0} from ByteView, size: {1}", matIdx,
                                       byteView.bytes.size());
                     },
                     [&](const fastgltf::sources::Vector& vector)
                     {
-                        result = Texture2D::CreateFromMemory(vector.bytes.data(), vector.bytes.size(), sampler);
+                        keepBytes(vector.bytes.data(), vector.bytes.size());
+                        if (upload)
+                            result = Texture2D::CreateFromMemory(vector.bytes.data(), vector.bytes.size(), sampler);
                         UHE_CORE_INFO("Loaded texture for material {0} from Vector, size: {1}", matIdx,
                                       vector.bytes.size());
                     },
@@ -442,14 +581,26 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
                             UHE_CORE_ERROR("BufferView for material {0} has no readable data", matIdx);
                             return;
                         }
-                        result = Texture2D::CreateFromMemory(bytes.data(), bytes.size(), sampler);
+                        keepBytes(bytes.data(), bytes.size());
+                        if (upload)
+                            result = Texture2D::CreateFromMemory(bytes.data(), bytes.size(), sampler);
                         UHE_CORE_INFO("Loaded texture for material {0} from BufferView, size: {1}", matIdx,
                                       bytes.size());
                     },
                     [&](const auto&)
                     { UHE_CORE_ERROR("Unhandled image data type in glTF! Variant index: {0}", image.data.index()); }},
                 image.data);
-            textureCache.emplace(cacheKey, result);
+            i32 source = -1;
+            if (keep && !encoded.empty())
+            {
+                source = static_cast<i32>(m_TextureSources.size());
+                TextureSource& kept = m_TextureSources.emplace_back();
+                kept.Name = std::string(image.name);
+                kept.Bytes = std::move(encoded);
+                kept.Sampler = sampler;
+            }
+            textureCache.emplace(cacheKey, std::make_pair(result, source));
+            lastSource = source;
             return result;
         };
 
@@ -462,6 +613,8 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             if (!texInfo)
                 return;
             target = loadTexture(texInfo, i, colorSpace);
+            if (slotIndex >= 0 && slotIndex < static_cast<int>(MaterialTextureSlot::Count))
+                m_MaterialTextureSources[i][static_cast<size_t>(slotIndex)] = lastSource;
             if (texInfo->transform)
             {
                 auto& dst = m_LoadedMaterials[i].UVTransforms[slotIndex];
@@ -723,12 +876,6 @@ void Model::LoadMaterials(const fastgltf::Asset& asset, const std::filesystem::p
             ext.TransmissionBlend = BlendApproach::OpaqueWithTransmission;
         }
     }
-
-    if (m_HasTransparentMaterials)
-    {
-        UHE_CORE_WARN("glTF uses alphaMode BLEND - transparent materials draw in submission order until a "
-                      "sorted transparent pass exists (roadmap M3 step 4)");
-    }
 }
 
 void Model::ParsePunctualLights(const fastgltf::Asset& asset)
@@ -846,6 +993,7 @@ void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const gl
         mesh.geometryIndex = geometryIndex;
         mesh.nodeIndex = nodeIndex;
         mesh.LocalTransform = worldTransform;
+        mesh.skinIndex = node.skinIndex.has_value() ? static_cast<int>(*node.skinIndex) : -1;
 
         // Node name is what the hierarchy panel should show. The glTF mesh name is
         // only a fallback, because every instance of one mesh shares it.
@@ -883,6 +1031,9 @@ void Model::ProcessNode(const fastgltf::Asset& asset, size_t nodeIndex, const gl
             prim.VertexBuffer = srcPrim.VertexBuffer;
             prim.IndexBuffer = srcPrim.IndexBuffer;
             prim.IndexCount = srcPrim.IndexCount;
+            // COLOR_0 lives on the geometry's primitive; without this the
+            // draw never multiplied the vertex colours in.
+            prim.hasVertexColor = srcPrim.hasVertexColor;
             mesh.primitive.push_back(prim);
         }
 

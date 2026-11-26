@@ -1,5 +1,6 @@
 #include "uhepch.h"
 #include "VulkanCommandBuffer.h"
+#include <memory>
 #include <vulkan/vulkan_raii.hpp>
 #include "Platform/Vulkan/VulkanBuffer.h"
 #include "Platform/Vulkan/VulkanContext.h"
@@ -230,12 +231,19 @@ void VulkanCommandBuffer::BeginRenderPass(const RenderPassDesc& desc)
                                .height = renderExtent.height,
                                .layers = 1};
 
-        VulkanFramebuffer mFramebuffer;
-        mFramebuffer.Init(fbDesc);
+        // The framebuffer must outlive the pass and the GPU's use of it, not
+        // this scope: a local here was destroyed while the pass was still
+        // open (#35). It goes to the frame's deferred destruction, which runs
+        // once this frame slot's work has completed.
+        auto framebuffer = std::make_shared<VulkanFramebuffer>();
+        framebuffer->Init(fbDesc);
+        const vk::Framebuffer framebufferHandle = framebuffer->GetHandle();
+        if (m_ctx->device != nullptr)
+            m_ctx->device->DeferDestruction([framebuffer]() mutable { framebuffer.reset(); });
 
         vk::RenderPassBeginInfo renderPassInfo{
             .renderPass = m_ctx->graphicPipeline->GetRenderPassHandle().GetRenderPass(),
-            .framebuffer = mFramebuffer.GetHandle(),
+            .framebuffer = framebufferHandle,
             .renderArea = {.offset = vk::Offset2D{.x = 0, .y = 0}, .extent = renderExtent},
             .clearValueCount = static_cast<u32>(clearValues.size()),
             .pClearValues = clearValues.data()};

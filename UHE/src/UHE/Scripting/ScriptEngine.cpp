@@ -3,6 +3,7 @@
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/Log.h"
 #include "UHE/Core/input.h"
+#include "UHE/Physics/Joints3D.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer3D/AnimationStateMachine.h"
 #include "UHE/Scene/Components.h"
@@ -64,6 +65,8 @@ struct ScriptEngine::Impl
         sol::protected_function OnCreate;
         sol::protected_function OnUpdate;
         sol::protected_function OnDestroy;
+        sol::protected_function OnClick;         ///< game UI: the entity's button was clicked
+        sol::protected_function OnSequenceEvent; ///< the entity's sequence passed an event key
         bool Started = false;
         bool Errored = false;
         /// Released while a hook was running: stopped, invisible to every query,
@@ -482,6 +485,8 @@ bool LoadInstance(ScriptEngine::Impl& impl, ScriptEngine::Impl::Instance& instan
     instance.OnCreate = HookOf(impl, env, "OnCreate");
     instance.OnUpdate = HookOf(impl, env, "OnUpdate");
     instance.OnDestroy = HookOf(impl, env, "OnDestroy");
+    instance.OnClick = HookOf(impl, env, "OnClick");
+    instance.OnSequenceEvent = HookOf(impl, env, "OnSequenceEvent");
     instance.ResolvedPath = resolved;
     instance.SourceTime = ModificationTime(resolved);
     return true;
@@ -745,6 +750,180 @@ void BindApi(ScriptEngine::Impl& impl)
                              }
                          });
 
+    // ── game UI ─────────────────────────────────────────────────────────────
+    // Every UI method resolves the entity through the registry like the rest,
+    // and does nothing (or returns nil) on an entity without that component.
+    const auto withEntity = [&impl](sol::table self, auto&& action)
+    {
+        Scene* scene = nullptr;
+        entt::entity handle = entt::null;
+        if (ResolveEntity(impl, self, scene, handle))
+            action(Entity{handle, scene});
+    };
+    methods.set_function("SetText",
+                         [withEntity](sol::table self, const std::string& text)
+                         {
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UITextComponent>())
+                                                entity.GetComponent<UITextComponent>().Text = text;
+                                        });
+                         });
+    methods.set_function("GetText",
+                         [withEntity](sol::table self) -> sol::object
+                         {
+                             sol::object out = sol::nil;
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UITextComponent>())
+                                                out = sol::make_object(self.lua_state(),
+                                                                       entity.GetComponent<UITextComponent>().Text);
+                                        });
+                             return out;
+                         });
+    methods.set_function("SetValue",
+                         [withEntity](sol::table self, float value)
+                         {
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIProgressBarComponent>())
+                                                entity.GetComponent<UIProgressBarComponent>().Value =
+                                                    std::clamp(value, 0.0f, 1.0f);
+                                        });
+                         });
+    methods.set_function("GetValue",
+                         [withEntity](sol::table self) -> sol::object
+                         {
+                             sol::object out = sol::nil;
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIProgressBarComponent>())
+                                                out = sol::make_object(
+                                                    self.lua_state(),
+                                                    entity.GetComponent<UIProgressBarComponent>().Value);
+                                        });
+                             return out;
+                         });
+    methods.set_function("SetVisible",
+                         [withEntity](sol::table self, bool visible)
+                         {
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIRectComponent>())
+                                                entity.GetComponent<UIRectComponent>().Visible = visible;
+                                        });
+                         });
+    methods.set_function("IsVisible",
+                         [withEntity](sol::table self)
+                         {
+                             bool visible = false;
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            visible = entity.HasComponent<UIRectComponent>() &&
+                                                      entity.GetComponent<UIRectComponent>().Visible;
+                                        });
+                             return visible;
+                         });
+    // Colours are 0..1 sRGB, as the inspector shows them; on a button this is its normal colour.
+    methods.set_function("SetColor",
+                         [withEntity](sol::table self, float r, float g, float b, sol::optional<float> a)
+                         {
+                             const glm::vec4 color(r, g, b, a.value_or(1.0f));
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIButtonComponent>())
+                                                entity.GetComponent<UIButtonComponent>().NormalColor = color;
+                                            else if (entity.HasComponent<UIImageComponent>())
+                                                entity.GetComponent<UIImageComponent>().Color = color;
+                                            else if (entity.HasComponent<UITextComponent>())
+                                                entity.GetComponent<UITextComponent>().Color = color;
+                                        });
+                         });
+    methods.set_function("GetClicks",
+                         [withEntity](sol::table self)
+                         {
+                             u32 clicks = 0;
+                             withEntity(self,
+                                        [&](Entity entity)
+                                        {
+                                            if (entity.HasComponent<UIButtonComponent>())
+                                                clicks = entity.GetComponent<UIButtonComponent>().Clicks;
+                                        });
+                             return clicks;
+                         });
+
+    // ── sequencer ───────────────────────────────────────────────────────────
+    // Playback of the entity's own SequencerComponent; nothing on an entity without one.
+    const auto withSequencer = [withEntity](sol::table self, auto&& action)
+    {
+        withEntity(self,
+                   [&](Entity entity)
+                   {
+                       if (auto* sequencer = entity.TryGetComponent<SequencerComponent>())
+                           action(entity, *sequencer);
+                   });
+    };
+    methods.set_function("PlaySequence",
+                         [withSequencer](sol::table self)
+                         {
+                             withSequencer(self,
+                                           [](Entity, SequencerComponent& sequencer)
+                                           {
+                                               // Played to its end: start over, as a player's play button does.
+                                               if (!sequencer.Data.Loop && sequencer.Time >= sequencer.Data.Duration)
+                                                   sequencer.Time = 0.0f;
+                                               sequencer.Playing = true;
+                                           });
+                         });
+    methods.set_function(
+        "PauseSequence", [withSequencer](sol::table self)
+        { withSequencer(self, [](Entity, SequencerComponent& sequencer) { sequencer.Playing = false; }); });
+    methods.set_function("StopSequence",
+                         [withSequencer, &impl](sol::table self)
+                         {
+                             withSequencer(self,
+                                           [&](Entity, SequencerComponent& sequencer)
+                                           {
+                                               sequencer.Playing = false;
+                                               sequencer.Time = 0.0f;
+                                               if (impl.ActiveScene != nullptr)
+                                                   impl.ActiveScene->ApplySequence(sequencer.Data, 0.0f);
+                                           });
+                         });
+    methods.set_function("SetSequenceTime",
+                         [withSequencer, &impl](sol::table self, float time)
+                         {
+                             withSequencer(self,
+                                           [&](Entity, SequencerComponent& sequencer)
+                                           {
+                                               sequencer.Time = std::clamp(time, 0.0f, sequencer.Data.Duration);
+                                               if (impl.ActiveScene != nullptr)
+                                                   impl.ActiveScene->ApplySequence(sequencer.Data, sequencer.Time);
+                                           });
+                         });
+    methods.set_function("GetSequenceTime",
+                         [withSequencer](sol::table self)
+                         {
+                             float time = 0.0f;
+                             withSequencer(self, [&](Entity, SequencerComponent& sequencer) { time = sequencer.Time; });
+                             return time;
+                         });
+    methods.set_function("IsSequencePlaying",
+                         [withSequencer](sol::table self)
+                         {
+                             bool playing = false;
+                             withSequencer(self,
+                                           [&](Entity, SequencerComponent& sequencer) { playing = sequencer.Playing; });
+                             return playing;
+                         });
+
     methods.set_function("Translate",
                          [&impl](sol::table self, float dx, float dy, float dz)
                          {
@@ -952,6 +1131,108 @@ void BindApi(ScriptEngine::Impl& impl)
                              }
                              bodies->ActivateBody(bodyId);
                              bodies->AddForce(bodyId, ToJolt(glm::vec3(x, y, z)));
+                         });
+
+    // ── joints and sensors (robot simulation, issue #69) ────────────────────
+    // A joint is driven and read through the entity that carries it; the
+    // sensors read what the last simulation tick measured.
+    methods.set_function("SetJointMotor",
+                         [&impl](sol::table self, const std::string& mode, float target, sol::optional<float> maxForce)
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return false;
+                             auto* joint = scene->GetRegistry().try_get<Joint3DComponent>(handle);
+                             if (joint == nullptr)
+                                 return false;
+                             if (mode == "off")
+                                 joint->Motor = Joint3DComponent::MotorMode::Off;
+                             else if (mode == "velocity")
+                                 joint->Motor = Joint3DComponent::MotorMode::Velocity;
+                             else if (mode == "position")
+                                 joint->Motor = Joint3DComponent::MotorMode::Position;
+                             else
+                                 return false;
+                             joint->MotorTarget = target;
+                             if (maxForce)
+                                 joint->MotorMaxForce = *maxForce;
+                             Physics::ApplyMotor(*scene, *joint);
+                             return true;
+                         });
+    const auto jointReading = [&impl](sol::table self, bool velocity) -> sol::optional<float>
+    {
+        Scene* scene = nullptr;
+        entt::entity handle = entt::null;
+        if (!ResolveEntity(impl, self, scene, handle))
+            return sol::nullopt;
+        const auto* joint = scene->GetRegistry().try_get<Joint3DComponent>(handle);
+        if (joint == nullptr || joint->RuntimeConstraint == nullptr)
+            return sol::nullopt;
+        return velocity ? joint->RuntimeVelocity : joint->RuntimePosition;
+    };
+    methods.set_function("GetJointPosition", [jointReading](sol::table self) { return jointReading(self, false); });
+    methods.set_function("GetJointVelocity", [jointReading](sol::table self) { return jointReading(self, true); });
+    methods.set_function("GetAcceleration",
+                         [&impl](sol::table self) -> sol::object
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return sol::nil;
+                             const auto* rb = scene->GetRegistry().try_get<RigidBody3DComponent>(handle);
+                             if (rb == nullptr || rb->RuntimeBodyID == 0xFFFFFFFF)
+                                 return sol::nil;
+                             return sol::make_object(self.lua_state(), ToVec3(rb->RuntimeLinearAcceleration));
+                         });
+    // An IMU in the body's frame: the accelerometer reads specific force
+    // (acceleration minus gravity: +9.81 up at rest), the gyro angular velocity.
+    methods.set_function("GetIMU",
+                         [&impl](sol::table self) -> std::tuple<sol::object, sol::object>
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return {sol::nil, sol::nil};
+                             JPH::BodyID bodyId;
+                             JPH::BodyInterface* bodies = BodyInterfaceOf(*scene, handle, bodyId);
+                             const auto* rb = scene->GetRegistry().try_get<RigidBody3DComponent>(handle);
+                             if (bodies == nullptr || rb == nullptr)
+                                 return {sol::nil, sol::nil};
+                             const JPH::Quat rotation = bodies->GetRotation(bodyId);
+                             const glm::quat toBody = glm::inverse(
+                                 glm::quat(rotation.GetW(), rotation.GetX(), rotation.GetY(), rotation.GetZ()));
+                             const glm::vec3 specific =
+                                 toBody * (rb->RuntimeLinearAcceleration - scene->GetPhysicsSettings().Gravity);
+                             const glm::vec3 gyro = toBody * ToGlm(bodies->GetAngularVelocity(bodyId));
+                             return {sol::make_object(self.lua_state(), ToVec3(specific)),
+                                     sol::make_object(self.lua_state(), ToVec3(gyro))};
+                         });
+    // A range sensor: a ray from the entity along a direction in its own
+    // frame (it turns with the robot), past its own body.
+    methods.set_function("Raycast",
+                         [&impl](sol::table self, float dx, float dy, float dz,
+                                 float maxDistance) -> std::tuple<sol::object, sol::object>
+                         {
+                             Scene* scene = nullptr;
+                             entt::entity handle = entt::null;
+                             if (!ResolveEntity(impl, self, scene, handle))
+                                 return {sol::nil, sol::nil};
+                             Entity entity{handle, scene};
+                             // Walked now, not the render cache: the pose this tick, not the last frame drawn.
+                             const glm::mat4 world = scene->GetWorldSpaceTransformMatrix(entity);
+                             const glm::vec3 origin(world[3]);
+                             const glm::vec3 direction = glm::mat3(world) * glm::vec3(dx, dy, dz);
+                             const auto hit =
+                                 Physics::CastRay(*scene, origin, direction, maxDistance, static_cast<u32>(handle));
+                             if (!hit)
+                                 return {sol::nil, sol::nil};
+                             const auto hitEntity = static_cast<entt::entity>(hit->Entity);
+                             sol::object other =
+                                 scene->GetRegistry().valid(hitEntity)
+                                     ? sol::make_object(self.lua_state(), MakeEntityTable(impl, *scene, hitEntity))
+                                     : sol::object(sol::nil);
+                             return {sol::make_object(self.lua_state(), hit->Distance), other};
                          });
 
     // ── animation graph parameters ─────────────────────────────────────────
@@ -1364,6 +1645,53 @@ void ScriptEngine::Update(Scene& scene, Timestep ts)
             }
         }
     }
+}
+
+void ScriptEngine::OnUIClick(Scene& scene, u32 entityId)
+{
+    if (!m_Impl->Initialized)
+        return;
+    const auto handle = static_cast<entt::entity>(entityId);
+    auto* component =
+        scene.GetRegistry().valid(handle) ? scene.GetRegistry().try_get<ScriptComponent>(handle) : nullptr;
+    if (component == nullptr || !component->Enabled)
+        return;
+    const auto it = m_Impl->Instances.find(component->RuntimeIndex);
+    if (it == m_Impl->Instances.end())
+        return;
+    Impl::Instance& instance = it->second;
+    if (instance.Dead || instance.Errored || !instance.Started || instance.Scene_ != &scene ||
+        !instance.OnClick.valid())
+        return;
+    m_Impl->ActiveScene = &scene;
+    HookScope scope(*m_Impl);
+    sol::protected_function_result result = instance.OnClick(instance.Self);
+    if (!result.valid())
+        MarkErrored(*m_Impl, instance, ReportFailure(*m_Impl, DescribeEntity(scene, handle) + " OnClick", result));
+}
+
+void ScriptEngine::OnSequenceEvent(Scene& scene, u32 entityId, const std::string& name)
+{
+    if (!m_Impl->Initialized)
+        return;
+    const auto handle = static_cast<entt::entity>(entityId);
+    auto* component =
+        scene.GetRegistry().valid(handle) ? scene.GetRegistry().try_get<ScriptComponent>(handle) : nullptr;
+    if (component == nullptr || !component->Enabled)
+        return;
+    const auto it = m_Impl->Instances.find(component->RuntimeIndex);
+    if (it == m_Impl->Instances.end())
+        return;
+    Impl::Instance& instance = it->second;
+    if (instance.Dead || instance.Errored || !instance.Started || instance.Scene_ != &scene ||
+        !instance.OnSequenceEvent.valid())
+        return;
+    m_Impl->ActiveScene = &scene;
+    HookScope scope(*m_Impl);
+    sol::protected_function_result result = instance.OnSequenceEvent(instance.Self, name);
+    if (!result.valid())
+        MarkErrored(*m_Impl, instance,
+                    ReportFailure(*m_Impl, DescribeEntity(scene, handle) + " OnSequenceEvent", result));
 }
 
 void ScriptEngine::OnSceneStop(Scene& scene)

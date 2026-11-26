@@ -4,6 +4,7 @@
 #include "SceneCamera.h"
 #include "UHE/Animation/Animation2D/SpriteAnimation.h"
 #include "UHE/Animation/AnimationGraph.h"
+#include "UHE/Animation/Sequence.h"
 #include "UHE/Core/Core.h"
 #include "UHE/Core/Timestep.h"
 #include "UHE/Core/UUID.h"
@@ -253,6 +254,8 @@ struct UHE_API DirectionalLightComponent
 {
     glm::vec3 Color{1.0f, 1.0f, 1.0f};
     float Intensity = 1.0f;
+    /// The first directional light with this set casts the scene's cascaded shadows.
+    bool CastShadows = true;
 
     DirectionalLightComponent() = default;
     DirectionalLightComponent(const DirectionalLightComponent&) = default;
@@ -263,6 +266,8 @@ struct UHE_API PointLightComponent
     glm::vec3 Color{1.0f, 1.0f, 1.0f};
     float Intensity = 1.0f;
     float Radius = 10.0f;
+    /// Casts shadows: six tiles of the local shadow atlas (one per cube face).
+    bool CastShadows = false;
 
     PointLightComponent() = default;
     PointLightComponent(const PointLightComponent&) = default;
@@ -280,9 +285,253 @@ struct UHE_API SpotLightComponent
     float Radius = 10.0f;
     float InnerConeAngle = 0.2617994f; // ~15 degrees
     float OuterConeAngle = 0.5235988f; // ~30 degrees
+    /// Casts shadows: one tile of the local shadow atlas.
+    bool CastShadows = false;
 
     SpotLightComponent() = default;
     SpotLightComponent(const SpotLightComponent&) = default;
+};
+
+/**
+ * @brief A rectangular light: a lit panel, window or screen, on the entity's local XY plane.
+ *
+ * It shines along the entity's local -Z, like the spot and directional
+ * lights. Diffuse light is the panel's exact form factor, so its size
+ * shows in how soft the light falls off; the highlight on glossy surfaces
+ * takes the panel's shape.
+ */
+struct UHE_API AreaLightComponent
+{
+    glm::vec3 Color{1.0f, 1.0f, 1.0f};
+    float Intensity = 4.0f;
+    float Width = 2.0f;    ///< along local X
+    float Height = 1.0f;   ///< along local Y
+    float Range = 15.0f;   ///< distance at which the light fades out
+    bool TwoSided = false; ///< also lights the side behind the panel
+    /// Casts shadows, from the panel's centre (one tile of the local shadow atlas).
+    bool CastShadows = false;
+
+    AreaLightComponent() = default;
+    AreaLightComponent(const AreaLightComponent&) = default;
+};
+
+/**
+ * @brief A wind zone: the scene's wind blows along this entity's forward axis (local -Z).
+ *
+ * While one exists it replaces the Environment's wind (RenderSettings::Wind),
+ * so the direction can be set by rotating it in the viewport. Bends foliage
+ * and drives water that follows the wind.
+ */
+struct UHE_API WindComponent
+{
+    float Strength = 0.5f;       ///< steady wind, 0..2
+    float GustStrength = 0.4f;   ///< extra wind that comes and goes, 0..2
+    float GustFrequency = 0.25f; ///< gusts per second
+
+    WindComponent() = default;
+    WindComponent(const WindComponent&) = default;
+};
+
+/**
+ * @brief Makes a model sway in the scene's wind (RenderSettings::Wind): grass, bushes, trees.
+ *
+ * The bend grows with height above the model's origin, so the base stays put.
+ */
+struct UHE_API FoliageComponent
+{
+    float Bend = 1.0f;   ///< 0 = rigid, 1 = full response to the wind
+    float Height = 2.0f; ///< model-space height where the bend reaches full strength
+
+    FoliageComponent() = default;
+    FoliageComponent(const FoliageComponent&) = default;
+};
+
+/**
+ * @brief A water surface: a square of animated waves centred on the entity, on its local XZ plane.
+ *
+ * Waves are Gerstner waves in world space, so neighbouring water entities
+ * line up. The surface refracts and tints what lies below it by depth (the
+ * deeper, the more of DeepColor), reflects the sky, and foams where it meets
+ * geometry. Drawn after the opaque scene in the lit view.
+ */
+struct UHE_API WaterComponent
+{
+    glm::vec2 Size{20.0f, 20.0f};                ///< extent on local X and Z
+    int Resolution = 128;                        ///< grid cells per side (vertex detail of the waves)
+    glm::vec3 ShallowColor{0.10f, 0.55f, 0.60f}; ///< tint of shallow water (sRGB)
+    glm::vec3 DeepColor{0.01f, 0.10f, 0.18f};    ///< colour of deep water (sRGB)
+    float Clarity = 3.0f;                        ///< metres of water before the bottom fades into DeepColor
+    float WaveHeight = 0.25f;                    ///< amplitude of the largest wave
+    float WaveLength = 8.0f;                     ///< wavelength of the largest wave, in metres
+    float WaveSpeed = 1.0f;                      ///< multiplies the physical (deep water) wave speed
+    float Choppiness = 0.6f;                     ///< 0 = rolling swell, 1 = sharp crests
+    float Direction = 0.0f;                      ///< degrees on the ground plane, used when not following the wind
+    bool FollowWind = true;                      ///< waves travel with the scene's wind (RenderSettings::Wind)
+    float Foam = 0.6f;                           ///< shoreline and crest foam, 0..1
+
+    WaterComponent() = default;
+    WaterComponent(const WaterComponent&) = default;
+};
+
+/**
+ * @brief Ground made from a heightfield: a grayscale heightmap image, or
+ *        generated noise when there is none.
+ *
+ * A grid of Resolution x Resolution quads, Size metres on a side, centred on
+ * the entity; white (or the highest noise) is Height metres up. It draws
+ * through the ordinary 3D path (shadows, occlusion, picking), coloured in
+ * layers by height and slope, and in Play it is a static Jolt heightfield
+ * that bodies rest and drive on. Editing a field rebuilds it on the next frame.
+ */
+struct UHE_API TerrainComponent
+{
+    std::string HeightmapPath; ///< grayscale image (8 or 16 bit); empty: generated noise
+    float Size = 64.0f;        ///< width and depth, metres
+    float Height = 8.0f;       ///< metres between the lowest and the highest point
+    int Resolution = 128;      ///< quads per side, 8..1024
+
+    // Generated terrain.
+    int Seed = 1;
+    float FeatureSize = 24.0f; ///< metres across the largest hills
+    int Octaves = 5;           ///< layers of finer detail, 1..8
+    float Roughness = 0.5f;    ///< how much each finer layer adds, 0..1
+
+    // Colour layers, sRGB as a picker shows them.
+    glm::vec3 SandColor{0.76f, 0.70f, 0.50f};
+    glm::vec3 GrassColor{0.27f, 0.45f, 0.17f};
+    glm::vec3 RockColor{0.42f, 0.40f, 0.37f};
+    glm::vec3 SnowColor{0.94f, 0.95f, 0.97f};
+    float SandLevel = 0.06f; ///< below this fraction of Height: sand
+    float SnowLevel = 0.85f; ///< above this fraction of Height: snow
+    float RockSlope = 35.0f; ///< steeper than this many degrees: rock
+
+    bool Collider = true; ///< a static heightfield body in Play
+
+    // Built from the fields above; not saved.
+    Ref<RD3d::Model> Mesh;
+    std::shared_ptr<const std::vector<float>> Heights; ///< (Resolution+1)^2 metres, row-major along +Z
+    u64 BuiltKey = 0;
+    uint32_t RuntimeBodyID = 0xFFFFFFFF; ///< the Play heightfield body (JPH::BodyID), removed with the entity
+
+    TerrainComponent() = default;
+    TerrainComponent(const TerrainComponent&) = default;
+};
+
+/**
+ * @brief A timeline on an entity: tracks that move other entities and fire events (UHE/Animation/Sequence.h).
+ *
+ * In Play it starts at 0 when PlayOnStart is set and advances with the frame,
+ * like animation. Event keys call `OnSequenceEvent(self, name)` on this
+ * entity's script; a script drives it with PlaySequence, PauseSequence,
+ * StopSequence and SetSequenceTime. Edited in the editor's Sequencer panel.
+ */
+struct UHE_API SequencerComponent
+{
+    Sequence Data;
+    bool PlayOnStart = true;
+    float Speed = 1.0f; ///< playback rate; negative plays backwards (no events)
+
+    // Playback state; not saved.
+    float Time = 0.0f;
+    bool Playing = false;
+
+    SequencerComponent() = default;
+    SequencerComponent(const SequencerComponent&) = default;
+};
+
+// ── Game UI ────────────────────────────────────────────────────────────────
+// Screen-space UI, drawn over the finished frame in the game and in the
+// editor's viewport. Every UI element has a UIRectComponent; the others add
+// what it shows and does. Pixels, origin at the top left, y down. A UI
+// entity's rect is laid out inside its parent's when the parent is UI too,
+// otherwise inside the screen. UI::Update (UI/UISystem.h) lays them out,
+// handles the mouse and builds the draw list.
+
+/**
+ * @brief Where a UI element sits, relative to its parent (Unity's RectTransform).
+ *
+ * The anchors are fractions of the parent: equal anchors pin a point (a
+ * corner, the centre), different ones stretch the element with the parent on
+ * that axis. On a stretched axis Size is added to the stretched size (so -20
+ * leaves 10 px either side); otherwise it is the size. Position moves the
+ * pivot away from the anchor point.
+ */
+struct UHE_API UIRectComponent
+{
+    glm::vec2 AnchorMin{0.5f, 0.5f};
+    glm::vec2 AnchorMax{0.5f, 0.5f};
+    glm::vec2 Pivot{0.5f, 0.5f};    ///< the point of the element that sits at Position, fractions of its size
+    glm::vec2 Position{0.0f, 0.0f}; ///< pixels from the anchor point to the pivot
+    glm::vec2 Size{160.0f, 40.0f};  ///< pixels (added to the stretched size on a stretched axis)
+    int Order = 0;                  ///< among siblings, higher draws on top and gets the mouse first
+    bool Visible = true;            ///< hidden elements and their children neither draw nor take the mouse
+
+    // Laid out by UI::Update; not saved.
+    glm::vec2 ComputedMin{0.0f};
+    glm::vec2 ComputedMax{0.0f};
+};
+
+/// @brief A filled box: colour, an optional image, rounded corners and a border.
+struct UHE_API UIImageComponent
+{
+    glm::vec4 Color{0.10f, 0.12f, 0.16f, 0.85f}; ///< sRGB with alpha; multiplies the image
+    std::string TexturePath;                     ///< empty: a plain box
+    float CornerRadius = 6.0f;                   ///< pixels
+    float BorderWidth = 0.0f;                    ///< pixels
+    glm::vec4 BorderColor{1.0f, 1.0f, 1.0f, 0.25f};
+
+    Ref<Texture2D> Texture; ///< loaded from TexturePath; not saved
+    std::string LoadedPath; ///< the path Texture came from
+};
+
+/// @brief Text inside the element's rect.
+struct UHE_API UITextComponent
+{
+    enum class Alignment : int
+    {
+        Left = 0,
+        Center = 1,
+        Right = 2,
+    };
+
+    std::string Text = "Text";
+    float FontSize = 22.0f; ///< pixels per line
+    glm::vec4 Color{1.0f};  ///< sRGB with alpha
+    Alignment Align = Alignment::Center;
+    std::string FontPath; ///< a .ttf in the assets; empty: the engine's default font
+};
+
+/**
+ * @brief Makes the element clickable: its UIImage takes the normal, hover
+ *        and pressed colours, and a click calls `OnClick(self)` on the
+ *        element's script.
+ */
+struct UHE_API UIButtonComponent
+{
+    glm::vec4 NormalColor{0.20f, 0.24f, 0.32f, 0.95f};
+    glm::vec4 HoverColor{0.28f, 0.34f, 0.46f, 1.0f};
+    glm::vec4 PressedColor{0.14f, 0.17f, 0.24f, 1.0f};
+    bool Interactable = true;
+
+    // Mouse state, kept by UI::Update; not saved.
+    bool Hovered = false;
+    bool Pressed = false;
+    u32 Clicks = 0; ///< clicks since the scene started
+};
+
+/**
+ * @brief A bar filled to Value: a readout (speed, battery, progress), or a
+ *        slider the mouse drags when Interactable.
+ */
+struct UHE_API UIProgressBarComponent
+{
+    float Value = 0.5f; ///< 0..1
+    glm::vec4 FillColor{0.30f, 0.65f, 1.0f, 1.0f};
+    glm::vec4 BackgroundColor{0.08f, 0.09f, 0.12f, 0.85f};
+    float CornerRadius = 4.0f;
+    bool Interactable = false; ///< a slider: dragging sets Value
+
+    bool Dragging = false; ///< kept by UI::Update; not saved
 };
 
 struct UHE_API BoxColliderComponent
@@ -322,8 +571,66 @@ struct UHE_API RigidBody3DComponent
     // We store the JPH::BodyID as a uint32_t to avoid including Jolt headers everywhere
     uint32_t RuntimeBodyID = 0xFFFFFFFF; // JPH::BodyID::cInvalidBodyID
 
+    // IMU state, per simulation tick (Physics::UpdateSensors); not saved.
+    glm::vec3 RuntimeLinearAcceleration{0.0f}; ///< world space, m/s^2
+    glm::vec3 RuntimePreviousVelocity{0.0f};
+    bool RuntimeHasPreviousVelocity = false;
+
     RigidBody3DComponent() = default;
     RigidBody3DComponent(const RigidBody3DComponent&) = default;
+};
+
+/**
+ * @brief A joint between this entity's rigid body and another's, or the world.
+ *
+ * Built when Play starts, from the poses then (Physics::CreateJoints): the
+ * anchor and axis are in this entity's space. Hinges and sliders take limits,
+ * friction and a motor that scripts drive (SetJointMotor) and read back like
+ * an encoder (GetJointPosition, GetJointVelocity). Angles are radians,
+ * distances metres, torques N·m, forces N.
+ */
+struct UHE_API Joint3DComponent
+{
+    enum class JointType
+    {
+        Fixed = 0, ///< welds the two bodies together
+        Hinge,     ///< revolute: rotation about Axis
+        Slider,    ///< prismatic: translation along Axis
+        Ball,      ///< spherical: rotation about Anchor
+    };
+    enum class MotorMode
+    {
+        Off = 0,
+        Velocity, ///< drives the joint at MotorTarget rad/s or m/s
+        Position, ///< springs the joint to MotorTarget rad or m
+    };
+
+    JointType Type = JointType::Hinge;
+    u64 ConnectedEntity = 0; ///< UUID of the other body's entity; 0 attaches to the world
+    glm::vec3 Anchor{0.0f};  ///< joint point, this entity's space
+    glm::vec3 Axis{0.0f, 1.0f, 0.0f};
+
+    bool LimitsEnabled = false;
+    float LimitMin = -1.0f; ///< hinge: radians in [-pi, 0]; slider: metres
+    float LimitMax = 1.0f;  ///< hinge: radians in [0, pi]; slider: metres
+    float Friction = 0.0f;  ///< hinge: N·m, slider: N, resisting any motion
+
+    MotorMode Motor = MotorMode::Off;
+    float MotorTarget = 0.0f;
+    float MotorMaxForce = 100.0f; ///< torque (hinge) or force (slider) the motor may apply
+    float MotorFrequency = 4.0f;  ///< position mode: spring stiffness as a frequency, Hz
+    float MotorDamping = 1.0f;    ///< position mode: 1 = critically damped
+
+    // Built in Play; not saved.
+    void* RuntimeConstraint = nullptr; ///< JPH::TwoBodyConstraint, one reference held
+    /// Encoder: angle or offset, per tick, from the pose when Play started
+    /// (like an incremental encoder zeroed at power-on).
+    float RuntimePosition = 0.0f;
+    float RuntimeVelocity = 0.0f; ///< encoder rate, per tick
+    bool RuntimeHasPosition = false;
+
+    Joint3DComponent() = default;
+    Joint3DComponent(const Joint3DComponent&) = default;
 };
 
 struct UHE_API BoxCollider3DComponent

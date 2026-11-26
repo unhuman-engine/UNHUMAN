@@ -62,6 +62,8 @@ private:
     vk::Image textureImage{nullptr};
     VmaAllocation textureImageMemory = nullptr;
     vk::raii::ImageView textureImageView{nullptr};
+    /// Depth aspect only, for sampling a depth texture; null for colour formats.
+    vk::raii::ImageView m_SampledDepthView{nullptr};
     vk::raii::Sampler textureSampler{nullptr};
     VmaAllocator m_allocator = nullptr;
     VulkanDevice* m_Device = nullptr;
