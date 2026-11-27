@@ -596,6 +596,10 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
             IsBinary(entry.path()))
             copy.File(entry.path(), out / entry.path().filename());
     }
+    // The licenses of the libraries above travel with them: a packaged editor
+    // keeps THIRD_PARTY_NOTICES.txt beside the runtime (script/package.py).
+    if (const fs::path notices = options.RuntimeDir / "THIRD_PARTY_NOTICES.txt"; fs::is_regular_file(notices, ec))
+        copy.File(notices, out / notices.filename());
 
     // ── The manifest: the settings being exported, which may not be saved yet ──
     {

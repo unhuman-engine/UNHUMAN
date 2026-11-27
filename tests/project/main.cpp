@@ -304,6 +304,7 @@ int main()
         WriteFile(bin / "slang-glsl-module-2026.10.dll", "MZ dll");
         WriteFile(bin / "libgfx.so.0.2026.10", elf);
         WriteFile(bin / "glfw3.dll", "MZ dll");
+        WriteFile(bin / "THIRD_PARTY_NOTICES.txt", "licenses");
         WriteFile(bin / "uhe_shaderc", "tool");
         const fs::path engine = sandbox / "engine_assets";
         WriteFile(engine / "shaders/Basic3D.slang", "source");
@@ -436,6 +437,7 @@ int main()
               "export: Slang's compile-only modules do not");
         Check(!fs::exists(out / "libslang-compiler.so"), "export: linker-name stand-ins do not");
         Check(!fs::exists(out / "uhe_shaderc"), "export: other tools in the build folder do not");
+        Check(fs::exists(out / "THIRD_PARTY_NOTICES.txt"), "export: the third-party licenses beside the runtime ship");
         Check(fs::exists(out / "assets/shaders/Basic3D.vertex.default.spv") &&
                   fs::exists(out / "assets/shaders/variants.txt") && fs::exists(out / "assets/model/hero.glb"),
               "export: engine assets ship, compiled shaders included");
