@@ -40,6 +40,12 @@ void UploadRGBA8(Ref<RHI::VULKAN::VulkanTexture>& target, const void* pixels, u3
     auto* vulkanDevice = static_cast<RHI::VULKAN::VulkanDevice*>(&rhiDevice);
 
     const size_t dataSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    // KTX2Image::mips holds the whole chain, level 0 included; the upload takes
+    // level 0 as \p pixels and the chain after it. Passing it whole shifted every
+    // level by one (level 1 got level 0's pixels) and asked for one level more
+    // than the image has: VUID-VkImageCreateInfo-mipLevels-00958.
+    if (!mipChain.empty() && mipChain.front().width == width && mipChain.front().height == height)
+        mipChain = mipChain.subspan(1);
     if (mipChain.empty())
         target->CreateTexture(*vulkanDevice, pixels, width, height, dataSize);
     else

@@ -260,7 +260,10 @@ void VulkanTexture::CreateTextureWithMips(VulkanDevice& device, const void* pixe
     m_Height = height;
     m_allocator = ctx.allocator;
     // The chain is authoritative: the image carries exactly its levels, and
-    // the GPU generator below stays idle.
+    // the GPU generator below stays idle. \p mipChain is levels 1..N; level 0
+    // is \p pixelData.
+    UHE_CORE_ASSERT(mipChain.empty() || mipChain.front().width < width || mipChain.front().height < height,
+                    "CreateTextureWithMips: the chain must start at level 1");
     m_MipLevels = 1 + static_cast<u32>(mipChain.size());
 
     vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
