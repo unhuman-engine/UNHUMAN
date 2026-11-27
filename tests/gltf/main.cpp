@@ -3543,11 +3543,11 @@ int main()
         // blocks, so even ETC1S keeps them apart. The runtime's stb load flips
         // rows, so its first row is the blue bottom one; the KTX2 must agree.
         constexpr int kW = 8, kH = 8;
-        std::vector<u8> pixels(kW * kH * 4);
+        std::vector<u8> pixels(std::size_t{kW} * kH * 4);
         for (int y = 0; y < kH; ++y)
             for (int x = 0; x < kW; ++x)
             {
-                u8* p = &pixels[(y * kW + x) * 4];
+                u8* p = &pixels[((static_cast<std::size_t>(y) * kW) + x) * 4];
                 p[0] = y < 4 ? 255 : 0;
                 p[1] = 0;
                 p[2] = y < 4 ? 0 : 255;
@@ -3572,7 +3572,7 @@ int main()
                 check(image.width == kW && image.height == kH, "the size is kept");
                 check(image.mips.size() == 4, "a full mip chain is stored (8x8 to 1x1)");
                 const u8* first = image.rgba.data();
-                const u8* last = image.rgba.data() + (kH - 1) * kW * 4;
+                const u8* last = image.rgba.data() + (std::size_t{kH - 1} * kW * 4);
                 check(first[2] > 200 && first[0] < 60, "the first row is blue, as the flipped PNG load has it");
                 check(last[0] > 200 && last[2] < 60, "the last row is red");
             }
@@ -3639,7 +3639,7 @@ int main()
         {
             std::ofstream bin(folder / "moving.bin", std::ios::binary);
             bin.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size() * 4));
-            const std::vector<u8> white(4 * 4 * 4, 255);
+            const std::vector<u8> white(std::size_t{4} * 4 * 4, 255);
             int pngSize = 0;
             unsigned char* encoded = stbi_write_png_to_mem(white.data(), 16, 4, 4, 4, &pngSize);
             std::ofstream png(folder / "tex.png", std::ios::binary);
