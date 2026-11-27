@@ -6,6 +6,7 @@
 #include "UHE/Events/ApplicationEvent.h"
 #include "UHE/ImGui/ImGuiLayer.h"
 #include "UHE/RHI/RHIDevice.h"
+#include "UHE/Renderer/RHISelfTest.h"
 #include "Window.h"
 
 namespace UHE
@@ -56,6 +57,10 @@ private:
     CaptureSettings m_Capture;
     u32 m_RenderedFrames = 0; ///< @brief frames that recorded GPU work (skipped ones excluded)
     int m_ExitCode = 0;
+    // UHE_RHI_SELFTEST (issue #30, #32): the device checks, then the frames part.
+    std::unique_ptr<class RHISelfTestFrames> m_SelfTestFrames;
+    RHISelfTestResult m_SelfTestResult;
+    bool m_SelfTestExit = false;
 
 private:
     static Application* s_instance;

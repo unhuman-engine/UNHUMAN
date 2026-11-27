@@ -27,11 +27,13 @@ void PushAccess(std::vector<u64>& words, const RGResourceAccess& access)
 }
 } // namespace
 
-RenderGraphCompileCache::Key RenderGraphCompileCache::BuildKey(const RenderGraphBuilder& builder)
+RenderGraphCompileCache::Key RenderGraphCompileCache::BuildKey(const RenderGraphBuilder& builder,
+                                                               const RGCompileOptions& options)
 {
     Key key;
     std::vector<u64>& w = key.Words;
     const RenderGraphResources& resources = builder.Resources();
+    Push(w, options.asyncCompute ? 1u : 0u); // the queue a pass lands on depends on it
 
     Push(w, resources.Textures().size());
     for (const RGTextureSlot& slot : resources.Textures())
@@ -70,9 +72,9 @@ RenderGraphCompileCache::Key RenderGraphCompileCache::BuildKey(const RenderGraph
     return key;
 }
 
-RGCompileResult RenderGraphCompileCache::Compile(const RenderGraphBuilder& builder)
+RGCompileResult RenderGraphCompileCache::Compile(const RenderGraphBuilder& builder, const RGCompileOptions& options)
 {
-    Key key = BuildKey(builder);
+    Key key = BuildKey(builder, options);
     const RenderGraphResources& resources = builder.Resources();
 
     if (m_Valid && key == m_Key)
@@ -98,6 +100,8 @@ RGCompileResult RenderGraphCompileCache::Compile(const RenderGraphBuilder& build
                 texture(barrier.texture);
             for (RGCompiledBufferBarrier& barrier : pass.preBufferBarriers)
                 buffer(barrier.buffer);
+            for (RGCompiledBufferBarrier& barrier : pass.postBufferBarriers)
+                buffer(barrier.buffer);
         }
         for (RGCompiledResourceLifetime& lifetime : result.frame.lifetimes)
         {
@@ -113,7 +117,7 @@ RGCompileResult RenderGraphCompileCache::Compile(const RenderGraphBuilder& build
     ++m_Misses;
     RGCompileResult result;
     result.errors = builder.Validate();
-    RGCompileResult compiled = RenderGraphCompiler::Compile(builder.Passes(), resources);
+    RGCompileResult compiled = RenderGraphCompiler::Compile(builder.Passes(), resources, options);
     result.errors.insert(result.errors.end(), compiled.errors.begin(), compiled.errors.end());
     result.frame = std::move(compiled.frame);
     result.frame.topologyHash = builder.ComputeTopologyHash();

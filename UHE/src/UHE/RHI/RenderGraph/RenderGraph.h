@@ -64,7 +64,8 @@ public:
     {
         RGCompileResult result;
         result.errors = m_Builder.Validate();
-        RGCompileResult compilerResult = RenderGraphCompiler::Compile(m_Builder.Passes(), m_Builder.Resources());
+        RGCompileResult compilerResult =
+            RenderGraphCompiler::Compile(m_Builder.Passes(), m_Builder.Resources(), m_Options);
         result.errors.insert(result.errors.end(), compilerResult.errors.begin(), compilerResult.errors.end());
         result.frame = std::move(compilerResult.frame);
         // The compiler hashes the resource slice; the cache key is the full
@@ -75,7 +76,11 @@ public:
 
     /// @brief Compile(), reusing the previous frame's result when the declared
     /// frame is structurally identical (see RenderGraphCompileCache).
-    [[nodiscard]] RGCompileResult CompileCached() { return m_CompileCache.Compile(m_Builder); }
+    [[nodiscard]] RGCompileResult CompileCached() { return m_CompileCache.Compile(m_Builder, m_Options); }
+
+    /// @brief How passes may be placed (async compute); part of the cache key.
+    void SetCompileOptions(const RGCompileOptions& options) { m_Options = options; }
+    [[nodiscard]] const RGCompileOptions& CompileOptions() const { return m_Options; }
     [[nodiscard]] const RenderGraphCompileCache& CompileCache() const { return m_CompileCache; }
 
     // §8.3 cache key (resource material + pass structure slice for step 1).
@@ -96,6 +101,7 @@ public:
 private:
     RenderGraphBuilder m_Builder;
     RenderGraphCompileCache m_CompileCache; // survives Reset(): it is keyed, not owned by a frame
+    RGCompileOptions m_Options;
 };
 
 } // namespace UHE::RHI

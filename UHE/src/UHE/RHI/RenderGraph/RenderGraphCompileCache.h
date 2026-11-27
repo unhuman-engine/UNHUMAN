@@ -28,7 +28,7 @@ class RenderGraphCompileCache
 {
 public:
     /// @brief The compiled frame for \p builder's declarations, from the cache when possible.
-    [[nodiscard]] RGCompileResult Compile(const RenderGraphBuilder& builder);
+    [[nodiscard]] RGCompileResult Compile(const RenderGraphBuilder& builder, const RGCompileOptions& options = {});
 
     [[nodiscard]] u64 Hits() const { return m_Hits; }
     [[nodiscard]] u64 Misses() const { return m_Misses; }
@@ -43,7 +43,7 @@ private:
         [[nodiscard]] bool operator==(const Key& other) const { return Words == other.Words && Names == other.Names; }
     };
 
-    [[nodiscard]] static Key BuildKey(const RenderGraphBuilder& builder);
+    [[nodiscard]] static Key BuildKey(const RenderGraphBuilder& builder, const RGCompileOptions& options);
 
     Key m_Key;
     RGCompiledFrame m_Frame;

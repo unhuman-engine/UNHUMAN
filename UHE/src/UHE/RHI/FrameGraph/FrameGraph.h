@@ -84,6 +84,16 @@ public:
      */
     void RecordInParallel();
 
+    /**
+     * @brief Ask for this compute pass to run on the async compute queue (issue #32).
+     *
+     * It does when the device has one and the pass only touches resources it
+     * creates this frame, which no graphics pass used before it; otherwise it
+     * runs on graphics (the compiler logs why). The graphics passes that read
+     * its output wait for it; the work before them runs alongside.
+     */
+    void RunOnAsyncCompute();
+
 private:
     friend class FrameGraph;
     FGBuilder(FrameGraph& graph, u32 pass) : m_Graph(graph), m_Pass(pass) {}
@@ -242,6 +252,7 @@ private:
         std::function<void(FGContext&)> Execute;
         std::vector<FGLoweredAccess> Accesses;
         bool ParallelRecording = false; ///< FGBuilder::RecordInParallel
+        bool AsyncCompute = false;      ///< FGBuilder::RunOnAsyncCompute
     };
 
     u32 BeginPass(const std::string& name, FGPassType type, std::shared_ptr<void> data);

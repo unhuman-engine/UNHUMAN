@@ -239,6 +239,10 @@ private:
     VulkanBarrierEncoder m_BarrierEncoder;
     VulkanCommandLists m_CommandLists;
     bool m_PerPassLists = true; ///< UHE_RENDERGRAPH_PRIMARY=1: every pass into the frame's primary
+    VulkanSemaphore m_ComputeTimeline;          ///< async compute work done (issue #32)
+    u64 m_ComputeTimelineValue = 0;             ///< last value signalled
+    std::optional<SemaphoreWait> m_ComputeWait; ///< what this frame's graphics submission waits for
+    void SubmitAsyncCompute(const RGCompiledFrame& compiled, const RGResolvedFrame& resolved);
     mutable DeviceLimits m_Limits;
     mutable std::once_flag m_LimitsOnce;
 

@@ -158,7 +158,7 @@ RGPassRequirements CollectRequirements(const RGPassSpec& spec, std::vector<RGVal
 // ─── Compile ────────────────────────────────────────────────────────────────
 
 RGCompileResult RenderGraphCompiler::Compile(const std::vector<RGPassSpec>& passes,
-                                             const RenderGraphResources& resources)
+                                             const RenderGraphResources& resources, const RGCompileOptions& options)
 {
     RGCompileResult result;
     RGCompiledFrame& frame = result.frame;
@@ -342,7 +342,7 @@ RGCompileResult RenderGraphCompiler::Compile(const std::vector<RGPassSpec>& pass
         compiled.passIndex = p;
         compiled.name = passes[p].name;
         compiled.type = passes[p].type;
-        compiled.queue = passes[p].queue;
+        compiled.queue = RGQueue::Graphics; // Stage 8 decides; declaring Compute is a request
         compiledIdOfDecl[p] = compiled.id;
         frame.passes.push_back(std::move(compiled));
     }
@@ -524,6 +524,110 @@ RGCompileResult RenderGraphCompiler::Compile(const std::vector<RGPassSpec>& pass
             targetId = frame.passes.back().id;
         if (targetId != RG::kInvalidIndex)
             frame.passes[targetId].postImageBarriers.push_back(barrier);
+    }
+
+    // ── Stage 8: queues (issue #32) ─────────────────────────────────────────
+    // A pass declared RGQueue::Compute runs on the async compute queue when
+    // the device has one and nothing in this frame forces it to wait for
+    // graphics: it is a compute pass, every resource it touches is created
+    // this frame and first written by compute, and no graphics pass touched
+    // any of them before it. Then its work can start at the top of the frame,
+    // next to the graphics work before it, and only the graphics passes that
+    // use its output wait for it. Anything else runs on graphics, as declared
+    // order would; frame.demotedPasses says why.
+    std::map<std::pair<bool, u32>, RGQueue> lastQueue; // resource -> queue of its last toucher
+    std::map<std::pair<bool, u32>, u32> lastComputeToucher;
+    for (RGCompiledPass& compiled : frame.passes)
+    {
+        const RGPassSpec& spec = passes[compiled.passIndex];
+        const RGPassRequirements& reqs = reqsByPass[compiled.passIndex];
+        std::vector<std::pair<bool, u32>> touched;
+        for (const auto& [slot, handle] : reqs.textureHandles)
+            touched.emplace_back(true, slot);
+        for (const auto& [slot, handle] : reqs.bufferHandles)
+            touched.emplace_back(false, slot);
+
+        if (spec.queue == RGQueue::Compute)
+        {
+            std::string why;
+            if (!options.asyncCompute)
+                why = "the device has no dedicated compute queue";
+            else if (spec.type != RGPassType::Compute)
+                why = "it is not a compute pass";
+            for (const auto& key : touched)
+            {
+                if (!why.empty())
+                    break;
+                const bool imported =
+                    key.first ? resources.Textures()[key.second].imported : resources.Buffers()[key.second].imported;
+                const auto previous = lastQueue.find(key);
+                if (imported)
+                    why = "it uses an imported resource, which graphics may own";
+                else if (previous != lastQueue.end() && previous->second == RGQueue::Graphics)
+                    why = "a graphics pass uses one of its resources before it";
+                else if (previous == lastQueue.end() &&
+                         (key.first ? reqs.textures.count(key.second) == 0 : reqs.buffers.count(key.second) == 0))
+                    why = "it reads a resource before anything wrote it";
+            }
+            if (why.empty())
+                compiled.queue = RGQueue::Compute;
+            else
+                frame.demotedPasses.push_back(compiled.name + ": " + why);
+        }
+
+        for (const auto& key : touched)
+        {
+            const auto previous = lastQueue.find(key);
+            if (compiled.queue == RGQueue::Graphics && previous != lastQueue.end() &&
+                previous->second == RGQueue::Compute)
+            {
+                // The handover: release on compute after its last use there,
+                // acquire here; the graphics submission waits for compute.
+                const u32 producer = lastComputeToucher.at(key);
+                RGCompiledPass& source = frame.passes[producer];
+                Stage waitStage = Stage::AllCommands;
+                if (key.first)
+                {
+                    for (RGCompiledImageBarrier& barrier : compiled.preImageBarriers)
+                        if (barrier.texture.index == key.second)
+                        {
+                            RGCompiledImageBarrier release = barrier;
+                            release.dstStage = Stage::BottomOfPipe;
+                            release.dstAccess = Access::None;
+                            release.srcQueue = RGQueue::Compute;
+                            release.dstQueue = RGQueue::Graphics;
+                            source.postImageBarriers.push_back(release);
+                            barrier.srcStage = barrier.dstStage; // after the semaphore wait at that stage
+                            barrier.srcAccess = Access::None;
+                            barrier.srcQueue = RGQueue::Compute;
+                            barrier.dstQueue = RGQueue::Graphics;
+                            waitStage = barrier.dstStage;
+                        }
+                }
+                else
+                {
+                    for (RGCompiledBufferBarrier& barrier : compiled.preBufferBarriers)
+                        if (barrier.buffer.index == key.second)
+                        {
+                            RGCompiledBufferBarrier release = barrier;
+                            release.dstStage = Stage::BottomOfPipe;
+                            release.dstAccess = Access::None;
+                            release.srcQueue = RGQueue::Compute;
+                            release.dstQueue = RGQueue::Graphics;
+                            source.postBufferBarriers.push_back(release);
+                            barrier.srcStage = barrier.dstStage;
+                            barrier.srcAccess = Access::None;
+                            barrier.srcQueue = RGQueue::Compute;
+                            barrier.dstQueue = RGQueue::Graphics;
+                            waitStage = barrier.dstStage;
+                        }
+                }
+                frame.crossQueueEdges.push_back({producer, compiled.id, waitStage});
+            }
+            lastQueue[key] = compiled.queue;
+            if (compiled.queue == RGQueue::Compute)
+                lastComputeToucher[key] = compiled.id;
+        }
     }
 
     return result;

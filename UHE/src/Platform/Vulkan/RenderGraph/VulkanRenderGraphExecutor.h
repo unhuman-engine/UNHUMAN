@@ -87,6 +87,7 @@ struct RGResolvedPass
     u32 passIndex = 0;
     std::string name;
     RGPassType type = RGPassType::Graphics;
+    RGQueue queue = RGQueue::Graphics; ///< where the compiler placed it (async compute)
     std::vector<u32> dependencies; // compiled ids this pass depends on (DAG)
     // Graphics passes only; nullopt for compute/transfer (raw recording).
     std::optional<vk::Extent2D> renderExtent;
@@ -95,6 +96,7 @@ struct RGResolvedPass
     std::vector<RGResolvedImageBarrier> preImageBarriers;
     std::vector<RGResolvedImageBarrier> postImageBarriers;
     std::vector<RGResolvedBufferBarrier> preBufferBarriers;
+    std::vector<RGResolvedBufferBarrier> postBufferBarriers; ///< queue releases
 };
 
 struct RGResolvedFrame
@@ -251,9 +253,18 @@ public:
                                                          const PassListAllocator& allocate,
                                                          const ThreadListBinder& bindThread) const;
     /// @brief Records barriers and scopes into \p primary around each pass's list, in compiled order.
+    /// Only the passes the compiler placed on \p queue; the others go into another queue's primary.
     void AssemblePerPass(const RGResolvedFrame& resolved, const std::vector<RGPassSpec>& specs,
                          vk::CommandBuffer primary, VulkanBarrierEncoder& encoder, const PassHook& beginPass,
-                         const PassHook& endPass) const;
+                         const PassHook& endPass, RGQueue queue = RGQueue::Graphics) const;
+    /// @brief Forgets the frame's pass lists, once every queue's primary has run them.
+    void EndPerPassFrame() const;
+    /// @brief The queue families an ownership transfer names (async compute).
+    void SetQueueFamilies(u32 graphics, u32 compute)
+    {
+        m_GraphicsFamily = graphics;
+        m_ComputeFamily = compute;
+    }
 
     // ─── RGPassContext resolution (called from the callbacks) ───────────────
     [[nodiscard]] vk::ImageView ResolveView(RGTextureHandle texture) const;
@@ -292,6 +303,12 @@ private:
         u32 passSlot;
     };
     mutable std::deque<PerPassNode> m_PerPassNodes;
+    u32 m_GraphicsFamily = 0;
+    u32 m_ComputeFamily = 0;
+    [[nodiscard]] u32 FamilyOf(RGQueue queue) const
+    {
+        return queue == RGQueue::Compute ? m_ComputeFamily : m_GraphicsFamily;
+    }
     mutable std::vector<PassList> m_PassLists; ///< per slot; empty for a pass with no body
 
     struct RGRegisteredTexture

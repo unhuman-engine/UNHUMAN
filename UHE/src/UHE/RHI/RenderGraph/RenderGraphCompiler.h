@@ -59,6 +59,10 @@ struct RGCompiledImageBarrier
     Stage dstStage = Stage::None;
     Access srcAccess = Access::None;
     Access dstAccess = Access::None;
+    /// A queue-family ownership transfer when the two differ: the release half
+    /// on the source queue, the acquire half on the destination (async compute).
+    RGQueue srcQueue = RGQueue::Graphics;
+    RGQueue dstQueue = RGQueue::Graphics;
 };
 
 struct RGCompiledBufferBarrier
@@ -68,6 +72,25 @@ struct RGCompiledBufferBarrier
     Stage dstStage = Stage::None;
     Access srcAccess = Access::None;
     Access dstAccess = Access::None;
+    RGQueue srcQueue = RGQueue::Graphics; ///< see RGCompiledImageBarrier
+    RGQueue dstQueue = RGQueue::Graphics;
+};
+
+/// A graphics pass that uses what an async compute pass made: the graphics
+/// submission waits for the compute one, at \p waitStage.
+struct RGCrossQueueEdge
+{
+    u32 producer = 0; ///< compiled id, on the compute queue
+    u32 consumer = 0; ///< compiled id, on the graphics queue
+    Stage waitStage = Stage::AllCommands;
+};
+
+/// How the compiler may place passes.
+struct RGCompileOptions
+{
+    /// The device has a dedicated compute queue: passes declared with
+    /// RGQueue::Compute may run on it (Stage 8). Off: every pass is graphics.
+    bool asyncCompute = false;
 };
 
 struct RGCompiledPass
@@ -78,8 +101,9 @@ struct RGCompiledPass
     RGPassType type = RGPassType::Graphics;
     RGQueue queue = RGQueue::Graphics;
     std::vector<RGCompiledImageBarrier> preImageBarriers;
-    std::vector<RGCompiledImageBarrier> postImageBarriers; // finalState exits
+    std::vector<RGCompiledImageBarrier> postImageBarriers; // finalState exits, queue releases
     std::vector<RGCompiledBufferBarrier> preBufferBarriers;
+    std::vector<RGCompiledBufferBarrier> postBufferBarriers; // queue releases
     std::vector<u32> dependencies; // compiled indices of passes that precede
 };
 
@@ -105,6 +129,17 @@ struct RGCompiledFrame
     std::vector<RGCompiledPass> passes; // topological, live only
     std::vector<RGCompiledResourceLifetime> lifetimes;
     std::vector<std::string> culledPasses; // debug UX: which passes were cut
+    std::vector<RGCrossQueueEdge> crossQueueEdges;
+    /// Passes that asked for async compute and run on graphics, with why.
+    std::vector<std::string> demotedPasses;
+    [[nodiscard]] bool UsesAsyncCompute() const { return !crossQueueEdges.empty() || HasComputeQueuePass(); }
+    [[nodiscard]] bool HasComputeQueuePass() const
+    {
+        for (const RGCompiledPass& pass : passes)
+            if (pass.queue == RGQueue::Compute)
+                return true;
+        return false;
+    }
 };
 
 struct RGCompileResult
@@ -127,7 +162,8 @@ public:
     // `passes` must be the builder's declaration-ordered list; `resources`
     // supplies slot metadata (imported initial states, version logs, names).
     [[nodiscard]] static RGCompileResult Compile(const std::vector<RGPassSpec>& passes,
-                                                 const RenderGraphResources& resources);
+                                                 const RenderGraphResources& resources,
+                                                 const RGCompileOptions& options = {});
 };
 
 } // namespace UHE::RHI

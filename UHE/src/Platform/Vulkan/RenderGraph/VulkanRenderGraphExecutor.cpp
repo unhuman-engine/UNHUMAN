@@ -104,6 +104,7 @@ RGResolvedFrame VulkanRenderGraphExecutor::Resolve(const RGCompiledFrame& compil
         pass.passIndex = compiledPass.passIndex;
         pass.name = compiledPass.name;
         pass.type = compiledPass.type;
+        pass.queue = compiledPass.queue;
         pass.dependencies = compiledPass.dependencies;
 
         // Attachments resolve first: they define the rendering scope.
@@ -188,6 +189,11 @@ RGResolvedFrame VulkanRenderGraphExecutor::Resolve(const RGCompiledFrame& compil
             resolvedBarrier.Range =
                 vk::ImageSubresourceRange{AspectMaskFor(reg.format), 0, VK_REMAINING_MIP_LEVELS,
                                           0, VK_REMAINING_ARRAY_LAYERS};
+            if (barrier.srcQueue != barrier.dstQueue && FamilyOf(barrier.srcQueue) != FamilyOf(barrier.dstQueue))
+            {
+                resolvedBarrier.SrcQueueFamily = FamilyOf(barrier.srcQueue);
+                resolvedBarrier.DstQueueFamily = FamilyOf(barrier.dstQueue);
+            }
             pass.preImageBarriers.push_back({resolvedBarrier});
         }
 
@@ -212,26 +218,42 @@ RGResolvedFrame VulkanRenderGraphExecutor::Resolve(const RGCompiledFrame& compil
             resolvedBarrier.Range =
                 vk::ImageSubresourceRange{AspectMaskFor(reg.format), 0, VK_REMAINING_MIP_LEVELS,
                                           0, VK_REMAINING_ARRAY_LAYERS};
+            if (barrier.srcQueue != barrier.dstQueue && FamilyOf(barrier.srcQueue) != FamilyOf(barrier.dstQueue))
+            {
+                resolvedBarrier.SrcQueueFamily = FamilyOf(barrier.srcQueue);
+                resolvedBarrier.DstQueueFamily = FamilyOf(barrier.dstQueue);
+            }
             pass.postImageBarriers.push_back({resolvedBarrier});
         }
 
-        for (const RGCompiledBufferBarrier& barrier : compiledPass.preBufferBarriers)
+        const auto resolveBuffers =
+            [&](const std::vector<RGCompiledBufferBarrier>& from, std::vector<RGResolvedBufferBarrier>& to)
         {
-            const auto it = m_Buffers.find(barrier.buffer.index);
-            if (it == m_Buffers.end() || it->second.generation != barrier.buffer.generation)
+            for (const RGCompiledBufferBarrier& barrier : from)
             {
-                fail(pass.name + ": buffer barrier buffer#" + std::to_string(barrier.buffer.index) +
-                     " is not registered");
-                continue;
+                const auto it = m_Buffers.find(barrier.buffer.index);
+                if (it == m_Buffers.end() || it->second.generation != barrier.buffer.generation)
+                {
+                    fail(pass.name + ": buffer barrier buffer#" + std::to_string(barrier.buffer.index) +
+                         " is not registered");
+                    continue;
+                }
+                BufferBarrier resolvedBarrier;
+                resolvedBarrier.Buffer = it->second.buffer;
+                resolvedBarrier.SrcStage = barrier.srcStage;
+                resolvedBarrier.DstStage = barrier.dstStage;
+                resolvedBarrier.SrcAccess = barrier.srcAccess;
+                resolvedBarrier.DstAccess = barrier.dstAccess;
+                if (barrier.srcQueue != barrier.dstQueue && FamilyOf(barrier.srcQueue) != FamilyOf(barrier.dstQueue))
+                {
+                    resolvedBarrier.SrcQueueFamily = FamilyOf(barrier.srcQueue);
+                    resolvedBarrier.DstQueueFamily = FamilyOf(barrier.dstQueue);
+                }
+                to.push_back({resolvedBarrier});
             }
-            BufferBarrier resolvedBarrier;
-            resolvedBarrier.Buffer = it->second.buffer;
-            resolvedBarrier.SrcStage = barrier.srcStage;
-            resolvedBarrier.DstStage = barrier.dstStage;
-            resolvedBarrier.SrcAccess = barrier.srcAccess;
-            resolvedBarrier.DstAccess = barrier.dstAccess;
-            pass.preBufferBarriers.push_back({resolvedBarrier});
-        }
+        };
+        resolveBuffers(compiledPass.preBufferBarriers, pass.preBufferBarriers);
+        resolveBuffers(compiledPass.postBufferBarriers, pass.postBufferBarriers);
 
         resolved.passes.push_back(std::move(pass));
     }
@@ -445,7 +467,8 @@ std::vector<Jobsystem::TaskID> VulkanRenderGraphExecutor::MapToTaskgraphPerPass(
                 return;
             // A list for this pass from this thread's pool; a graphics pass's
             // list draws inside the scope the primary opens, with its formats.
-            CommandListDesc desc{.Level = CommandListLevel::Secondary,
+            CommandListDesc desc{.Queue = pass.queue == RGQueue::Compute ? QueueType::Compute : QueueType::Graphics,
+                                 .Level = CommandListLevel::Secondary,
                                  .ThreadIndex = Jobsystem::UheJobsystem::GetCurrentThreadIndex(),
                                  .InsideRendering = HasScope(pass),
                                  .DebugName = pass.name.c_str()};
@@ -484,12 +507,14 @@ std::vector<Jobsystem::TaskID> VulkanRenderGraphExecutor::MapToTaskgraphPerPass(
 
 void VulkanRenderGraphExecutor::AssemblePerPass(const RGResolvedFrame& resolved, const std::vector<RGPassSpec>& specs,
                                                 vk::CommandBuffer primary, VulkanBarrierEncoder& encoder,
-                                                const PassHook& beginPass, const PassHook& endPass) const
+                                                const PassHook& beginPass, const PassHook& endPass, RGQueue queue) const
 {
     (void)specs;
     for (u32 slot = 0; slot < resolved.passes.size(); ++slot)
     {
         const RGResolvedPass& pass = resolved.passes[slot];
+        if (pass.queue != queue)
+            continue;
         std::vector<ImageBarrier> images;
         images.reserve(pass.preImageBarriers.size());
         for (const RGResolvedImageBarrier& barrier : pass.preImageBarriers)
@@ -544,15 +569,23 @@ void VulkanRenderGraphExecutor::AssemblePerPass(const RGResolvedFrame& resolved,
         if (endPass)
             endPass(pass);
 
-        if (!pass.postImageBarriers.empty())
+        if (!pass.postImageBarriers.empty() || !pass.postBufferBarriers.empty())
         {
             std::vector<ImageBarrier> postImages;
             postImages.reserve(pass.postImageBarriers.size());
             for (const RGResolvedImageBarrier& barrier : pass.postImageBarriers)
                 postImages.push_back(barrier.barrier);
-            encoder.Encode(primary, postImages, {}, nullptr);
+            std::vector<BufferBarrier> postBuffers;
+            postBuffers.reserve(pass.postBufferBarriers.size());
+            for (const RGResolvedBufferBarrier& barrier : pass.postBufferBarriers)
+                postBuffers.push_back(barrier.barrier);
+            encoder.Encode(primary, postImages, postBuffers, nullptr);
         }
     }
+}
+
+void VulkanRenderGraphExecutor::EndPerPassFrame() const
+{
     m_PassLists.clear();
     m_PerPassNodes.clear();
 }

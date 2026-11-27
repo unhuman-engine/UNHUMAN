@@ -30,6 +30,9 @@ struct ImageBarrier
     Stage DstStage = Stage::None;
     Access SrcAccess = Access::None;
     Access DstAccess = Access::None;
+    /// A queue-family ownership transfer when both are set (async compute, issue #32).
+    u32 SrcQueueFamily = VK_QUEUE_FAMILY_IGNORED;
+    u32 DstQueueFamily = VK_QUEUE_FAMILY_IGNORED;
 };
 
 /// One buffer range dependency (used for storage/uniform buffers).
@@ -42,6 +45,8 @@ struct BufferBarrier
     Stage DstStage = Stage::None;
     Access SrcAccess = Access::None;
     Access DstAccess = Access::None;
+    u32 SrcQueueFamily = VK_QUEUE_FAMILY_IGNORED;
+    u32 DstQueueFamily = VK_QUEUE_FAMILY_IGNORED;
 };
 
 /// A global memory dependency with no specific resource attached.

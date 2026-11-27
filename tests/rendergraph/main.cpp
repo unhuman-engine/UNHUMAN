@@ -517,8 +517,15 @@ int main()
         RGTextureHandle b = rg.CreateTexture({"B", TextureFormat::RGBA8_UNORM, 8, 8});
         RGTextureHandle out = rg.ImportTexture("Out", 30, 8, 8, 1, ImageState::Undefined, ImageState::ShaderRead);
         std::vector<std::string> order;
-        const auto record = [&order](const char* name)
-        { return [&order, name](RGPassContext&) { order.push_back(name); }; };
+        std::mutex orderMutex; // the parallel pass records on another job thread
+        const auto record = [&order, &orderMutex](const char* name)
+        {
+            return [&order, &orderMutex, name](RGPassContext&)
+            {
+                std::scoped_lock lock(orderMutex);
+                order.push_back(name);
+            };
+        };
         rg.AddPass("Serial0")
             .Write(a)
             .Color({a, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
@@ -608,6 +615,90 @@ int main()
         for (RHICommandBuffer* list : bound)
             (list != nullptr ? binds : unbinds) += 1;
         CHECK(binds == 3 && unbinds == 3, "the recording thread is bound to the pass's list, then released");
+    }
+
+    // ── Async compute (issue #32): queue placement and the handover ───────
+    {
+        const auto build = [](RenderGraph& rg, bool importParticles, bool graphicsFirst)
+        {
+            RGBufferHandle particles = importParticles
+                                           ? rg.ImportBuffer("Particles", 7)
+                                           : rg.CreateBuffer({"Particles", 4096, BufferUsageFlags::StorageBuffer});
+            RGTextureHandle out = rg.ImportTexture("Out", 31, 8, 8, 1, ImageState::Undefined, ImageState::ShaderRead);
+            if (graphicsFirst)
+                rg.AddPass("Clear", RGPassType::Compute).Write(particles).Execute([](RGPassContext&) {});
+            RGPassBuilder& simulate = rg.AddPass("Simulate", RGPassType::Compute, RGQueue::Compute);
+            if (graphicsFirst)
+                (void)simulate.Read(particles); // keeps "Clear" alive: it reads what Clear wrote
+            simulate.Write(particles).Execute([](RGPassContext&) {});
+            rg.AddPass("Draw")
+                .Read(particles)
+                .Write(out)
+                .Color({out, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+                .Execute([](RGPassContext&) {});
+        };
+        const auto passNamed = [](const RGCompileResult& result, const std::string& name) -> const RGCompiledPass*
+        {
+            for (const RGCompiledPass& pass : result.frame.passes)
+                if (pass.name == name)
+                    return &pass;
+            return nullptr;
+        };
+
+        RenderGraph noQueue;
+        build(noQueue, false, false);
+        const RGCompileResult plain = noQueue.Compile();
+        CHECK(plain.Ok() && passNamed(plain, "Simulate")->queue == RGQueue::Graphics &&
+                  plain.frame.demotedPasses.size() == 1 && plain.frame.crossQueueEdges.empty(),
+              "without a compute queue the pass runs on graphics, and says why");
+
+        RenderGraph async;
+        async.SetCompileOptions({.asyncCompute = true});
+        build(async, false, false);
+        const RGCompileResult placed = async.Compile();
+        const RGCompiledPass* simulate = passNamed(placed, "Simulate");
+        const RGCompiledPass* draw = passNamed(placed, "Draw");
+        CHECK(placed.Ok() && simulate != nullptr && simulate->queue == RGQueue::Compute && draw != nullptr &&
+                  draw->queue == RGQueue::Graphics && placed.frame.demotedPasses.empty(),
+              "a compute pass on a buffer it creates runs on the compute queue");
+        CHECK(placed.frame.crossQueueEdges.size() == 1 && placed.frame.crossQueueEdges[0].producer == simulate->id &&
+                  placed.frame.crossQueueEdges[0].consumer == draw->id,
+              "the graphics pass that reads its output waits for it");
+        CHECK(simulate->postBufferBarriers.size() == 1 &&
+                  simulate->postBufferBarriers[0].srcQueue == RGQueue::Compute &&
+                  simulate->postBufferBarriers[0].dstQueue == RGQueue::Graphics &&
+                  simulate->postBufferBarriers[0].dstAccess == Access::None,
+              "compute releases the buffer to graphics after its last use");
+        CHECK(draw->preBufferBarriers.size() == 1 && draw->preBufferBarriers[0].srcQueue == RGQueue::Compute &&
+                  draw->preBufferBarriers[0].dstQueue == RGQueue::Graphics &&
+                  draw->preBufferBarriers[0].srcAccess == Access::None &&
+                  placed.frame.crossQueueEdges[0].waitStage == draw->preBufferBarriers[0].dstStage,
+              "graphics acquires it, at the stage the submission waits");
+
+        RenderGraph imported;
+        imported.SetCompileOptions({.asyncCompute = true});
+        build(imported, true, false);
+        const RGCompileResult importedResult = imported.Compile();
+        CHECK(passNamed(importedResult, "Simulate")->queue == RGQueue::Graphics &&
+                  importedResult.frame.demotedPasses.size() == 1 &&
+                  importedResult.frame.demotedPasses[0].find("imported") != std::string::npos,
+              "an imported resource keeps the pass on graphics");
+
+        RenderGraph after;
+        after.SetCompileOptions({.asyncCompute = true});
+        build(after, false, true);
+        const RGCompileResult afterResult = after.Compile();
+        CHECK(passNamed(afterResult, "Simulate")->queue == RGQueue::Graphics &&
+                  afterResult.frame.demotedPasses.size() == 1 &&
+                  afterResult.frame.demotedPasses[0].find("before it") != std::string::npos,
+              "so does a resource a graphics pass used before it");
+
+        RenderGraph cached;
+        build(cached, false, false);
+        (void)cached.CompileCached();
+        cached.SetCompileOptions({.asyncCompute = true});
+        CHECK(passNamed(cached.CompileCached(), "Simulate")->queue == RGQueue::Compute,
+              "the options are part of the cache key");
     }
 
     // ── A Load attachment depends on the previous writer ──────────────────

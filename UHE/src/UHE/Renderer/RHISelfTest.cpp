@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include "UHE/AssetsManager/VfsSystem.h"
+#include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/Renderer/ShaderCache.h"
@@ -572,6 +573,152 @@ RHISelfTestResult SelfTest::Run()
 RHISelfTestResult RunRHISelfTest(RHI::RHIDevice& device)
 {
     return SelfTest(device).Run();
+}
+
+// ── The frame part: async compute through the frame graph (issue #32) ───────
+
+namespace
+{
+constexpr u64 kFrameCount = 256; ///< values the fill pass writes
+constexpr u32 kFramesToRun = 3;  ///< frames that declare the passes
+} // namespace
+
+struct RHISelfTestFrames::State
+{
+    RHI::RHIDevice& Device;
+    RHI::ShaderHandle Shader = nullptr;
+    RHI::DescriptorSetLayoutHandle Layout = nullptr;
+    RHI::PipelineHandle Pipeline = nullptr;
+    RHI::BufferHandle Readback = nullptr;
+    u32 Declared = 0;
+    bool Usable = false;
+};
+
+RHISelfTestFrames::RHISelfTestFrames(RHI::RHIDevice& device) : m_State(new State{device})
+{
+    using namespace RHI;
+    State& st = *m_State;
+    if (!device.GetLimits().PushDescriptors)
+    {
+        UHE_CORE_INFO("[RHI-SELFTEST] skip async compute frames: the device has no push descriptors");
+        return;
+    }
+    const std::filesystem::path path = FileSystem::Get().GetRootPath() / "assets/shaders/RHISelfTestFill.slang";
+    const ShaderCache::Handle handle = ShaderCache::Get().Load(path.string());
+    const ShaderCache::Shader* shader = handle != 0 ? ShaderCache::Get().Get(handle) : nullptr;
+    const ShaderStageBinary* stage = shader != nullptr ? shader->FindStage(ShaderStage::Compute) : nullptr;
+    if (stage == nullptr)
+        return;
+    st.Shader = device.CreateShader(ShaderDesc{.stage = ShaderStage::Compute,
+                                               .spirvData = stage->SPIRV.data(),
+                                               .spirvSize = stage->SPIRV.size(),
+                                               .entryPoint = "main",
+                                               .debugName = "RHISelfTestFill"});
+    st.Layout = device.CreateDescriptorSetLayout(
+        DescriptorSetLayoutDesc{.Bindings = {DescriptorBinding{.Binding = 0, .Type = DescriptorType::StorageBuffer}},
+                                .PushDescriptor = true,
+                                .DebugName = "RHISelfTestFill.Set1"});
+    ComputePipelineDesc pipeline{.computeShader = st.Shader, .debugName = "RHISelfTestFill"};
+    pipeline.descriptorSetLayouts[0] = st.Layout;
+    pipeline.descriptorSetLayoutCount = 1;
+    st.Pipeline = device.CreateComputePipeline(pipeline);
+    st.Readback = device.CreateBuffer(BufferDesc{.size = kFrameCount * 4, .usage = BufferUsage::Readback});
+    st.Usable = st.Pipeline != nullptr && st.Readback != nullptr;
+}
+
+RHISelfTestFrames::~RHISelfTestFrames()
+{
+    State& st = *m_State;
+    st.Device.WaitIdle();
+    if (st.Pipeline != nullptr)
+        st.Device.DestroyComputePipeline(st.Pipeline);
+    if (st.Layout != nullptr)
+        st.Device.DestroyDescriptorSetLayout(st.Layout);
+    if (st.Shader != nullptr)
+        st.Device.DestroyShader(st.Shader);
+    if (st.Readback != nullptr)
+        st.Device.DestroyBuffer(st.Readback);
+    delete m_State;
+}
+
+bool RHISelfTestFrames::Done() const
+{
+    return !m_State->Usable || m_State->Declared >= kFramesToRun;
+}
+
+void RHISelfTestFrames::Declare()
+{
+    using namespace RHI;
+    State& st = *m_State;
+    FrameGraph* graph = st.Device.GetFrameGraph();
+    if (Done() || graph == nullptr)
+        return;
+    ++st.Declared;
+    struct FillData
+    {
+        FGHandle<FGBuffer> Values;
+    };
+    const FillData& fill = graph->AddPass<FillData>(
+        "SelfTest.AsyncFill", FGPassType::Compute,
+        [](FGBuilder& builder, FillData& d)
+        {
+            d.Values = builder.Write(builder.Create("SelfTest.Values", FGBuffer::Desc{.Size = kFrameCount * 4}),
+                                     FGWrite::Storage);
+            builder.RunOnAsyncCompute();
+        },
+        [pipeline = st.Pipeline](const FillData& d, FGContext& context)
+        {
+            RHICommandBuffer& cmd = context.Cmd();
+            cmd.BindPipeline(pipeline);
+            const DescriptorWrite writes[] = {DescriptorWrite{.Binding = 0, .Buffer = context.Get(d.Values)}};
+            cmd.PushDescriptors(1, writes);
+            cmd.Dispatch(static_cast<u32>(kFrameCount / 64));
+        });
+    struct CopyData
+    {
+        FGHandle<FGBuffer> Values;
+        FGHandle<FGBuffer> Readback;
+    };
+    const FGHandle<FGBuffer> readback =
+        graph->Import("SelfTest.Readback", FGBuffer::Desc{.Size = kFrameCount * 4}, st.Readback);
+    graph->AddPass<CopyData>(
+        "SelfTest.Readback", FGPassType::Transfer,
+        [&](FGBuilder& builder, CopyData& d)
+        {
+            d.Values = builder.Read(fill.Values, FGRead::CopySrc);
+            d.Readback = builder.Write(readback, FGWrite::CopyDst);
+        },
+        [](const CopyData& d, FGContext& context)
+        {
+            context.Cmd().CopyBuffer(context.Get(d.Values), context.Get(d.Readback),
+                                     BufferCopy{.Size = kFrameCount * 4});
+        });
+}
+
+void RHISelfTestFrames::Finish(RHISelfTestResult& result)
+{
+    State& st = *m_State;
+    if (!st.Usable)
+        return;
+    st.Device.WaitIdle();
+    std::vector<u8> bytes(kFrameCount * 4);
+    bool ok = st.Device.ReadBuffer(st.Readback, 0, bytes);
+    for (u64 i = 0; ok && i < kFrameCount; ++i)
+    {
+        u32 value = 0;
+        std::memcpy(&value, &bytes[i * 4], 4);
+        ok = value == (i * 3) + 7;
+    }
+    ++result.Checks;
+    const bool dedicated = st.Device.GetLimits().DedicatedComputeQueue;
+    if (ok)
+        UHE_CORE_INFO("[RHI-SELFTEST] ok   an async compute pass fills a buffer a graphics-queue pass copies out ({0})",
+                      dedicated ? "on the dedicated compute queue" : "on graphics: no compute queue");
+    else
+    {
+        ++result.Failures;
+        UHE_CORE_ERROR("[RHI-SELFTEST] FAIL an async compute pass fills a buffer a graphics-queue pass copies out");
+    }
 }
 
 } // namespace UHE

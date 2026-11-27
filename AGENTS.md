@@ -95,6 +95,15 @@ here. Follow them; if a rule is wrong, change it here first.
   do, `s_PostMutex`). `GetCurrentCommandBuffer()` names the pass's list on the
   recording thread. `UHE_RENDERGRAPH_PRIMARY=1` records everything into the
   frame's primary, for an A/B.
+- **Async compute is a request the compiler may refuse.**
+  `FGBuilder::RunOnAsyncCompute()` puts a compute pass on the dedicated
+  compute queue only when everything it touches is created this frame, first
+  written by compute, and untouched by graphics before it; otherwise it runs
+  on graphics and the log says why. The compute work is submitted first and
+  waits for the previous frame's graphics; graphics waits for it only at the
+  stage of the pass that reads its output, through a queue-family release and
+  acquire the compiler adds. Its textures stay out of lifetime aliasing.
+  `UHE_ASYNC_COMPUTE=0` keeps everything on graphics.
 - **The 3D scene is drawn by `SceneRenderer`, in several passes.** Shadow
   cascades, the depth prepass, the colour pass and water all draw the scene,
   and they must agree on where everything is: a prepass and a colour pass that

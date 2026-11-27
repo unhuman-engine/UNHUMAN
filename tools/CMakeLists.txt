@@ -18,6 +18,7 @@ set(UHE_SHADER_SOURCES
     "${UHE_SHADER_DIR}/Grid.slang"
     "${UHE_SHADER_DIR}/ImGuiSrgb.slang"
     "${UHE_SHADER_DIR}/RHISelfTest.slang"
+    "${UHE_SHADER_DIR}/RHISelfTestFill.slang"
     "${UHE_SHADER_DIR}/Sky.slang"
     "${UHE_SHADER_DIR}/SSAO.slang"
     "${UHE_SHADER_DIR}/Texture.slang"

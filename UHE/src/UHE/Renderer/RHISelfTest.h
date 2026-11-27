@@ -34,4 +34,31 @@ struct RHISelfTestResult
  */
 UHE_API RHISelfTestResult RunRHISelfTest(RHI::RHIDevice& device);
 
+/**
+ * @brief The part of the self-test that needs real frames: async compute (issue #32).
+ *
+ * For a few frames it declares an async compute pass that fills a buffer and a
+ * graphics-queue pass that copies it into a readback buffer; Finish checks
+ * what arrived. Application drives it under UHE_RHI_SELFTEST: Declare before
+ * the layers each frame, Finish once enough frames have run.
+ */
+class UHE_API RHISelfTestFrames
+{
+public:
+    explicit RHISelfTestFrames(RHI::RHIDevice& device);
+    ~RHISelfTestFrames();
+    RHISelfTestFrames(const RHISelfTestFrames&) = delete;
+    RHISelfTestFrames& operator=(const RHISelfTestFrames&) = delete;
+
+    /// @brief Declares this frame's passes (a no-op once enough frames ran).
+    void Declare();
+    [[nodiscard]] bool Done() const;
+    /// @brief Waits for the GPU and checks the readback; adds to \p result.
+    void Finish(RHISelfTestResult& result);
+
+private:
+    struct State;
+    State* m_State;
+};
+
 } // namespace UHE

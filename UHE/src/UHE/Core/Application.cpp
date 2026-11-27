@@ -62,12 +62,10 @@ Application::Application(const std::string& name, const WindowProps& window)
     if (const char* selfTest = std::getenv("UHE_RHI_SELFTEST");
         selfTest != nullptr && *selfTest != '\0' && std::string_view(selfTest) != "0")
     {
-        const RHISelfTestResult result = RunRHISelfTest(Renderer::GetDevice());
-        if (std::string_view(selfTest) == "exit")
-        {
-            m_ExitCode = result.Failures == 0 ? 0 : 1;
-            Close();
-        }
+        m_SelfTestResult = RunRHISelfTest(Renderer::GetDevice());
+        m_SelfTestExit = std::string_view(selfTest) == "exit";
+        // Then the part that needs real frames (async compute through the frame graph).
+        m_SelfTestFrames = std::make_unique<RHISelfTestFrames>(Renderer::GetDevice());
     }
 }
 
@@ -191,6 +189,8 @@ void Application::Run()
 
                     if (!frameSkipped)
                     {
+                        if (m_SelfTestFrames)
+                            m_SelfTestFrames->Declare();
                         for (Layer* layer : m_LayerStack)
                             layer->OnUpdate(timestep);
                         ++m_RenderedFrames;
@@ -208,6 +208,19 @@ void Application::Run()
             UHE_PROFILE_FRAMEMARK;
         }
         UHE::Profiler::EndFrame();
+
+        if (m_SelfTestFrames && m_SelfTestFrames->Done())
+        {
+            m_SelfTestFrames->Finish(m_SelfTestResult);
+            m_SelfTestFrames.reset();
+            UHE_CORE_INFO("[RHI-SELFTEST] {0} checks, {1} failures (with frames)", m_SelfTestResult.Checks,
+                          m_SelfTestResult.Failures);
+            if (m_SelfTestExit)
+            {
+                m_ExitCode = m_SelfTestResult.Failures == 0 ? 0 : 1;
+                Close();
+            }
+        }
     }
 };
 void Application::RequestCaptureIfDue()
