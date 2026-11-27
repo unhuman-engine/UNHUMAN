@@ -259,5 +259,10 @@ here. Follow them; if a rule is wrong, change it here first.
   differs between releases; use the same versions locally. Formatting can
   reorder includes: a header that is not self-contained (`ImGuizmo.h` needs
   `imgui.h` first) keeps its order inside `// clang-format off`.
+- **A parser of untrusted bytes has a fuzz target.** Cooked files, cooked
+  models and KTX2 are in `tests/fuzz` (`cmake --preset fuzz`, Clang + ASan +
+  UBSan); `nightly.yml` runs each for ten minutes with a carried-over corpus,
+  plus a 20-minute Sandbox and editor soak (`script/soak.sh`) that fails on
+  validation errors and on memory growth after warm-up.
 - Sanitizer presets already exist: `cmake --preset sanitizer -DUHE_SANITIZER=<address|thread|undefined>`.
   Binaries land in `bin/Debug-linux-x64-<sanitizer>/`.

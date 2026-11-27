@@ -104,6 +104,19 @@
         "CMAKE_CXX_COMPILER": "clang++",
         "CMAKE_C_COMPILER": "clang"
       }
+    },
+    {
+      "name": "fuzz",
+      "inherits": "base",
+      "displayName": "UHE libFuzzer targets (Clang, ASan + UBSan)",
+      "binaryDir": "${sourceDir}/build_fuzz",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "UHE_SANITIZER": "address,undefined",
+        "UHE_FUZZ": "ON",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang"
+      }
     }
   ],
   "buildPresets": [
@@ -116,6 +129,7 @@
     { "name": "asan-ubsan", "configurePreset": "asan-ubsan" },
     { "name": "lsan", "configurePreset": "lsan" },
     { "name": "tsan", "configurePreset": "tsan" },
-    { "name": "msan", "configurePreset": "msan" }
+    { "name": "msan", "configurePreset": "msan" },
+    { "name": "fuzz", "configurePreset": "fuzz", "targets": ["fuzz_cooked_container", "fuzz_cooked_model", "fuzz_ktx2"] }
   ]
 }

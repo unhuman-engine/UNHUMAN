@@ -29,6 +29,7 @@ option(VG_PROFILE "Enable Tracy profiling" ON)
 # Build + register the no-GPU unit tests under CTest (ctest -L unit).
 # See tests/CMakeLists.txt; CI rollout in docs/architecture/ci-cd.md §"Test infrastructure".
 option(UHE_TESTS "Build UHE unit tests and register them with CTest" ON)
+option(UHE_FUZZ "Build the libFuzzer targets in tests/fuzz (Clang; see the fuzz preset)" OFF)
 
 # ---------------------------------------------------------------------------
 # Sanitizer support (GCC / Clang) - one flag to pick them all:

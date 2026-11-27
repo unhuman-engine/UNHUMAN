@@ -1,0 +1,167 @@
+name: Nightly (soak + fuzz)
+
+# What is too slow for every push (issue #39): a long run of the Sandbox and
+# the editor under validation, watching for errors and memory growth, and the
+# libFuzzer targets in tests/fuzz against the parsers that read untrusted files.
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: "Seconds each soak run lasts"
+        default: '1200'
+      fuzz_seconds:
+        description: "Seconds each fuzz target runs"
+        default: '600'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    name: Soak (${{ matrix.app }}, lavapipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [ Sandbox, UHE_EDITOR ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxi-dev libwayland-dev libxkbcommon-dev libfreetype6-dev \
+            mesa-vulkan-drivers xvfb
+
+      - name: Install Vulkan SDK
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          source /etc/os-release
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-${VERSION_CODENAME}.list http://packages.lunarg.com/vulkan/lunarg-vulkan-${VERSION_CODENAME}.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      - name: Download Slang
+        run: python script/Setup.py
+
+      # Debug: validation layers are off under NDEBUG, and a soak without them
+      # would only prove the process stayed up.
+      - name: Configure
+        run: cmake --preset debug -DVG_PROFILE=OFF
+
+      - name: Build
+        run: cmake --build --preset debug --parallel --target ${{ matrix.app }} uhe_shaders
+
+      - name: Soak
+        env:
+          SOAK_SECONDS: ${{ inputs.soak_seconds || '1200' }}
+        run: |
+          export VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          [ -n "$VK_ICD_FILENAMES" ] || { echo "Lavapipe ICD not found"; exit 1; }
+          export UHE_VALIDATION_FATAL=1
+          Xvfb :99 -screen 0 1920x1080x24 &
+          export DISPLAY=:99
+          for i in $(seq 1 50); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.2; done
+          script/soak.sh bin/Debug-linux-x64 ${{ matrix.app }} "$SOAK_SECONDS"
+
+      - name: Upload soak log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-${{ matrix.app }}
+          path: |
+            bin/Debug-linux-x64/soak-*.log
+            bin/Debug-linux-x64/soak-*.rss
+          retention-days: 14
+          if-no-files-found: ignore
+
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ fuzz_cooked_container, fuzz_cooked_model, fuzz_ktx2 ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxi-dev libwayland-dev libxkbcommon-dev libfreetype6-dev
+
+      - name: Install Vulkan SDK
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          source /etc/os-release
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-${VERSION_CODENAME}.list http://packages.lunarg.com/vulkan/lunarg-vulkan-${VERSION_CODENAME}.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      - name: Download Slang
+        run: python script/Setup.py
+
+      - name: Configure
+        run: cmake --preset fuzz -DVG_PROFILE=OFF
+
+      - name: Build
+        run: cmake --build --preset fuzz --parallel
+
+      # The corpus carries over between nights, so each run starts where the
+      # last one stopped instead of rediscovering the same inputs.
+      - name: Restore corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz-corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Fuzz
+        env:
+          FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '600' }}
+        run: |
+          mkdir -p fuzz-corpus/${{ matrix.target }} fuzz-crashes
+          export LSAN_OPTIONS="suppressions=$PWD/tests/lsan.supp"
+          export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
+          "bin/Debug-linux-x64-address,undefined/${{ matrix.target }}" \
+            -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=2048 -timeout=10 \
+            -artifact_prefix=fuzz-crashes/ fuzz-corpus/${{ matrix.target }}
+
+      # A crash input reproduces locally with:
+      #   cmake --preset fuzz && cmake --build --preset fuzz
+      #   bin/Debug-linux-x64-address,undefined/<target> <crash file>
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz-crashes/
+          retention-days: 30
+          if-no-files-found: ignore
