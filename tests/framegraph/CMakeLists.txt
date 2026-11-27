@@ -4,6 +4,7 @@
 add_executable(framegraph_test
     main.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/RHI/FrameGraph/FrameGraph.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/RHI/FrameGraph/TransientPlacement.cpp
 )
 
 target_include_directories(framegraph_test PRIVATE

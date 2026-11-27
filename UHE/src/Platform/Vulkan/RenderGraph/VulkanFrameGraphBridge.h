@@ -3,6 +3,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "Platform/Vulkan/RenderGraph/VulkanTransientHeap.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/FrameGraph/TransientPool.h"
 #include "UHE/RHI/RenderGraph/RenderGraph.h"
@@ -57,6 +58,7 @@ public:
     /// @brief Releases every pooled object. Call with the device idle.
     void Shutdown()
     {
+        m_Heap.Clear();
         m_Pool.Clear();
         m_BufferPool.Clear();
         m_Exports.Clear();
@@ -64,11 +66,13 @@ public:
     }
 
     [[nodiscard]] const TransientTexturePool& Pool() const { return m_Pool; }
+    [[nodiscard]] const VulkanTransientHeap& Heap() const { return m_Heap; }
     [[nodiscard]] const TransientBufferPool& BufferPool() const { return m_BufferPool; }
     [[nodiscard]] const ExportPool& Exports() const { return m_Exports; }
 
 private:
     VulkanDevice& m_Device;
+    VulkanTransientHeap m_Heap{m_Device}; ///< transient textures, aliased across shapes (#32)
     TransientTexturePool m_Pool;
     TransientBufferPool m_BufferPool;
     ExportPool m_Exports;

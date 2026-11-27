@@ -118,8 +118,18 @@ void VulkanTexture::InitImported(VulkanDevice& device, vk::Image image, vk::Imag
     {
         textureSampler = CreateSampler(vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
                                        vk::SamplerAddressMode::eClampToEdge, static_cast<float>(m_MipLevels));
+        // As in Init: a sampled view names one aspect, so depth-stencil is read through depth.
+        vk::ImageView sampledView = *textureImageView;
+        if (m_Aspect & vk::ImageAspectFlagBits::eDepth)
+        {
+            m_SampledDepthView = m_LayerCount > 1
+                                     ? CreateImageView(image, format, vk::ImageAspectFlagBits::eDepth, 0, m_MipLevels,
+                                                       0, m_LayerCount, true)
+                                     : CreateImageView(image, format, vk::ImageAspectFlagBits::eDepth, m_MipLevels);
+            sampledView = *m_SampledDepthView;
+        }
         m_TextureIndex =
-            device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle, *textureImageView, *textureSampler);
+            device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle, sampledView, *textureSampler);
     }
 }
 
