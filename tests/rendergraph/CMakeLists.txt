@@ -5,18 +5,21 @@
 # UHE::Log's statics without the ImGui sink tree; it is test-only and must
 # never be compiled into the engine (symbol clash with Log.cpp).
 
-set(RG_SRC_DIR ${CMAKE_SOURCE_DIR}/UHE/src/Platform/Vulkan/RenderGraph)
+# The graph itself is backend-neutral (UHE/RHI/RenderGraph, issue #30); the
+# executor that records it is the Vulkan backend's.
+set(RG_SRC_DIR ${CMAKE_SOURCE_DIR}/UHE/src/UHE/RHI/RenderGraph)
+set(RG_VK_DIR ${CMAKE_SOURCE_DIR}/UHE/src/Platform/Vulkan/RenderGraph)
 
 add_executable(rg_test
     main.cpp
     log_stub.cpp
-    ${RG_SRC_DIR}/VulkanRenderGraphTypes.cpp
-    ${RG_SRC_DIR}/VulkanRenderGraphResources.cpp
-    ${RG_SRC_DIR}/VulkanRenderGraphBuilder.cpp
-    ${RG_SRC_DIR}/VulkanRenderGraphCompiler.cpp
-    ${RG_SRC_DIR}/VulkanRenderGraphCompileCache.cpp
-    ${RG_SRC_DIR}/VulkanRenderGraph.cpp
-    ${RG_SRC_DIR}/VulkanRenderGraphExecutor.cpp
+    ${RG_SRC_DIR}/RenderGraphTypes.cpp
+    ${RG_SRC_DIR}/RenderGraphResources.cpp
+    ${RG_SRC_DIR}/RenderGraphBuilder.cpp
+    ${RG_SRC_DIR}/RenderGraphCompiler.cpp
+    ${RG_SRC_DIR}/RenderGraphCompileCache.cpp
+    ${RG_SRC_DIR}/RenderGraph.cpp
+    ${RG_VK_DIR}/VulkanRenderGraphExecutor.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Jobsystem/Taskgraph.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Jobsystem/Jobsystem.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/Platform/Vulkan/VulkanSemaphore.cpp

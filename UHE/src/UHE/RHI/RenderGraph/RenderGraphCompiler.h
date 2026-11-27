@@ -1,9 +1,8 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <vulkan/vulkan_raii.hpp>
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphResources.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphTypes.h"
+#include "UHE/RHI/RenderGraph/RenderGraphResources.h"
+#include "UHE/RHI/RenderGraph/RenderGraphTypes.h"
 
 // Render graph compiler (docs/architecture/rendergraph.md §8.3) — step 2 slice.
 //
@@ -46,7 +45,7 @@
 //   - Graphics-pass buffer reads map to Stage::Vertex (uniform/vertex input);
 //     buffer writes belong in compute/transfer passes in v1.
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 // One image layout transition at a pass boundary. Old/Next are engine
@@ -101,11 +100,11 @@ struct RGCompiledResourceLifetime
 
 struct RGCompiledFrame
 {
-    u64 topologyHash = 0; // §8.3 cache key (caching itself lands in §13.3 item 14)
-    u32 declaredPassCount = 0; // pre-cull, debug
-    std::vector<RGCompiledPass> passes;     // topological, live only
+    u64 topologyHash = 0;               // §8.3 cache key (caching itself lands in §13.3 item 14)
+    u32 declaredPassCount = 0;          // pre-cull, debug
+    std::vector<RGCompiledPass> passes; // topological, live only
     std::vector<RGCompiledResourceLifetime> lifetimes;
-    std::vector<std::string> culledPasses;  // debug UX: which passes were cut
+    std::vector<std::string> culledPasses; // debug UX: which passes were cut
 };
 
 struct RGCompileResult
@@ -115,20 +114,20 @@ struct RGCompileResult
     [[nodiscard]] bool Ok() const { return errors.empty(); }
 };
 
-class VulkanRenderGraphCompiler
+class RenderGraphCompiler
 {
 public:
-    VulkanRenderGraphCompiler() = default;
-    VulkanRenderGraphCompiler(const VulkanRenderGraphCompiler&) = delete;
-    VulkanRenderGraphCompiler& operator=(const VulkanRenderGraphCompiler&) = delete;
-    ~VulkanRenderGraphCompiler() = default;
+    RenderGraphCompiler() = default;
+    RenderGraphCompiler(const RenderGraphCompiler&) = delete;
+    RenderGraphCompiler& operator=(const RenderGraphCompiler&) = delete;
+    ~RenderGraphCompiler() = default;
 
     // Compiles the declared passes into an executable frame. Collects all
     // errors (never throws); a failed result carries an empty frame.
     // `passes` must be the builder's declaration-ordered list; `resources`
     // supplies slot metadata (imported initial states, version logs, names).
     [[nodiscard]] static RGCompileResult Compile(const std::vector<RGPassSpec>& passes,
-                                                 const VulkanRenderGraphResources& resources);
+                                                 const RenderGraphResources& resources);
 };
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

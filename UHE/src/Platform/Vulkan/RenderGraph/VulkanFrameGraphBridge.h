@@ -3,9 +3,9 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/FrameGraph/TransientPool.h"
+#include "UHE/RHI/RenderGraph/RenderGraph.h"
 
 namespace UHE::RHI::VULKAN
 {
@@ -31,7 +31,7 @@ public:
      * @brief Declares \p frontend's passes into \p graph.
      * @return false when the frame cannot be realized; \p errors says why and no pass was declared.
      */
-    bool Translate(const FrameGraph& frontend, VulkanRenderGraph& graph, std::vector<std::string>& errors);
+    bool Translate(const FrameGraph& frontend, RenderGraph& graph, std::vector<std::string>& errors);
 
     /**
      * @brief The object behind the texture \p frontend exports as \p name (RHIDevice::GetExportedTexture).

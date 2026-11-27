@@ -73,7 +73,7 @@ here. Follow them; if a rule is wrong, change it here first.
   only symptom is a missing scene. Under `UHE_VALIDATION_FATAL` it stops the
   run like a validation error does.
 - **The compiled render graph is cached by exact structure, not by hash.**
-  `VulkanRenderGraphCompileCache` replays the last compile only when every
+  `RenderGraphCompileCache` (UHE/RHI/RenderGraph) replays the last compile only when every
   access, state and name matches, and rebinds handle generations. The topology
   hash counts a pass's reads instead of naming them; never key a cache on it.
   `UHE_RENDERGRAPH_NO_CACHE=1` compiles every frame, for an A/B.

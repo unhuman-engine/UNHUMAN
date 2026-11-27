@@ -192,8 +192,7 @@ void VulkanFrameGraphBridge::CommitExports()
     m_PendingExports.clear();
 }
 
-bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderGraph& graph,
-                                       std::vector<std::string>& errors)
+bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, RenderGraph& graph, std::vector<std::string>& errors)
 {
     if (frontend.PassCount() == 0)
         return true;

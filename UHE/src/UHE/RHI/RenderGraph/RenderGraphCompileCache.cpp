@@ -1,6 +1,6 @@
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphCompileCache.h"
+#include "UHE/RHI/RenderGraph/RenderGraphCompileCache.h"
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 namespace
@@ -27,11 +27,11 @@ void PushAccess(std::vector<u64>& words, const RGResourceAccess& access)
 }
 } // namespace
 
-VulkanRenderGraphCompileCache::Key VulkanRenderGraphCompileCache::BuildKey(const VulkanRenderGraphBuilder& builder)
+RenderGraphCompileCache::Key RenderGraphCompileCache::BuildKey(const RenderGraphBuilder& builder)
 {
     Key key;
     std::vector<u64>& w = key.Words;
-    const VulkanRenderGraphResources& resources = builder.Resources();
+    const RenderGraphResources& resources = builder.Resources();
 
     Push(w, resources.Textures().size());
     for (const RGTextureSlot& slot : resources.Textures())
@@ -70,10 +70,10 @@ VulkanRenderGraphCompileCache::Key VulkanRenderGraphCompileCache::BuildKey(const
     return key;
 }
 
-RGCompileResult VulkanRenderGraphCompileCache::Compile(const VulkanRenderGraphBuilder& builder)
+RGCompileResult RenderGraphCompileCache::Compile(const RenderGraphBuilder& builder)
 {
     Key key = BuildKey(builder);
-    const VulkanRenderGraphResources& resources = builder.Resources();
+    const RenderGraphResources& resources = builder.Resources();
 
     if (m_Valid && key == m_Key)
     {
@@ -113,7 +113,7 @@ RGCompileResult VulkanRenderGraphCompileCache::Compile(const VulkanRenderGraphBu
     ++m_Misses;
     RGCompileResult result;
     result.errors = builder.Validate();
-    RGCompileResult compiled = VulkanRenderGraphCompiler::Compile(builder.Passes(), resources);
+    RGCompileResult compiled = RenderGraphCompiler::Compile(builder.Passes(), resources);
     result.errors.insert(result.errors.end(), compiled.errors.begin(), compiled.errors.end());
     result.frame = std::move(compiled.frame);
     result.frame.topologyHash = builder.ComputeTopologyHash();
@@ -127,4 +127,4 @@ RGCompileResult VulkanRenderGraphCompileCache::Compile(const VulkanRenderGraphBu
     return result;
 }
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

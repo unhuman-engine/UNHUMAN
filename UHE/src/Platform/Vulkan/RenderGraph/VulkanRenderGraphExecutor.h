@@ -6,13 +6,13 @@
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
-#include "UHE/Jobsystem/Taskgraph.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphCompiler.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphResources.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphTypes.h"
 #include "Platform/Vulkan/VulkanBarrierEncoder.h"
 #include "Platform/Vulkan/VulkanSemaphore.h"
 #include "UHE/Core/Core.h"
+#include "UHE/Jobsystem/Taskgraph.h"
+#include "UHE/RHI/RenderGraph/RenderGraphCompiler.h"
+#include "UHE/RHI/RenderGraph/RenderGraphResources.h"
+#include "UHE/RHI/RenderGraph/RenderGraphTypes.h"
 
 // Render graph executor (docs/architecture/rendergraph.md §8.5) — step 3 slice.
 //
@@ -103,11 +103,22 @@ struct RGResolvedFrame
 // Views/buffers resolve with correct state guaranteed by the compiler's
 // pre-barriers; the command buffer is the frame's primary.
 
+} // namespace UHE::RHI::VULKAN
+
+namespace UHE::RHI
+{
+namespace VULKAN
+{
+class VulkanRenderGraphExecutor;
+}
+
+/// The pass context the graph (UHE/RHI/RenderGraph) declares and hands each
+/// pass: an opaque type to the graph, defined by the backend that records it.
 class UHE_API RGPassContext
 {
 public:
-    RGPassContext(const class VulkanRenderGraphExecutor& executor, vk::CommandBuffer cmd,
-                  u32 passIndex, vk::Extent2D extent)
+    RGPassContext(const VULKAN::VulkanRenderGraphExecutor& executor, vk::CommandBuffer cmd, u32 passIndex,
+                  vk::Extent2D extent)
         : m_Executor(executor), m_Cmd(cmd), m_PassIndex(passIndex), m_Extent(extent)
     {
     }
@@ -127,11 +138,16 @@ public:
     [[nodiscard]] u32 PassIndex() const { return m_PassIndex; }
 
 private:
-    const VulkanRenderGraphExecutor& m_Executor;
+    const VULKAN::VulkanRenderGraphExecutor& m_Executor;
     vk::CommandBuffer m_Cmd;
     u32 m_PassIndex = 0;
     vk::Extent2D m_Extent{};
 };
+
+} // namespace UHE::RHI
+
+namespace UHE::RHI::VULKAN
+{
 
 class VulkanRenderGraphExecutor
 {

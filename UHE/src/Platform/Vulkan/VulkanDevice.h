@@ -3,7 +3,6 @@
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
 #include "Platform/Vulkan/RenderGraph/VulkanFrameGraphBridge.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
 #include "Platform/Vulkan/VulkanBarrierEncoder.h"
 #include "Platform/Vulkan/VulkanContext.h"
@@ -19,6 +18,7 @@
 #include "UHE/Core/Core.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHIDevice.h"
+#include "UHE/RHI/RenderGraph/RenderGraph.h"
 
 namespace UHE::RHI::VULKAN
 {
@@ -81,7 +81,7 @@ public:
     [[nodiscard]] VulkanRenderGraphExecutor& GetRenderGraphExecutor() { return m_RenderGraphExecutor; }
     // Per-frame graph feature passes declare into (M5 step 4); Reset() by
     // EndFrameGraph() after recording.
-    [[nodiscard]] VulkanRenderGraph& GetRenderGraph() { return m_FrameGraph; }
+    [[nodiscard]] RenderGraph& GetRenderGraph() { return m_FrameGraph; }
     /// \copydoc RHIDevice::GetFrameGraph
     [[nodiscard]] FrameGraph* GetFrameGraph() override { return &m_Frontend; }
     /// @brief Binds \p buffer to a render graph buffer slot for this frame.
@@ -218,7 +218,7 @@ private:
 
     // Frame graph + TaskGraph mapping (§14 step 5): per-frame declare →
     // resolve → record; TaskGraph topology refreshed every EndFrameGraph().
-    VulkanRenderGraph m_FrameGraph;
+    RenderGraph m_FrameGraph;
     // FrameGraph frontend: declared by layers, realized on m_FrameGraph once
     // per frame by the bridge (FlushFrontend), reset at the end of End().
     FrameGraph m_Frontend;

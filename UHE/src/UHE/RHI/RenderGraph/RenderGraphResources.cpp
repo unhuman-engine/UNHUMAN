@@ -1,12 +1,12 @@
 #include "uhepch.h"
-#include "VulkanRenderGraphResources.h"
+#include "RenderGraphResources.h"
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 // ─── Creation ───────────────────────────────────────────────────────────────
 
-RGTextureHandle VulkanRenderGraphResources::AllocateTextureSlot(std::string name, bool imported)
+RGTextureHandle RenderGraphResources::AllocateTextureSlot(std::string name, bool imported)
 {
     // Name collision returns the existing slot (see m_TextureIndices comment in
     // the header) — the builder turns a genuine re-declaration with a different
@@ -30,7 +30,7 @@ RGTextureHandle VulkanRenderGraphResources::AllocateTextureSlot(std::string name
     return RGTextureHandle{index, slot.generation};
 }
 
-RGBufferHandle VulkanRenderGraphResources::AllocateBufferSlot(std::string name, bool imported)
+RGBufferHandle RenderGraphResources::AllocateBufferSlot(std::string name, bool imported)
 {
     const auto it = m_BufferIndices.find(name);
     if (it != m_BufferIndices.end())
@@ -49,7 +49,7 @@ RGBufferHandle VulkanRenderGraphResources::AllocateBufferSlot(std::string name, 
     return RGBufferHandle{index, slot.generation};
 }
 
-RGTextureHandle VulkanRenderGraphResources::CreateTexture(const RGTextureDesc& desc)
+RGTextureHandle RenderGraphResources::CreateTexture(const RGTextureDesc& desc)
 {
     RGTextureHandle handle = AllocateTextureSlot(desc.name, /*imported=*/false);
     if (RGTextureSlot* slot = GetTexture(handle))
@@ -57,7 +57,7 @@ RGTextureHandle VulkanRenderGraphResources::CreateTexture(const RGTextureDesc& d
     return handle;
 }
 
-RGBufferHandle VulkanRenderGraphResources::CreateBuffer(const RGBufferDesc& desc)
+RGBufferHandle RenderGraphResources::CreateBuffer(const RGBufferDesc& desc)
 {
     RGBufferHandle handle = AllocateBufferSlot(desc.name, /*imported=*/false);
     if (RGBufferSlot* slot = GetBuffer(handle))
@@ -65,10 +65,8 @@ RGBufferHandle VulkanRenderGraphResources::CreateBuffer(const RGBufferDesc& desc
     return handle;
 }
 
-RGTextureHandle VulkanRenderGraphResources::ImportTexture(const std::string& name,
-                                                          const RGImportedDesc& identity,
-                                                          ImageState initialState,
-                                                          ImageState finalState)
+RGTextureHandle RenderGraphResources::ImportTexture(const std::string& name, const RGImportedDesc& identity,
+                                                    ImageState initialState, ImageState finalState)
 {
     RGTextureHandle handle = AllocateTextureSlot(name, /*imported=*/true);
     if (RGTextureSlot* slot = GetTexture(handle))
@@ -80,8 +78,7 @@ RGTextureHandle VulkanRenderGraphResources::ImportTexture(const std::string& nam
     return handle;
 }
 
-RGBufferHandle VulkanRenderGraphResources::ImportBuffer(const std::string& name,
-                                                        const RGImportedDesc& identity)
+RGBufferHandle RenderGraphResources::ImportBuffer(const std::string& name, const RGImportedDesc& identity)
 {
     RGBufferHandle handle = AllocateBufferSlot(name, /*imported=*/true);
     if (RGBufferSlot* slot = GetBuffer(handle))
@@ -91,7 +88,7 @@ RGBufferHandle VulkanRenderGraphResources::ImportBuffer(const std::string& name,
 
 // ─── Queries ────────────────────────────────────────────────────────────────
 
-const RGTextureSlot* VulkanRenderGraphResources::GetTexture(RGTextureHandle handle) const
+const RGTextureSlot* RenderGraphResources::GetTexture(RGTextureHandle handle) const
 {
     if (!handle.IsValid() || handle.index >= m_Textures.size())
         return nullptr;
@@ -99,7 +96,7 @@ const RGTextureSlot* VulkanRenderGraphResources::GetTexture(RGTextureHandle hand
     return slot.generation == handle.generation ? &slot : nullptr;
 }
 
-const RGBufferSlot* VulkanRenderGraphResources::GetBuffer(RGBufferHandle handle) const
+const RGBufferSlot* RenderGraphResources::GetBuffer(RGBufferHandle handle) const
 {
     if (!handle.IsValid() || handle.index >= m_Buffers.size())
         return nullptr;
@@ -107,17 +104,17 @@ const RGBufferSlot* VulkanRenderGraphResources::GetBuffer(RGBufferHandle handle)
     return slot.generation == handle.generation ? &slot : nullptr;
 }
 
-RGTextureSlot* VulkanRenderGraphResources::GetTexture(RGTextureHandle handle)
+RGTextureSlot* RenderGraphResources::GetTexture(RGTextureHandle handle)
 {
     return const_cast<RGTextureSlot*>(std::as_const(*this).GetTexture(handle));
 }
 
-RGBufferSlot* VulkanRenderGraphResources::GetBuffer(RGBufferHandle handle)
+RGBufferSlot* RenderGraphResources::GetBuffer(RGBufferHandle handle)
 {
     return const_cast<RGBufferSlot*>(std::as_const(*this).GetBuffer(handle));
 }
 
-std::string VulkanRenderGraphResources::TextureName(RGTextureHandle handle) const
+std::string RenderGraphResources::TextureName(RGTextureHandle handle) const
 {
     const RGTextureSlot* slot = GetTexture(handle);
     if (!slot)
@@ -125,7 +122,7 @@ std::string VulkanRenderGraphResources::TextureName(RGTextureHandle handle) cons
     return slot->name + ".v" + std::to_string(slot->currentVersion);
 }
 
-std::string VulkanRenderGraphResources::BufferName(RGBufferHandle handle) const
+std::string RenderGraphResources::BufferName(RGBufferHandle handle) const
 {
     const RGBufferSlot* slot = GetBuffer(handle);
     if (!slot)
@@ -133,7 +130,7 @@ std::string VulkanRenderGraphResources::BufferName(RGBufferHandle handle) const
     return slot->name + ".v" + std::to_string(slot->currentVersion);
 }
 
-std::string VulkanRenderGraphResources::TextureNameAt(RGTextureHandle handle, u32 version) const
+std::string RenderGraphResources::TextureNameAt(RGTextureHandle handle, u32 version) const
 {
     const RGTextureSlot* slot = GetTexture(handle);
     if (!slot)
@@ -141,7 +138,7 @@ std::string VulkanRenderGraphResources::TextureNameAt(RGTextureHandle handle, u3
     return slot->name + ".v" + std::to_string(version);
 }
 
-std::string VulkanRenderGraphResources::BufferNameAt(RGBufferHandle handle, u32 version) const
+std::string RenderGraphResources::BufferNameAt(RGBufferHandle handle, u32 version) const
 {
     const RGBufferSlot* slot = GetBuffer(handle);
     if (!slot)
@@ -151,7 +148,7 @@ std::string VulkanRenderGraphResources::BufferNameAt(RGBufferHandle handle, u32 
 
 // ─── Versioning ─────────────────────────────────────────────────────────────
 
-u32 VulkanRenderGraphResources::AdvanceTextureVersion(RGTextureHandle handle, u32 passIndex)
+u32 RenderGraphResources::AdvanceTextureVersion(RGTextureHandle handle, u32 passIndex)
 {
     RGTextureSlot* slot = GetTexture(handle);
     UHE_CORE_ASSERT(slot != nullptr, "RenderGraph: AdvanceTextureVersion on stale handle");
@@ -163,7 +160,7 @@ u32 VulkanRenderGraphResources::AdvanceTextureVersion(RGTextureHandle handle, u3
     return slot->currentVersion;
 }
 
-u32 VulkanRenderGraphResources::AdvanceBufferVersion(RGBufferHandle handle, u32 passIndex)
+u32 RenderGraphResources::AdvanceBufferVersion(RGBufferHandle handle, u32 passIndex)
 {
     RGBufferSlot* slot = GetBuffer(handle);
     UHE_CORE_ASSERT(slot != nullptr, "RenderGraph: AdvanceBufferVersion on stale handle");
@@ -177,7 +174,7 @@ u32 VulkanRenderGraphResources::AdvanceBufferVersion(RGBufferHandle handle, u32 
 
 // ─── Frame reset ────────────────────────────────────────────────────────────
 
-void VulkanRenderGraphResources::Reset()
+void RenderGraphResources::Reset()
 {
     // Retire handles by clearing the slots, not by bumping in place: generations
     // are handed out from a monotonic counter and never reused, so a handle kept
@@ -204,7 +201,7 @@ u64 CombineInto(u64 a, u64 b)
 }
 } // namespace
 
-u64 VulkanRenderGraphResources::ComputeTopologyHash() const
+u64 RenderGraphResources::ComputeTopologyHash() const
 {
     u64 hash = 0xcbf29ce484222325ull;
     for (const RGTextureSlot& slot : m_Textures)
@@ -220,4 +217,4 @@ u64 VulkanRenderGraphResources::ComputeTopologyHash() const
     return hash;
 }
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

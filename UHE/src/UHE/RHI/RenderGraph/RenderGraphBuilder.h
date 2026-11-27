@@ -1,13 +1,12 @@
 #pragma once
+#include <algorithm> // std::find (implied-write bookkeeping)
 #include <deque>
 #include <functional>
 #include <string>
 #include <vector>
-#include <algorithm> // std::find (implied-write bookkeeping)
-#include <vulkan/vulkan_raii.hpp>
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphResources.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphTypes.h"
 #include "UHE/Core/Core.h"
+#include "UHE/RHI/RenderGraph/RenderGraphResources.h"
+#include "UHE/RHI/RenderGraph/RenderGraphTypes.h"
 
 // Render graph builder (docs/architecture/rendergraph.md §8.1, step 1 slice).
 //
@@ -16,13 +15,13 @@
 // milestone. Compile()/Execute() are deliberately absent: step 2 adds them with
 // the compiler, so no half-wired callsites exist.
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
-class VulkanRenderGraphBuilder;
+class RenderGraphBuilder;
 
 // Fluent per-pass surface. AddPass() returns a reference to a builder stored
-// inside VulkanRenderGraphBuilder (std::deque — references stay valid), so both
+// inside RenderGraphBuilder (std::deque — references stay valid), so both
 // usage styles from rendergraph.md §8.1 work:
 //
 //   auto& pass = rg.AddPass("GBuffer");
@@ -36,7 +35,7 @@ class VulkanRenderGraphBuilder;
 class UHE_API RGPassBuilder
 {
 public:
-    RGPassBuilder(VulkanRenderGraphBuilder& builder, RGPassSpec spec, u32 passIndex)
+    RGPassBuilder(RenderGraphBuilder& builder, RGPassSpec spec, u32 passIndex)
         : m_Builder(builder), m_Spec(std::move(spec)), m_PassIndex(passIndex)
     {
     }
@@ -65,7 +64,7 @@ private:
     // target IS producing it).
     [[nodiscard]] bool WroteTexture(RGTextureHandle texture) const;
 
-    VulkanRenderGraphBuilder& m_Builder;
+    RenderGraphBuilder& m_Builder;
     RGPassSpec m_Spec;
     u32 m_PassIndex = RG::kInvalidIndex;
     bool m_Submitted = false;
@@ -73,22 +72,22 @@ private:
     // pass. Lets an explicit Write() of the same texture no-op without masking
     // genuine DoubleWrite errors (two explicit writes still report).
     std::vector<RGTextureHandle> m_AttachmentImpliedWrites;
-    friend class VulkanRenderGraphBuilder;
+    friend class RenderGraphBuilder;
 };
 
-class UHE_API VulkanRenderGraphBuilder
+class UHE_API RenderGraphBuilder
 {
 public:
-    VulkanRenderGraphBuilder() = default;
-    VulkanRenderGraphBuilder(const VulkanRenderGraphBuilder&) = delete;
-    VulkanRenderGraphBuilder& operator=(const VulkanRenderGraphBuilder&) = delete;
-    ~VulkanRenderGraphBuilder() = default;
+    RenderGraphBuilder() = default;
+    RenderGraphBuilder(const RenderGraphBuilder&) = delete;
+    RenderGraphBuilder& operator=(const RenderGraphBuilder&) = delete;
+    ~RenderGraphBuilder() = default;
 
-    // Passes through to the registry; see VulkanRenderGraphResources for rules.
+    // Passes through to the registry; see RenderGraphResources for rules.
     RGTextureHandle CreateTexture(const RGTextureDesc& desc);
     RGBufferHandle CreateBuffer(const RGBufferDesc& desc);
-    RGTextureHandle ImportTexture(const std::string& name, const RGImportedDesc& identity,
-                                  ImageState initialState, ImageState finalState);
+    RGTextureHandle ImportTexture(const std::string& name, const RGImportedDesc& identity, ImageState initialState,
+                                  ImageState finalState);
     RGBufferHandle ImportBuffer(const std::string& name, const RGImportedDesc& identity);
 
     // Begins a pass. Name is required and non-empty (debug assert + validation).
@@ -103,7 +102,7 @@ public:
     [[nodiscard]] std::vector<RGValidationError> Validate() const;
 
     // Registry snapshot for the dump and (later) the compiler.
-    [[nodiscard]] const VulkanRenderGraphResources& Resources() const { return m_Resources; }
+    [[nodiscard]] const RenderGraphResources& Resources() const { return m_Resources; }
 
     [[nodiscard]] const std::vector<RGPassSpec>& Passes() const { return m_Passes; }
 
@@ -124,10 +123,10 @@ public:
 private:
     friend class RGPassBuilder;
 
-    VulkanRenderGraphResources m_Resources;
+    RenderGraphResources m_Resources;
     std::vector<RGPassSpec> m_Passes;
     std::deque<RGPassBuilder> m_PassBuilders; // stable references for AddPass
     mutable std::vector<RGValidationError> m_Errors;
 };
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

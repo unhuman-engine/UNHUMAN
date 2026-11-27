@@ -5,13 +5,26 @@
 #include "Platform/Vulkan/VulkanCommandBuffer.h"
 #include "Platform/Vulkan/VulkanContext.h"
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
-
 const vk::detail::DispatchLoaderDynamic& RGPassContext::Dispatcher() const
 {
     return VULKAN_HPP_DEFAULT_DISPATCHER;
 }
+
+vk::ImageView RGPassContext::View(RGTextureHandle texture) const
+{
+    return m_Executor.ResolveView(texture);
+}
+
+vk::Buffer RGPassContext::Buffer(RGBufferHandle buffer) const
+{
+    return m_Executor.ResolveBuffer(buffer);
+}
+} // namespace UHE::RHI
+
+namespace UHE::RHI::VULKAN
+{
 
 namespace
 {
@@ -419,16 +432,6 @@ vk::Buffer VulkanRenderGraphExecutor::ResolveBuffer(RGBufferHandle buffer) const
     const auto it = m_Buffers.find(buffer.index);
     return it != m_Buffers.end() && it->second.generation == buffer.generation ? it->second.buffer
                                                                                : vk::Buffer{nullptr};
-}
-
-vk::ImageView RGPassContext::View(RGTextureHandle texture) const
-{
-    return m_Executor.ResolveView(texture);
-}
-
-vk::Buffer RGPassContext::Buffer(RGBufferHandle buffer) const
-{
-    return m_Executor.ResolveBuffer(buffer);
 }
 
 vk::Extent2D VulkanRenderGraphExecutor::ResolveExtent(RGTextureHandle texture) const
