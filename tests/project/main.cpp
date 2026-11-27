@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include "UHE/AssetsManager/AssetCatalog.h"
 #include "UHE/AssetsManager/AssetImport.h"
 #include "UHE/AssetsManager/GameExporter.h"
 #include "UHE/AssetsManager/Project.h"
@@ -482,6 +483,70 @@ int main()
                       std::any_of(cookedReport.Warnings.begin(), cookedReport.Warnings.end(), [](const std::string& w)
                                   { return w.find("hero.glb was not cooked") != std::string::npos; }),
                   "export: a model that fails to cook ships as glTF, with a warning");
+
+            // Stable asset IDs (issue #45): the project's registry and the game's manifest.
+            AssetCatalog registry;
+            Check(registry.Load(pond.RootPath / AssetCatalog::kRegistryName) && registry.Size() > 0,
+                  "ids: the export writes the project's AssetRegistry.yaml");
+            AssetCatalog manifest;
+            Check(manifest.Load(game / "Assets" / AssetCatalog::kManifestName) && manifest.Platform == "desktop",
+                  "ids: the game ships Assets/AssetManifest.yaml, with its platform");
+            const AssetCatalogEntry* scene = manifest.FindByPath("Scenes/Pond.unhuman");
+            Check(scene != nullptr && scene->ID == registry.IdFor("Scenes/Pond.unhuman") && scene->Type == "scene",
+                  "ids: a project file has the registry's ID");
+            const AssetCatalogEntry* model = manifest.FindByPath("Models/Ground.gltf");
+            Check(model != nullptr && model->Stored == "Models/Ground.gltf.uhemodel" && model->Type == "model" &&
+                      model->ID == registry.IdFor("Models/Ground.gltf"),
+                  "ids: a cooked model is listed under its glTF path, stored as its cook");
+            const AssetCatalogEntry* engine = manifest.FindByPath("model/hero.glb");
+            Check(engine != nullptr && engine->Root == "engine" &&
+                      engine->ID == AssetCatalog::DerivedID("engine", "model/hero.glb"),
+                  "ids: an engine file has an ID derived from its path");
+            AssetCatalog plain; // the export without cooking: Ground.gltf ships as glTF
+            Check(plain.Load(out / "Assets" / AssetCatalog::kManifestName), "ids: the uncooked export has one too");
+            const AssetCatalogEntry* gltf = plain.FindByPath("Models/Ground.gltf");
+            Check(gltf != nullptr && gltf->Stored.empty() &&
+                      std::find(gltf->Dependencies.begin(), gltf->Dependencies.end(),
+                                plain.IdFor("Models/Ground Mesh.bin")) != gltf->Dependencies.end() &&
+                      std::find(gltf->Dependencies.begin(), gltf->Dependencies.end(),
+                                plain.IdFor("Textures/grass.png")) != gltf->Dependencies.end(),
+                  "ids: a glTF shipped as it is lists the buffer and image it reads");
+            const ExportReport again = GameExporter::Export(pond, cooking);
+            AssetCatalog second;
+            Check(again.Ok && second.Load(game / "Assets" / AssetCatalog::kManifestName) &&
+                      second.IdFor("Scenes/Pond.unhuman") == scene->ID &&
+                      second.IdFor("Models/Ground.gltf") == model->ID,
+                  "ids: a second export gives every asset the same ID");
+        }
+
+        // The registry's rules, on their own.
+        {
+            AssetCatalog ids;
+            ids.Assign({{"a.png", 1}, {"b.png", 2}});
+            const AssetID a = ids.IdFor("a.png"), b = ids.IdFor("b.png");
+            Check(static_cast<u64>(a) != 0 && static_cast<u64>(b) != 0 && a != b, "ids: each file gets its own ID");
+            Check(ids.Assign({{"a.png", 1}, {"moved/b.png", 2}}) && ids.IdFor("moved/b.png") == b &&
+                      ids.FindByPath("b.png") == nullptr,
+                  "ids: a moved file (same bytes, new path) keeps its ID");
+            Check(!ids.Assign({{"a.png", 1}, {"moved/b.png", 2}}), "ids: nothing changed, nothing to save");
+            ids.Assign({{"a.png", 5}, {"c.png", 2}});
+            Check(ids.IdFor("a.png") == a && ids.IdFor("c.png") == b,
+                  "ids: an edited file keeps its ID, and a move is still found by its bytes");
+            ids.Assign({{"d.png", 2}, {"e.png", 2}});
+            Check(ids.IdFor("d.png") == b && ids.IdFor("e.png") != b,
+                  "ids: one vanished file hands its ID to one file");
+            const fs::path file = sandbox / "ids.yaml";
+            Check(ids.Save(file), "ids: the registry saves");
+            AssetCatalog loaded;
+            Check(loaded.Load(file) && loaded.IdFor("d.png") == b && loaded.IdFor("e.png") == ids.IdFor("e.png") &&
+                      loaded.FindByPath("d.png")->Hash == 2,
+                  "ids: and loads back the same");
+            WriteFile(sandbox / "broken.yaml", "Assets: [ {ID: not-a-number} ]");
+            std::string why;
+            Check(!loaded.Load(sandbox / "broken.yaml", &why) && !why.empty(), "ids: a broken file is refused");
+            Check(AssetCatalog::DerivedID("engine", "x") == AssetCatalog::DerivedID("engine", "x") &&
+                      AssetCatalog::DerivedID("engine", "x") != AssetCatalog::DerivedID("project", "x"),
+                  "ids: a derived ID is the same every time, and differs per root");
         }
 
         WriteFile(sandbox / "notes/todo.txt", "mine");

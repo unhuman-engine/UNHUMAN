@@ -30,6 +30,14 @@ struct ExportOptions
      * glTF. Unset (tests, tools without a renderer): models ship as they are.
      */
     std::function<bool(const std::filesystem::path&, const std::filesystem::path&, std::string&)> CookModel;
+    /// The platform the game is for, recorded in its AssetManifest.yaml (desktop, mobile).
+    std::string Platform = "desktop";
+    /**
+     * Refresh `<project>/AssetRegistry.yaml` (stable IDs for every file under
+     * Assets/) before writing the game's manifest. Off only for a read-only
+     * project; the manifest's IDs are then the registry's as it stands.
+     */
+    bool UpdateRegistry = true;
 };
 
 /// @brief The files a game reads, found from its scenes and scripts (GameExporter::CollectAssets).
@@ -103,6 +111,17 @@ public:
 
     /// @brief The project name made safe for a file name (letters, digits, '-', '_', '.').
     [[nodiscard]] static std::string ExecutableName(const std::string& projectName);
+
+    /**
+     * @brief Writes `<out>/Assets/AssetManifest.yaml`: every shipped file with its stable ID (issue #45).
+     *
+     * Project files take their IDs from `<project>/AssetRegistry.yaml`, which
+     * this refreshes first (ExportOptions::UpdateRegistry); engine files get
+     * an ID derived from their path. A cooked model is listed under the glTF
+     * path scenes name, with the `.uhemodel` as the file that stores it.
+     */
+    static void WriteAssetManifest(const ProjectInfo& project, const ExportOptions& options,
+                                   const std::filesystem::path& out, ExportReport& report);
 
     static constexpr const char* kMarkerName = ".uhe-export";
     /// Written by uhe_shaderc next to the sources it compiles (tools/shaderc/main.cpp).

@@ -7,6 +7,8 @@ add_executable(uhe_export
     main.cpp
     ${CMAKE_SOURCE_DIR}/tests/rendergraph/log_stub.cpp
     ${EXPORT_SRC_DIR}/AssetsManager/GameExporter.cpp
+    ${EXPORT_SRC_DIR}/AssetsManager/AssetCatalog.cpp
+    ${EXPORT_SRC_DIR}/Core/UUID.cpp
     ${EXPORT_SRC_DIR}/AssetsManager/Project.cpp
     ${EXPORT_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${EXPORT_SRC_DIR}/AssetsManager/AssetImport.cpp
@@ -19,6 +21,9 @@ add_executable(uhe_export
     ${EXPORT_SRC_DIR}/Renderer3D/LoadModelGeometry.cpp
     ${EXPORT_SRC_DIR}/Renderer3D/LoadModelAnimation.cpp
     ${EXPORT_SRC_DIR}/Renderer3D/MeshoptDecode.cpp
+    ${EXPORT_SRC_DIR}/Renderer3D/AnimationCompression.cpp
+    ${EXPORT_SRC_DIR}/Jobsystem/Jobsystem.cpp
+    ${EXPORT_SRC_DIR}/AssetsManager/GltfFiles.cpp
     cook_stubs.cpp
 )
 
@@ -36,7 +41,7 @@ target_include_directories(uhe_export PRIVATE
     ${CMAKE_SOURCE_DIR}/UHE/vendor/meshoptimizer/src
     ${CMAKE_SOURCE_DIR}/UHE/vendor/stb_image
 )
-target_link_libraries(uhe_export PRIVATE yaml-cpp fastgltf::fastgltf meshoptimizer basisu_transcoder)
+target_link_libraries(uhe_export PRIVATE yaml-cpp fastgltf::fastgltf meshoptimizer basisu_transcoder uhe_texcook)
 target_compile_definitions(uhe_export PRIVATE
     GLM_FORCE_DEPTH_ZERO_TO_ONE
     GLFW_INCLUDE_NONE
@@ -64,13 +69,16 @@ add_executable(uhe_cook
     ${EXPORT_SRC_DIR}/Renderer3D/LoadModelGeometry.cpp
     ${EXPORT_SRC_DIR}/Renderer3D/LoadModelAnimation.cpp
     ${EXPORT_SRC_DIR}/Renderer3D/MeshoptDecode.cpp
+    ${EXPORT_SRC_DIR}/Renderer3D/AnimationCompression.cpp
+    ${EXPORT_SRC_DIR}/Jobsystem/Jobsystem.cpp
+    ${EXPORT_SRC_DIR}/AssetsManager/GltfFiles.cpp
     cook_stubs.cpp
 )
 get_target_property(UHE_EXPORT_INCLUDES uhe_export INCLUDE_DIRECTORIES)
 get_target_property(UHE_EXPORT_DEFINES uhe_export COMPILE_DEFINITIONS)
 target_include_directories(uhe_cook PRIVATE ${UHE_EXPORT_INCLUDES})
 target_compile_definitions(uhe_cook PRIVATE ${UHE_EXPORT_DEFINES})
-target_link_libraries(uhe_cook PRIVATE fastgltf::fastgltf meshoptimizer basisu_transcoder)
+target_link_libraries(uhe_cook PRIVATE fastgltf::fastgltf meshoptimizer basisu_transcoder uhe_texcook)
 if(MSVC)
     target_compile_options(uhe_cook PRIVATE /utf-8)
 endif()

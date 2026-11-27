@@ -11,6 +11,10 @@ add_executable(project_test
     ${PROJECT_SRC_DIR}/AssetsManager/AssetImport.cpp
     ${PROJECT_SRC_DIR}/AssetsManager/Project.cpp
     ${PROJECT_SRC_DIR}/AssetsManager/GameExporter.cpp
+    ${PROJECT_SRC_DIR}/AssetsManager/GltfFiles.cpp
+    ${PROJECT_SRC_DIR}/AssetsManager/AssetCatalog.cpp
+    ${PROJECT_SRC_DIR}/AssetsManager/CookedFile.cpp
+    ${PROJECT_SRC_DIR}/Core/UUID.cpp
     ${PROJECT_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${PROJECT_SRC_DIR}/Core/CommandLine.cpp
 )
@@ -30,7 +34,8 @@ target_include_directories(project_test PRIVATE
 )
 
 # Manifests are YAML, same library the scene serializer uses.
-target_link_libraries(project_test PRIVATE yaml-cpp)
+# CookedFile.cpp hashes files for the asset manifest; its zstd comes from basisu_transcoder.
+target_link_libraries(project_test PRIVATE yaml-cpp basisu_transcoder)
 
 target_compile_definitions(project_test PRIVATE
     GLM_FORCE_DEPTH_ZERO_TO_ONE

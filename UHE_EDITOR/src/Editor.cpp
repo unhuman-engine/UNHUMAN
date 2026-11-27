@@ -16,6 +16,7 @@
 #include "EditorTheme.h"
 #include "EditorUI.h"
 #include "ImGuizmo.h"
+#include "ModelCookOptions.h"
 #include "UHE/AssetsManager/AssetImport.h"
 #include "UHE/AssetsManager/GameExporter.h"
 #include "UHE/AssetsManager/PrimitiveGltf.h"
@@ -1647,7 +1648,13 @@ void Editor::ExportGame()
     // The runtime is built next to the editor, into the same folder.
     options.RuntimeDir = CommandLine::GetExecutablePath().parent_path();
     options.EngineAssets = FileSystem::Get().GetRootPath() / "assets";
-    options.CookModel = RD3d::CookModelFile; // the game loads cooked models, never glTF
+    // The game loads cooked models, never glTF, with its images as KTX2.
+    Cook::TextureCookOptions textures;
+    textures.CacheDir = m_Project->RootPath / ".uhecache" / "textures"; // re-exports encode only what changed
+    const RD3d::CookOptions cookOptions = Cook::MakeModelCookOptions(textures);
+    options.CookModel =
+        [cookOptions](const std::filesystem::path& source, const std::filesystem::path& cooked, std::string& why)
+    { return RD3d::CookModelFile(source, cooked, why, cookOptions); };
     const ExportReport report = GameExporter::Export(*m_Project, options);
     for (const std::string& warning : report.Warnings)
         UHE_CORE_WARN("Export: {0}", warning);

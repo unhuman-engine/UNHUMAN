@@ -35,7 +35,8 @@ target_include_directories(UHE_EDITOR PRIVATE
 )
 
 
-target_link_libraries(UHE_EDITOR PRIVATE UHE)
+# uhe_texcook: File > Export Game encodes a cooked model's images to KTX2.
+target_link_libraries(UHE_EDITOR PRIVATE UHE uhe_texcook)
 
 if(WIN32)
     target_compile_definitions(UHE_EDITOR PRIVATE UHE_PLATFORM_WINDOWS UHE_DYNAMIC_LINK)

@@ -20,6 +20,9 @@ set(FUZZ_MODEL_SOURCES
     ${FUZZ_SRC}/Renderer3D/LoadModelGeometry.cpp
     ${FUZZ_SRC}/Renderer3D/LoadModelAnimation.cpp
     ${FUZZ_SRC}/Renderer3D/MeshoptDecode.cpp
+    ${FUZZ_SRC}/Renderer3D/AnimationCompression.cpp
+    ${FUZZ_SRC}/Jobsystem/Jobsystem.cpp
+    ${FUZZ_SRC}/AssetsManager/GltfFiles.cpp
     ${FUZZ_SRC}/Renderer3D/MaterialGPU.cpp
     ${FUZZ_SRC}/Renderer3D/LightSystem.cpp
     ${FUZZ_SRC}/Renderer/KTX2.cpp

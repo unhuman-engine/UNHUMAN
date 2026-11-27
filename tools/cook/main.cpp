@@ -1,6 +1,9 @@
 // uhe_cook: cooks models and looks inside cooked files (issue #45).
 //
-//   uhe_cook <model.gltf|.glb> [-o <out.uhemodel>]   cook (default: <model>.uhemodel beside it)
+//   uhe_cook <model.gltf|.glb> [-o <out.uhemodel>] [--platform desktop|mobile]
+//            [--texture-codec keep|auto|etc1s|uastc] [--max-texture-size <pixels>] [--threads <n>]
+//            [--cache <dir>]
+//                                                    cook (default: <model>.uhemodel beside it)
 //   uhe_cook --inspect <file.uhemodel>               header, sections, sizes, checksums
 //   uhe_cook --diff <a.uhemodel> <b.uhemodel>        which sections differ
 //
@@ -10,6 +13,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include "ModelCookOptions.h"
 #include "UHE/AssetsManager/CookedFile.h"
 #include "UHE/Renderer3D/LoadModel.h"
 
@@ -20,9 +24,13 @@ namespace
 {
 int Usage()
 {
-    std::fprintf(stderr, "usage: uhe_cook <model.gltf|.glb> [-o <out.uhemodel>]\n"
-                         "       uhe_cook --inspect <file.uhemodel>\n"
-                         "       uhe_cook --diff <a.uhemodel> <b.uhemodel>\n");
+    std::fprintf(
+        stderr,
+        "usage: uhe_cook <model.gltf|.glb> [-o <out.uhemodel>] [--platform desktop|mobile]\n"
+        "                [--texture-codec keep|auto|etc1s|uastc] [--max-texture-size <pixels>] [--threads <n>]\n"
+        "                [--cache <dir>]\n"
+        "       uhe_cook --inspect <file.uhemodel>\n"
+        "       uhe_cook --diff <a.uhemodel> <b.uhemodel>\n");
     return 2;
 }
 
@@ -80,6 +88,17 @@ int Inspect(const fs::path& path)
                         model.GetGeometry().size(), vertices, indices / 3, model.GetMesh().size(),
                         model.GetNodes().size(), model.GetMaterials().size(), model.GetTextureSources().size(),
                         model.GetSkins().size(), model.GetAnimations().size(), model.GetPunctualLights().size());
+            std::size_t ktx2 = 0;
+            for (const RD3d::TextureSource& texture : model.GetTextureSources())
+                ktx2 += texture.Bytes.size() >= 4 && texture.Bytes[0] == 0xAB && texture.Bytes[1] == 'K' ? 1 : 0;
+            std::printf("  images: %zu KTX2, %zu as the source had them\n", ktx2,
+                        model.GetTextureSources().size() - ktx2);
+            std::printf("  built from %zu file(s)%s\n", model.GetCookDependencies().size() + 1,
+                        model.GetCookDependencies().empty() ? "" : ":");
+            for (const RD3d::CookDependency& dependency : model.GetCookDependencies())
+                std::printf("    %s (%llu bytes, hash %016llx)\n", dependency.Path.generic_string().c_str(),
+                            static_cast<unsigned long long>(dependency.Size),
+                            static_cast<unsigned long long>(dependency.Hash));
         }
         else
         {
@@ -145,12 +164,41 @@ int main(int argc, char** argv)
 
     const fs::path source = first;
     fs::path out = RD3d::Model::CookedPathFor(source);
-    if (argc == 4 && std::string(argv[2]) == "-o")
-        out = argv[3];
-    else if (argc != 2)
+    std::string platform = "desktop", codec, maxSize, threads, cache;
+    for (int i = 2; i < argc; ++i)
+    {
+        const std::string key = argv[i];
+        if (i + 1 >= argc)
+            return Usage();
+        const std::string value = argv[++i];
+        if (key == "-o")
+            out = value;
+        else if (key == "--platform")
+            platform = value;
+        else if (key == "--texture-codec")
+            codec = value;
+        else if (key == "--max-texture-size")
+            maxSize = value;
+        else if (key == "--threads")
+            threads = value;
+        else if (key == "--cache")
+            cache = value;
+        else
+            return Usage();
+    }
+    // The platform's settings first, then the flags that override them.
+    Cook::TextureCookOptions textures;
+    if (!Cook::TextureOptionsForPlatform(platform, textures) ||
+        (!codec.empty() && !Cook::ParseTextureCodec(codec, textures.Codec)))
         return Usage();
+    if (!maxSize.empty())
+        textures.MaxSize = static_cast<std::uint32_t>(std::stoul(maxSize));
+    if (!threads.empty())
+        textures.Threads = static_cast<std::uint32_t>(std::stoul(threads));
+    textures.CacheDir = cache;
     std::string error;
-    if (!RD3d::CookModelFile(source, out, error))
+    RD3d::CookReport report;
+    if (!RD3d::CookModelFile(source, out, error, Cook::MakeModelCookOptions(textures), &report))
     {
         std::fprintf(stderr, "uhe_cook: %s: %s\n", source.string().c_str(), error.c_str());
         return 1;
@@ -159,5 +207,13 @@ int main(int argc, char** argv)
     std::printf("uhe_cook: %s -> %s (%ju KiB, source %ju KiB)\n", source.string().c_str(), out.string().c_str(),
                 static_cast<std::uintmax_t>(fs::file_size(out, ec) / 1024),
                 static_cast<std::uintmax_t>(fs::file_size(source, ec) / 1024));
+    if (report.TexturesEncoded > 0 || report.TexturesDeduplicated > 0)
+        std::printf("  images: %u encoded (%ju -> %ju KiB), %u duplicates dropped\n", report.TexturesEncoded,
+                    static_cast<std::uintmax_t>(report.TextureBytesBefore / 1024),
+                    static_cast<std::uintmax_t>(report.TextureBytesAfter / 1024), report.TexturesDeduplicated);
+    if (report.AnimationKeysBefore > 0)
+        std::printf("  animation keys: %llu -> %llu\n", static_cast<unsigned long long>(report.AnimationKeysBefore),
+                    static_cast<unsigned long long>(report.AnimationKeysAfter));
+    std::printf("  dependencies: %u file(s)\n", report.Dependencies);
     return 0;
 }
