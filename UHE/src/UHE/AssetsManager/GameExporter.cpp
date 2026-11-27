@@ -449,10 +449,19 @@ void GameExporter::WriteAssetManifest(const ProjectInfo& project, const ExportOp
             entry.Root = rootName;
             const std::string stored = it->path().lexically_relative(root).generic_string();
             entry.Path = stored;
-            if (Lower(it->path().extension().string()) == ".uhemodel")
+            // A cook is listed under the path scenes name, with the file that stores it.
+            for (const char* cookedSuffix : {".uhemodel", ".uheaudio", ".ktx2"})
             {
-                entry.Path = stored.substr(0, stored.size() - std::string(".uhemodel").size());
+                const std::string suffix = cookedSuffix;
+                const std::string source =
+                    stored.size() > suffix.size() ? stored.substr(0, stored.size() - suffix.size()) : std::string();
+                // ".ktx2" is a cook only after an image name: "tree.png.ktx2", not "bark.ktx2".
+                if (!stored.ends_with(suffix) || fs::path(source).extension().empty() ||
+                    (suffix == ".ktx2" && AssetCatalog::TypeOf(source) != "texture"))
+                    continue;
+                entry.Path = source;
                 entry.Stored = stored;
+                break;
             }
             entry.Type = AssetCatalog::TypeOf(entry.Path);
             entry.Size = static_cast<u64>(it->file_size(ec));
@@ -721,6 +730,41 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
             };
             cookRoot(0, manifest.ProjectModelFiles, project.AssetPath, out / Project::kAssetFolderName);
             cookRoot(1, manifest.EngineModelFiles, options.EngineAssets, out / "assets");
+        }
+        // Standalone images and WAVs (issue #45): what scenes and scripts name
+        // directly ships cooked, so the game parses no PNG, JPEG or WAV. An
+        // image a model reads is the model's business: cooked inside it, or
+        // kept for a glTF that shipped uncooked.
+        if (options.CookTexture || options.CookAudio)
+        {
+            std::set<fs::path> modelFiles;
+            for (const auto& [model, files] : manifest.ProjectModelFiles)
+                modelFiles.insert(files.begin(), files.end());
+            for (const fs::path& file : manifest.ProjectFiles)
+            {
+                if (skipped[0].contains(file) || modelFiles.contains(file))
+                    continue;
+                const std::string extension = Lower(file.extension().string());
+                const bool image = extension == ".png" || extension == ".jpg" || extension == ".jpeg" ||
+                                   extension == ".tga" || extension == ".bmp";
+                const bool sound = extension == ".wav";
+                const auto& cook = image ? options.CookTexture : options.CookAudio;
+                if ((!image && !sound) || !cook)
+                    continue;
+                const fs::path target =
+                    out / Project::kAssetFolderName / (file.string() + (image ? ".ktx2" : ".uheaudio"));
+                std::error_code ec;
+                fs::create_directories(target.parent_path(), ec);
+                std::string why;
+                if (cook(project.AssetPath / file, target, why))
+                {
+                    skipped[0].insert(file);
+                    ++(image ? report.ImagesCooked : report.SoundsCooked);
+                    report.BytesCopied += fs::file_size(target, ec);
+                }
+                else
+                    report.Warnings.push_back(file.generic_string() + " was not cooked (" + why + "); it ships as is");
+            }
         }
         for (const fs::path& file : manifest.EngineFiles)
         {

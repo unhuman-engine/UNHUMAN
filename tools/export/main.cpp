@@ -21,6 +21,7 @@
 #include "ModelCookOptions.h"
 #include "UHE/AssetsManager/GameExporter.h"
 #include "UHE/AssetsManager/Project.h"
+#include "UHE/Audio/CookedAudio.h"
 #include "UHE/Renderer3D/LoadModel.h"
 
 namespace fs = std::filesystem;
@@ -109,6 +110,10 @@ int main(int argc, char** argv)
         const UHE::RD3d::CookOptions cookOptions = UHE::Cook::MakeModelCookOptions(textures);
         options.CookModel = [cookOptions](const fs::path& source, const fs::path& cooked, std::string& why)
         { return UHE::RD3d::CookModelFile(source, cooked, why, cookOptions); };
+        if (textures.Codec != UHE::Cook::TextureCodec::Keep)
+            options.CookTexture = [textures](const fs::path& source, const fs::path& cooked, std::string& why)
+            { return UHE::Cook::CookTextureFile(source, cooked, textures, why); };
+        options.CookAudio = UHE::CookAudioFile;
     }
     const UHE::ExportReport report = UHE::GameExporter::Export(info, options);
     for (const std::string& message : report.Warnings)
@@ -117,8 +122,9 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "uhe_export: %s\n", message.c_str());
     if (!report.Ok)
         return 1;
-    std::printf("uhe_export: %s -> %s (%zu files, %zu models cooked, %ju MB)\n", info.Name.c_str(),
-                report.Executable.string().c_str(), report.FilesCopied, report.ModelsCooked,
+    std::printf("uhe_export: %s -> %s (%zu files, %zu models, %zu images and %zu sounds cooked, %ju MB)\n",
+                info.Name.c_str(), report.Executable.string().c_str(), report.FilesCopied, report.ModelsCooked,
+                report.ImagesCooked, report.SoundsCooked,
                 static_cast<std::uintmax_t>(report.BytesCopied / (std::uintmax_t{1024} * 1024)));
     return 0;
 }

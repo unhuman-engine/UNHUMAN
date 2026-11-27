@@ -7,6 +7,7 @@ add_executable(uhe_export
     main.cpp
     ${CMAKE_SOURCE_DIR}/tests/rendergraph/log_stub.cpp
     ${EXPORT_SRC_DIR}/AssetsManager/GameExporter.cpp
+    ${EXPORT_SRC_DIR}/Audio/CookedAudio.cpp
     ${EXPORT_SRC_DIR}/AssetsManager/AssetCatalog.cpp
     ${EXPORT_SRC_DIR}/Core/UUID.cpp
     ${EXPORT_SRC_DIR}/AssetsManager/Project.cpp

@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -13,6 +14,7 @@
 #include "UHE/AssetsManager/GameExporter.h"
 #include "UHE/AssetsManager/Project.h"
 #include "UHE/AssetsManager/VfsSystem.h"
+#include "UHE/Audio/CookedAudio.h"
 #include "UHE/Core/CommandLine.h"
 
 namespace fs = std::filesystem;
@@ -354,7 +356,9 @@ int main()
         WriteFile(pond.AssetPath / "Models/Ground Mesh.bin", "bin");
         WriteFile(pond.AssetPath / "Textures/grass.png", "png");
         WriteFile(pond.AssetPath / "Textures/unused.png", "png");
-        WriteFile(pond.AssetPath / "Scripts/Spawner.lua", "local path = \"Textures/rock.png\"\nprint('hello')\n");
+        WriteFile(pond.AssetPath / "Scripts/Spawner.lua",
+                  "local path = \"Textures/rock.png\"\nlocal splash = \"Sounds/splash.wav\"\nprint('hello')\n");
+        WriteFile(pond.AssetPath / "Sounds/splash.wav", "wav");
         WriteFile(pond.AssetPath / "Textures/rock.png", "png");
         WriteFile(pond.AssetPath / "Big/Unused.glb", "glb");
 
@@ -469,6 +473,16 @@ int main()
                 WriteFile(cooked, "cooked " + source.filename().string());
                 return true;
             };
+            cooking.CookTexture = [](const fs::path& source, const fs::path& cooked, std::string&)
+            {
+                WriteFile(cooked, "ktx2 " + source.filename().string());
+                return true;
+            };
+            cooking.CookAudio = [](const fs::path& source, const fs::path& cooked, std::string&)
+            {
+                WriteFile(cooked, "pcm " + source.filename().string());
+                return true;
+            };
             const ExportReport cookedReport = GameExporter::Export(pond, cooking);
             const fs::path game = cooking.OutputDir;
             Check(cookedReport.Ok && cookedReport.ModelsCooked == 1 &&
@@ -478,7 +492,12 @@ int main()
             Check(!fs::exists(game / "Assets/Models/Ground Mesh.bin") &&
                       !fs::exists(game / "Assets/Textures/grass.png"),
                   "export: the buffer and image only the cooked model used do not ship");
-            Check(fs::exists(game / "Assets/Textures/rock.png"), "export: an image a script names still ships");
+            Check(fs::exists(game / "Assets/Textures/rock.png.ktx2") &&
+                      !fs::exists(game / "Assets/Textures/rock.png") && cookedReport.ImagesCooked == 1,
+                  "export: an image a script names ships cooked to KTX2, not as PNG");
+            Check(fs::exists(game / "Assets/Sounds/splash.wav.uheaudio") &&
+                      !fs::exists(game / "Assets/Sounds/splash.wav") && cookedReport.SoundsCooked == 1,
+                  "export: a WAV a script names ships cooked to PCM");
             Check(fs::exists(game / "assets/model/hero.glb") && !fs::exists(game / "assets/model/hero.glb.uhemodel") &&
                       std::any_of(cookedReport.Warnings.begin(), cookedReport.Warnings.end(), [](const std::string& w)
                                   { return w.find("hero.glb was not cooked") != std::string::npos; }),
@@ -498,6 +517,9 @@ int main()
             Check(model != nullptr && model->Stored == "Models/Ground.gltf.uhemodel" && model->Type == "model" &&
                       model->ID == registry.IdFor("Models/Ground.gltf"),
                   "ids: a cooked model is listed under its glTF path, stored as its cook");
+            const AssetCatalogEntry* sprite = manifest.FindByPath("Textures/rock.png");
+            Check(sprite != nullptr && sprite->Stored == "Textures/rock.png.ktx2" && sprite->Type == "texture",
+                  "ids: a cooked image is listed under its PNG path, stored as its KTX2");
             const AssetCatalogEntry* engine = manifest.FindByPath("model/hero.glb");
             Check(engine != nullptr && engine->Root == "engine" &&
                       engine->ID == AssetCatalog::DerivedID("engine", "model/hero.glb"),
@@ -517,6 +539,72 @@ int main()
                       second.IdFor("Scenes/Pond.unhuman") == scene->ID &&
                       second.IdFor("Models/Ground.gltf") == model->ID,
                   "ids: a second export gives every asset the same ID");
+        }
+
+        // Cooked audio (issue #45): WAV decoding, and the cooked file round trip.
+        {
+            const auto wav = [](u16 format, u16 bits, u16 channels, const std::vector<u8>& samples)
+            {
+                std::vector<u8> bytes;
+                const auto put32 = [&](u32 v)
+                {
+                    for (int i = 0; i < 4; ++i)
+                        bytes.push_back(static_cast<u8>(v >> (8 * i)));
+                };
+                const auto put16 = [&](u16 v)
+                {
+                    bytes.push_back(static_cast<u8>(v));
+                    bytes.push_back(static_cast<u8>(v >> 8));
+                };
+                bytes.insert(bytes.end(), {'R', 'I', 'F', 'F'});
+                put32(static_cast<u32>(36 + samples.size()));
+                bytes.insert(bytes.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
+                put32(16);
+                put16(format);
+                put16(channels);
+                put32(48000);
+                put32(48000u * channels * (bits / 8));
+                put16(static_cast<u16>(channels * (bits / 8)));
+                put16(bits);
+                bytes.insert(bytes.end(), {'d', 'a', 't', 'a'});
+                put32(static_cast<u32>(samples.size()));
+                bytes.insert(bytes.end(), samples.begin(), samples.end());
+                return bytes;
+            };
+            AudioPcm pcm;
+            std::string why;
+            // Stereo 16-bit: (0, max), (min, half).
+            Check(DecodeWav(wav(1, 16, 2, {0x00, 0x00, 0xFF, 0x7F, 0x00, 0x80, 0x00, 0x40}), pcm, why) &&
+                      pcm.Channels == 2 && pcm.SampleRate == 48000 && pcm.Frames() == 2 && pcm.Samples[0] == 0.0f &&
+                      pcm.Samples[1] > 0.999f && pcm.Samples[2] == -1.0f && pcm.Samples[3] == 0.5f,
+                  "audio: 16-bit stereo WAV decodes to floats");
+            Check(DecodeWav(wav(1, 8, 1, {128, 255, 0}), pcm, why) && pcm.Samples[0] == 0.0f && pcm.Samples[2] == -1.0f,
+                  "audio: 8-bit WAV is unsigned");
+            Check(DecodeWav(wav(1, 24, 1, {0x00, 0x00, 0xC0}), pcm, why) && pcm.Samples[0] == -0.5f,
+                  "audio: 24-bit WAV sign-extends");
+            const float quarter = 0.25f;
+            std::vector<u8> floatBytes(4);
+            std::memcpy(floatBytes.data(), &quarter, 4);
+            Check(DecodeWav(wav(3, 32, 1, floatBytes), pcm, why) && pcm.Samples[0] == 0.25f,
+                  "audio: float WAV is taken as is");
+            std::vector<u8> truncated = wav(1, 16, 1, {1, 2, 3, 4});
+            truncated.resize(truncated.size() - 3);
+            Check(!DecodeWav(truncated, pcm, why) && !why.empty(), "audio: a chunk running past the end is refused");
+            Check(!DecodeWav(wav(2, 4, 1, {0}), pcm, why), "audio: compressed WAV (ADPCM) is refused");
+
+            const fs::path source = sandbox / "beep.wav";
+            const std::vector<u8> beep = wav(1, 16, 1, {0x00, 0x40, 0x00, 0xC0});
+            {
+                std::ofstream out(source, std::ios::binary);
+                out.write(reinterpret_cast<const char*>(beep.data()), static_cast<std::streamsize>(beep.size()));
+            }
+            const fs::path cooked = CookedAudioPathFor(source);
+            AudioPcm loaded;
+            Check(CookAudioFile(source, cooked, why) && LoadCookedAudio(cooked, loaded, why) && loaded.Channels == 1 &&
+                      loaded.Frames() == 2 && loaded.Samples[0] == 0.5f && loaded.Samples[1] == -0.5f,
+                  "audio: a cooked WAV loads back sample for sample");
+            WriteFile(cooked, "not a cook");
+            Check(!LoadCookedAudio(cooked, loaded, why), "audio: a damaged cook is refused");
         }
 
         // The registry's rules, on their own.

@@ -1,6 +1,7 @@
 #include "uhepch.h"
 #include "MiniAudioBackend.h"
 #include "UHE/AssetsManager/VfsSystem.h"
+#include "UHE/Audio/CookedAudio.h"
 #include "UHE/Core/Log.h"
 
 #define MINIAUDIO_IMPLEMENTATION
@@ -18,8 +19,21 @@ namespace
 struct Voice
 {
     ma_sound* Sound = nullptr;
+    ma_audio_buffer* Buffer = nullptr; ///< a cooked sound's samples (CookedAudio.h); null for a file
     ActiveVoice Info;
 };
+
+/// Frees a voice's sound and, for a cooked one, the samples it plays from.
+void ReleaseVoice(ma_sound* sound, ma_audio_buffer* buffer)
+{
+    ma_sound_uninit(sound);
+    delete sound;
+    if (buffer != nullptr)
+    {
+        ma_audio_buffer_uninit(buffer);
+        delete buffer;
+    }
+}
 
 ma_engine s_AudioEngine;
 bool s_Initialized = false;
@@ -40,8 +54,7 @@ void DestroyVoice(SoundHandle handle)
         return;
 
     ma_sound_stop(it->second.Sound);
-    ma_sound_uninit(it->second.Sound);
-    delete it->second.Sound;
+    ReleaseVoice(it->second.Sound, it->second.Buffer);
     s_Voices.erase(it);
 }
 } // namespace
@@ -85,8 +98,7 @@ void MiniAudioBackend::Update()
         ma_sound* sound = it->second.Sound;
         if (!ma_sound_is_playing(sound) && ma_sound_at_end(sound))
         {
-            ma_sound_uninit(sound);
-            delete sound;
+            ReleaseVoice(sound, it->second.Buffer);
             it = s_Voices.erase(it);
         }
         else
@@ -105,12 +117,46 @@ SoundHandle MiniAudioBackend::Play(const std::string& filepath, const SoundOptio
     const std::filesystem::path resolved = ResolveAssetPath(filepath);
 
     ma_sound* sound = new ma_sound;
-    ma_result result = ma_sound_init_from_file(&s_AudioEngine, resolved.string().c_str(), 0, nullptr, nullptr, sound);
+    ma_audio_buffer* buffer = nullptr;
+    ma_result result = MA_ERROR;
+    std::error_code ec;
+    const std::filesystem::path cooked = CookedAudioPathFor(resolved);
+    if (!std::filesystem::exists(resolved, ec) && std::filesystem::exists(cooked, ec))
+    {
+        // An exported game ships a WAV cooked to PCM (issue #45): played from memory.
+        AudioPcm pcm;
+        std::string error;
+        if (!LoadCookedAudio(cooked, pcm, error))
+        {
+            UHE_ERROR("Failed to load cooked sound {}: {}", cooked.string(), error);
+            delete sound;
+            return kInvalidSound;
+        }
+        buffer = new ma_audio_buffer;
+        ma_audio_buffer_config config =
+            ma_audio_buffer_config_init(ma_format_f32, pcm.Channels, pcm.Frames(), pcm.Samples.data(), nullptr);
+        config.sampleRate = pcm.SampleRate;
+        result = ma_audio_buffer_init_copy(&config, buffer);
+        if (result == MA_SUCCESS)
+            result = ma_sound_init_from_data_source(&s_AudioEngine, buffer, 0, nullptr, sound);
+        else
+        {
+            delete buffer;
+            buffer = nullptr;
+        }
+    }
+    else
+        result = ma_sound_init_from_file(&s_AudioEngine, resolved.string().c_str(), 0, nullptr, nullptr, sound);
 
     if (result != MA_SUCCESS)
     {
         UHE_ERROR("Failed to load sound: {}", resolved.string());
         delete sound;
+        if (buffer != nullptr)
+        {
+            ma_audio_buffer_uninit(buffer);
+            delete buffer;
+        }
         return kInvalidSound;
     }
 
@@ -131,6 +177,7 @@ SoundHandle MiniAudioBackend::Play(const std::string& filepath, const SoundOptio
     UHE_TRACE("Audio: playing '{}' (handle {})", filepath, handle);
     Voice voice;
     voice.Sound = sound;
+    voice.Buffer = buffer;
     voice.Info.Handle = handle;
     voice.Info.Path = filepath;
     voice.Info.Volume = options.Volume;
@@ -171,8 +218,7 @@ void MiniAudioBackend::StopAll()
     for (auto& [handle, voice] : s_Voices)
     {
         ma_sound_stop(voice.Sound);
-        ma_sound_uninit(voice.Sound);
-        delete voice.Sound;
+        ReleaseVoice(voice.Sound, voice.Buffer);
     }
     s_Voices.clear();
 }

@@ -30,6 +30,15 @@ struct ExportOptions
      * glTF. Unset (tests, tools without a renderer): models ship as they are.
      */
     std::function<bool(const std::filesystem::path&, const std::filesystem::path&, std::string&)> CookModel;
+    /**
+     * Cooks a standalone image (a sprite or texture scenes and scripts name,
+     * not one a model reads) at the first path into a KTX2 file at the second
+     * (tools/texcook): the game then ships `<image>.ktx2` instead and parses no
+     * PNG or JPEG. Unset: images ship as they are.
+     */
+    std::function<bool(const std::filesystem::path&, const std::filesystem::path&, std::string&)> CookTexture;
+    /// Cooks a WAV into `<sound>.wav.uheaudio` (UHE/Audio/CookedAudio.h); unset: sounds ship as they are.
+    std::function<bool(const std::filesystem::path&, const std::filesystem::path&, std::string&)> CookAudio;
     /// The platform the game is for, recorded in its AssetManifest.yaml (desktop, mobile).
     std::string Platform = "desktop";
     /**
@@ -60,6 +69,8 @@ struct ExportReport
     std::size_t FilesCopied = 0;
     std::uintmax_t BytesCopied = 0;
     std::size_t ModelsCooked = 0;     ///< shipped as .uhemodel (ExportOptions::CookModel)
+    std::size_t ImagesCooked = 0;     ///< shipped as .ktx2 (ExportOptions::CookTexture)
+    std::size_t SoundsCooked = 0;     ///< shipped as .uheaudio (ExportOptions::CookAudio)
     std::filesystem::path Executable; ///< the game's executable, when Ok
 };
 

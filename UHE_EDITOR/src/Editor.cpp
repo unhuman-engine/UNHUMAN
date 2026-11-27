@@ -23,6 +23,7 @@
 #include "UHE/AssetsManager/Project.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Audio/AudioEngine.h"
+#include "UHE/Audio/CookedAudio.h"
 #include "UHE/Core/CommandLine.h"
 #include "UHE/Core/Console.h"
 #include "UHE/Debug/RenderDoc.h"
@@ -1655,6 +1656,10 @@ void Editor::ExportGame()
     options.CookModel =
         [cookOptions](const std::filesystem::path& source, const std::filesystem::path& cooked, std::string& why)
     { return RD3d::CookModelFile(source, cooked, why, cookOptions); };
+    // Sprites and sounds the scenes name directly ship cooked too: the game parses no PNG or WAV.
+    options.CookTexture = [textures](const std::filesystem::path& source, const std::filesystem::path& cooked,
+                                     std::string& why) { return Cook::CookTextureFile(source, cooked, textures, why); };
+    options.CookAudio = CookAudioFile;
     const ExportReport report = GameExporter::Export(*m_Project, options);
     for (const std::string& warning : report.Warnings)
         UHE_CORE_WARN("Export: {0}", warning);

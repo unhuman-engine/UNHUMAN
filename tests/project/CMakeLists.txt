@@ -13,6 +13,7 @@ add_executable(project_test
     ${PROJECT_SRC_DIR}/AssetsManager/GameExporter.cpp
     ${PROJECT_SRC_DIR}/AssetsManager/GltfFiles.cpp
     ${PROJECT_SRC_DIR}/AssetsManager/AssetCatalog.cpp
+    ${PROJECT_SRC_DIR}/Audio/CookedAudio.cpp
     ${PROJECT_SRC_DIR}/AssetsManager/CookedFile.cpp
     ${PROJECT_SRC_DIR}/Core/UUID.cpp
     ${PROJECT_SRC_DIR}/AssetsManager/VfsSystem.cpp
