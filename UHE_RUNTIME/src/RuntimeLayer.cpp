@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include "UHE/AssetsManager/AssetCatalog.h"
+#include "UHE/AssetsManager/AssetManager.h"
 #include "UHE/AssetsManager/VfsSystem.h"
 #include "UHE/Core/CommandLine.h"
 #include "UHE/Core/input.h"
@@ -111,6 +113,21 @@ void RuntimeLayer::OnAttach()
     if (!m_Project)
         return;
     Project::Mount(*m_Project, FileSystem::Get().GetRootPath() / "assets");
+    // An export lists every asset with its stable ID (issue #45); a project run
+    // from its own folder has no manifest and IDs are made as assets load.
+    if (const auto manifest = m_Project->AssetPath / AssetCatalog::kManifestName; std::filesystem::exists(manifest))
+    {
+        AssetCatalog catalog;
+        std::string error;
+        if (catalog.Load(manifest, &error))
+        {
+            AssetManager::Get().LoadCatalog(catalog);
+            UHE_CORE_INFO("Runtime: {0} assets with stable IDs ({1})", catalog.Size(),
+                          catalog.Platform.empty() ? "no platform" : catalog.Platform);
+        }
+        else
+            UHE_CORE_WARN("Runtime: {0}", error);
+    }
     UHE_CORE_INFO("Runtime: project '{0}', {1}x{2} {3}, VSync {4}", m_Project->Name, settings.Width, settings.Height,
                   WindowModeName(settings.Mode), settings.VSync ? "on" : "off");
 

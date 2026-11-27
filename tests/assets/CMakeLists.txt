@@ -12,6 +12,7 @@ add_executable(assets_test
     # Real units under test
     ${SCENE_SRC_DIR}/Core/UUID.cpp
     ${SCENE_SRC_DIR}/AssetsManager/AssetManager.cpp
+    ${SCENE_SRC_DIR}/AssetsManager/AssetCatalog.cpp
     ${SCENE_SRC_DIR}/AssetsManager/VfsSystem.cpp
     ${SCENE_SRC_DIR}/Jobsystem/Jobsystem.cpp
 )
@@ -21,6 +22,7 @@ find_package(Vulkan REQUIRED)
 target_include_directories(assets_test PRIVATE
     ${Vulkan_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/UHE/src
+    ${CMAKE_SOURCE_DIR}/UHE/vendor/yaml-cpp/include
     ${CMAKE_SOURCE_DIR}/UHE/vendor/spdlog/include
     ${CMAKE_SOURCE_DIR}/UHE/vendor/glm
     ${CMAKE_SOURCE_DIR}/UHE/vendor/entt/include
@@ -43,7 +45,7 @@ elseif(UNIX)
 endif()
 target_compile_definitions(assets_test PRIVATE $<$<CONFIG:Debug>:UHE_DEBUG>)
 
-target_link_libraries(assets_test PRIVATE Vulkan::Vulkan)
+target_link_libraries(assets_test PRIVATE Vulkan::Vulkan yaml-cpp)
 
 if(MSVC)
     target_compile_options(assets_test PRIVATE /utf-8)
