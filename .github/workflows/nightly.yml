@@ -165,3 +165,47 @@ jobs:
           path: fuzz-crashes/
           retention-days: 30
           if-no-files-found: ignore
+
+  # A real GPU, where lavapipe cannot reach: driver-specific validation,
+  # synchronization validation on hardware timings, and a frame-time sanity
+  # check. Runs only on a self-hosted runner labelled `gpu`; set the repository
+  # variable UHE_GPU_RUNNER to `true` once one is registered (Settings >
+  # Actions > Runners), so the job never sits queued on a repo without one.
+  # The runner needs the Vulkan SDK, CMake, Ninja, Python and a display.
+  gpu:
+    name: GPU (self-hosted)
+    if: vars.UHE_GPU_RUNNER == 'true'
+    runs-on: [ self-hosted, linux, gpu ]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Download Slang
+        run: python3 script/Setup.py
+
+      - name: Configure
+        run: cmake --preset debug -DVG_PROFILE=OFF
+
+      - name: Build
+        run: cmake --build --preset debug --parallel --target Sandbox UHE_EDITOR uhe_shaders
+
+      - name: Unit tests
+        run: ctest --test-dir build_debug -L unit --output-on-failure
+
+      - name: Validation gate (Sandbox, editor)
+        run: |
+          script/check_validation.sh 30 bin/Debug-linux-x64/Sandbox
+          script/check_validation.sh 30 bin/Debug-linux-x64/UHE_EDITOR
+
+      - name: Synchronization validation
+        env:
+          UHE_SYNC_VALIDATION: '1'
+        run: script/check_validation.sh 30 bin/Debug-linux-x64/Sandbox
+
+      - name: Soak (Sandbox)
+        env:
+          UHE_VALIDATION_FATAL: '1'
+        run: script/soak.sh bin/Debug-linux-x64 Sandbox 900
