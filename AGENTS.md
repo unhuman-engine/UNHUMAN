@@ -127,6 +127,17 @@ here. Follow them; if a rule is wrong, change it here first.
   the lights, skins and clips by name. A field added to one of them is added
   there too, and `kModelVersion` goes up so an older cook is recooked instead
   of misread; `tests/gltf` compares a cooked load with the glTF load.
+- **A cook stores images as KTX2, and only the cook links the encoder.**
+  `tools/texcook` (basisu encoder) is linked by the editor, `uhe_export` and
+  `uhe_cook`, never by libUHE or the runtime, which only transcode. The cook
+  flips rows before encoding because the runtime's PNG load flips and its
+  KTX2 load does not. Encodes are cached in `<project>/.uhecache/textures`.
+- **A cook names the files it was made from.** Its DEPS section lists the
+  glTF's buffers and images with hashes; `Model::CookIsCurrent` makes a cook
+  beside its source stale when any of them is newer, not only the glTF.
+- **Asset IDs come from `<project>/AssetRegistry.yaml`.** An export refreshes
+  it and ships `Assets/AssetManifest.yaml`; commit the registry, or IDs differ
+  per machine. A moved file keeps its ID through its content hash.
 - **Cooking never touches the GPU.** It loads with `upload = false` and
   `keepTextureSources = true`; `uhe_export` links stubs that abort on any
   texture or buffer creation, so a change that makes cooking upload fails there.
