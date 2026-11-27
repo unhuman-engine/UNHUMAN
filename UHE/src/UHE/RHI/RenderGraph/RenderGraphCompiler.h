@@ -104,7 +104,7 @@ struct RGCompiledPass
     std::vector<RGCompiledImageBarrier> postImageBarriers; // finalState exits, queue releases
     std::vector<RGCompiledBufferBarrier> preBufferBarriers;
     std::vector<RGCompiledBufferBarrier> postBufferBarriers; // queue releases
-    std::vector<u32> dependencies; // compiled indices of passes that precede
+    std::vector<u32> dependencies;                           // compiled indices of passes that precede
 };
 
 // [firstUse, lastUse] per resource in compiled order; aliasing (§8.2) and the
