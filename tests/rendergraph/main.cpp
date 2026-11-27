@@ -4,12 +4,16 @@
 // then every validation rule: read-before-write, double-write via name dedup,
 // stale handles after Reset, attachment declaration, hash comparability and
 // the JSON dump.
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
+#include "UHE/Jobsystem/Jobsystem.h"
 #include "UHE/Jobsystem/Taskgraph.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 #include "UHE/RHI/RenderGraph/RenderGraph.h"
 #include "UHE/RHI/RenderGraph/RenderGraphBuilder.h"
 #include "UHE/RHI/RenderGraph/RenderGraphResources.h"
@@ -502,6 +506,108 @@ int main()
                                       graph.GetNode(nodes[0]).dependents.end(),
                                       nodes[1]) != graph.GetNode(nodes[0]).dependents.end();
         CHECK(edgeOk, "GBuffer node lists Lighting as a dependent");
+    }
+
+    // ── Per-pass command lists (issue #32): each pass records into its own
+    // list; passes that are not parallel-safe stay chained, parallel ones are
+    // free; the recording thread's binding is set around the pass and cleared.
+    {
+        RenderGraph rg;
+        RGTextureHandle a = rg.CreateTexture({"A", TextureFormat::RGBA8_UNORM, 8, 8});
+        RGTextureHandle b = rg.CreateTexture({"B", TextureFormat::RGBA8_UNORM, 8, 8});
+        RGTextureHandle out = rg.ImportTexture("Out", 30, 8, 8, 1, ImageState::Undefined, ImageState::ShaderRead);
+        std::vector<std::string> order;
+        const auto record = [&order](const char* name)
+        { return [&order, name](RGPassContext&) { order.push_back(name); }; };
+        rg.AddPass("Serial0")
+            .Write(a)
+            .Color({a, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute(record("Serial0"));
+        (void)rg.AddPass("Parallel1")
+            .ParallelRecording(true)
+            .Write(b)
+            .Color({b, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute(record("Parallel1"));
+        rg.AddPass("Serial2")
+            .Read(a)
+            .Read(b)
+            .Write(out)
+            .Color({out, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute(record("Serial2"));
+        const RGCompileResult compiled = rg.Compile();
+        CHECK(compiled.Ok() && compiled.frame.passes.size() == 3, "per-pass frame compiles");
+
+        VulkanRenderGraphExecutor executor;
+        const vk::Image fakeImage = reinterpret_cast<VkImage>(0x42424242ull);
+        const vk::ImageView fakeView = reinterpret_cast<VkImageView>(0x24242424ull);
+        for (const RGTextureSlot& slot : rg.GetBuilder().Resources().Textures())
+            executor.RegisterTexture(
+                RGTextureHandle{static_cast<u32>(&slot - rg.GetBuilder().Resources().Textures().data()),
+                                slot.generation},
+                fakeImage, fakeView, 8, 8, TextureFormat::RGBA8_UNORM);
+        std::vector<std::string> errors;
+        const RGResolvedFrame resolved = executor.Resolve(compiled.frame, rg.GetBuilder().Passes(), errors);
+        CHECK(errors.empty(), "per-pass frame resolves");
+
+        struct FakeList final : RHICommandBuffer
+        {
+            void Begin() override {}
+            void End() override {}
+            void BeginRenderPass(const RenderPassDesc&) override {}
+            void EndRenderPass() override {}
+            void BindPipeline(PipelineHandle) override {}
+            void BindVertexBuffer(BufferHandle, u64) override {}
+            void BindIndexBuffer(BufferHandle, u64) override {}
+            void BindTexture(u32, TextureHandle) override {}
+            void SetViewport(float, float, float, float) override {}
+            void SetScissor(i32, i32, u32, u32) override {}
+            void PushConstants(ShaderStage, const void*, u32, u32) override {}
+            void UpdateBuffer(BufferHandle, const void*, u64, u64) override {}
+            void UpdateTexture(TextureHandle, std::span<const u8>) override {}
+            void Draw(u32, u32) override {}
+            void DrawIndexed(u32, u32, i32) override {}
+            void Dispatch(u32, u32, u32) override {}
+        };
+        std::array<FakeList, 3> lists;
+        std::vector<CommandListDesc> asked;
+        std::mutex mutex;
+        u32 handedOut = 0;
+        std::vector<RHICommandBuffer*> bound;
+        const VulkanRenderGraphExecutor::PassListAllocator allocate = [&](const CommandListDesc& desc)
+        {
+            std::scoped_lock lock(mutex);
+            asked.push_back(desc);
+            return VulkanRenderGraphExecutor::PassList{&lists[handedOut++ % lists.size()], nullptr};
+        };
+        const VulkanRenderGraphExecutor::ThreadListBinder bind = [&](RHICommandBuffer* list)
+        {
+            std::scoped_lock lock(mutex);
+            bound.push_back(list);
+        };
+        UHE::Jobsystem::TaskGraph graph;
+        const std::vector<UHE::Jobsystem::TaskID> nodes =
+            executor.MapToTaskgraphPerPass(graph, resolved, rg.GetBuilder().Passes(), allocate, bind);
+        CHECK(nodes.size() == 3, "one recording node per pass");
+        const auto dependsOn = [&](u32 later, u32 earlier)
+        {
+            const auto& dependents = graph.GetNode(nodes[earlier]).dependents;
+            return std::find(dependents.begin(), dependents.end(), nodes[later]) != dependents.end();
+        };
+        CHECK(dependsOn(2, 0) && graph.GetNode(nodes[1]).dependencyCount == 0 && !dependsOn(1, 0) && !dependsOn(2, 1),
+              "serial passes are chained to each other; the parallel pass to nothing");
+        UHE::Jobsystem::UheJobsystem jobs;
+        jobs.Init();
+        graph.Execute(jobs);
+        jobs.ShutDown();
+        const auto at = [&](const char* name) { return std::find(order.begin(), order.end(), name) - order.begin(); };
+        CHECK(order.size() == 3 && at("Serial0") < at("Serial2"), "every pass recorded, serial ones in order");
+        CHECK(asked.size() == 3 && asked[0].Level == CommandListLevel::Secondary && asked[0].InsideRendering &&
+                  asked[0].ColorFormatCount == 1 && asked[0].ColorFormats[0] == TextureFormat::RGBA8_UNORM,
+              "each pass asks for a secondary list inheriting its scope's formats");
+        u32 binds = 0, unbinds = 0;
+        for (RHICommandBuffer* list : bound)
+            (list != nullptr ? binds : unbinds) += 1;
+        CHECK(binds == 3 && unbinds == 3, "the recording thread is bound to the pass's list, then released");
     }
 
     // ── A Load attachment depends on the previous writer ──────────────────

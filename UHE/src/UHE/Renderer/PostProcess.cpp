@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "UHE/AssetsManager/VfsSystem.h"
@@ -77,6 +78,9 @@ struct PostProcessData
 };
 
 PostProcessData s_Post;
+/// Guards s_Post's lazy loads and pipelines: the bloom and tonemap passes
+/// record in parallel (FGBuilder::RecordInParallel, issue #32).
+std::mutex s_PostMutex;
 
 void DestroyProgram(Program& program)
 {
@@ -151,6 +155,7 @@ void RegisterReloadListener()
  */
 bool EnsureLoaded(Program& program, const char* name, u32 hostPushConstantSize)
 {
+    std::scoped_lock lock(s_PostMutex);
     if (program.Loaded)
         return true;
     ShaderCache& library = ShaderCache::Get();
@@ -209,6 +214,7 @@ RHI::PipelineHandle CreateFullscreenPipeline(const Program& program, RHI::Textur
 
 RHI::PipelineHandle TonemapPipeline(RHI::TextureFormat format)
 {
+    std::scoped_lock lock(s_PostMutex);
     const auto it = s_Post.TonemapPipelines.find(format);
     if (it != s_Post.TonemapPipelines.end())
         return it->second;
@@ -219,6 +225,7 @@ RHI::PipelineHandle TonemapPipeline(RHI::TextureFormat format)
 
 RHI::PipelineHandle BloomPipeline()
 {
+    std::scoped_lock lock(s_PostMutex);
     if (s_Post.BloomPipeline == nullptr)
         s_Post.BloomPipeline = CreateFullscreenPipeline(s_Post.Bloom, RHI::TextureFormat::RGBA16F, "PostProcess.Bloom");
     return s_Post.BloomPipeline;
@@ -264,6 +271,8 @@ RHI::FGHandle<RHI::FGTexture> AddBloomPass(RHI::FrameGraph& graph, const std::st
             d.Output = builder.Write(
                 builder.Create(outputName, {.Width = width, .Height = height, .Format = TextureFormat::RGBA16F}),
                 FGWrite::RenderTarget, overwrite);
+            // Its own push constants and declared textures; loads and pipelines are locked.
+            builder.RecordInParallel();
         },
         [params](const BloomData& d, FGContext& context)
         {
@@ -325,6 +334,7 @@ RHI::FGHandle<RHI::FGTexture> TonemapInto(RHI::FrameGraph& graph, RHI::FGHandle<
             overwrite.Load = LoadOp::Clear;
             const FGHandle<FGTexture> output = target.IsValid() ? target : builder.Create(createName, createDesc);
             d.Output = builder.Write(output, FGWrite::RenderTarget, overwrite);
+            builder.RecordInParallel();
         },
         [targetFormat, settings](const TonemapData& d, FGContext& context)
         {

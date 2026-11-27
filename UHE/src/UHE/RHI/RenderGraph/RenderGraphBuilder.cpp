@@ -93,6 +93,13 @@ RGPassBuilder& RGPassBuilder::Write(RGBufferHandle buffer)
     return *this;
 }
 
+RGPassBuilder& RGPassBuilder::ParallelRecording(bool parallel)
+{
+    UHE_CORE_ASSERT(!m_Submitted, "RenderGraph: pass builder used after Submit()");
+    m_Spec.parallelRecording = parallel;
+    return *this;
+}
+
 RGPassBuilder& RGPassBuilder::Queue(RGQueue queue)
 {
     UHE_CORE_ASSERT(!m_Submitted, "RenderGraph: pass builder used after Submit()");

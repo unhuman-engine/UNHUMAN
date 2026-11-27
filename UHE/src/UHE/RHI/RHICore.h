@@ -163,6 +163,9 @@ struct CommandListDesc
     std::array<TextureFormat, 8> ColorFormats{};
     u32 ColorFormatCount = 0;
     TextureFormat DepthFormat = TextureFormat::Undefined;
+    /// The scope also binds DepthFormat's stencil (BeginRendering does for a
+    /// depth-stencil format; the render graph's scopes bind depth only).
+    bool StencilAttachment = false;
     const char* DebugName = nullptr;
 };
 

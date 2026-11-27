@@ -50,6 +50,8 @@ public:
     [[nodiscard]] RGPassBuilder& Write(RGTextureHandle texture);
     [[nodiscard]] RGPassBuilder& Write(RGBufferHandle buffer);
     [[nodiscard]] RGPassBuilder& Queue(RGQueue queue);
+    /// @brief RGPassSpec::parallelRecording: the pass may record while others do.
+    [[nodiscard]] RGPassBuilder& ParallelRecording(bool parallel);
     // Stored on the spec and AUTO-PUBLISHES the pass (see class comment). The
     // return value may be freely discarded — it is the end of the chain.
     RGPassBuilder& Execute(RGPassExecuteFn&& fn);

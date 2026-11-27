@@ -293,6 +293,21 @@ void VulkanCommandBuffer::PushDescriptors(u32 set, std::span<const DescriptorWri
     m_CommandBuffer.pushDescriptorSetKHR(m_CurrentBindPoint, m_CurrentPipelineLayout, set, vkWrites.Writes);
 }
 
+namespace
+{
+thread_local VulkanCommandBuffer* t_PassList = nullptr;
+}
+
+void VulkanCommandBuffer::SetThreadPassList(VulkanCommandBuffer* list)
+{
+    t_PassList = list;
+}
+
+VulkanCommandBuffer* VulkanCommandBuffer::ThreadPassList()
+{
+    return t_PassList;
+}
+
 void* VulkanCommandBuffer::GetNativeHandle() const
 {
     return static_cast<VkCommandBuffer>(*m_CommandBuffer);
@@ -315,7 +330,8 @@ void VulkanCommandBuffer::BeginList(const CommandListDesc& desc)
         formats[i] = MapTextureFormat(desc.ColorFormats[i]);
     const vk::Format depth =
         desc.DepthFormat == TextureFormat::Undefined ? vk::Format::eUndefined : MapTextureFormat(desc.DepthFormat);
-    const bool stencil = depth == vk::Format::eD24UnormS8Uint || depth == vk::Format::eD32SfloatS8Uint;
+    const bool stencil =
+        desc.StencilAttachment && (depth == vk::Format::eD24UnormS8Uint || depth == vk::Format::eD32SfloatS8Uint);
     vk::CommandBufferInheritanceRenderingInfo rendering{.flags = {},
                                                         .viewMask = 0,
                                                         .colorAttachmentCount = count,

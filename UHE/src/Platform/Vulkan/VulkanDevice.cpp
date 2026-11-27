@@ -155,6 +155,13 @@ void VulkanDevice::InitVulkan(const SwapchainDesc& swapDesc)
     }
     m_BarrierEncoder.Init(&m_Context);
     m_CommandLists.Init(*this, &m_Context);
+    // One command list per render graph pass unless asked otherwise: the A/B
+    // for a suspected regression, like UHE_RENDERGRAPH_NO_CACHE.
+    {
+        const char* primaryOnly = std::getenv("UHE_RENDERGRAPH_PRIMARY");
+        m_PerPassLists = primaryOnly == nullptr || *primaryOnly == '\0' || std::string_view(primaryOnly) == "0";
+        UHE_CORE_INFO("Render graph: {}", m_PerPassLists ? "a command list per pass" : "one primary command buffer");
+    }
     m_Jobsystem.Init();
 
     UHE_CORE_INFO("Vulkan sync tier: {}", SyncTierName(m_ExtensionCheck.GetSyncTier()));
@@ -653,6 +660,9 @@ void VulkanDevice::End()
 
 RHICommandBuffer& VulkanDevice::GetCurrentCommandBuffer()
 {
+    // Inside a render graph pass recording into its own list: that list.
+    if (VulkanCommandBuffer* passList = VulkanCommandBuffer::ThreadPassList())
+        return *passList;
     return m_Frames[m_CurrentFrame].GetCommandBuffer();
 }
 
@@ -833,19 +843,48 @@ void VulkanDevice::EndFrameGraph()
     // which draws into a different framebuffer). Chaining every pass to its
     // predecessor preserves the compiled order; §8.5 lifts this later by
     // giving each pass its own command buffer (per-thread pools).
-    RGResolvedFrame& orderable = resolved;
-    for (size_t slot = 1; slot < orderable.passes.size(); ++slot)
+    const vk::CommandBuffer primary = *m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle();
+    if (m_PerPassLists)
     {
-        const u32 previous = static_cast<u32>(slot) - 1;
-        auto& deps = orderable.passes[slot].dependencies;
-        if (std::find(deps.begin(), deps.end(), previous) == deps.end())
-            deps.push_back(previous);
+        // Each pass records into a list of its own (issue #32); the primary
+        // gets barriers, scopes, timing and the lists, in compiled order.
+        const VulkanRenderGraphExecutor::PassListAllocator allocate = [this](const CommandListDesc& desc)
+        {
+            VulkanCommandBuffer* list = m_CommandLists.Begin(desc, m_CurrentFrame);
+            return VulkanRenderGraphExecutor::PassList{list, list != nullptr ? *list->GetHandle() : nullptr};
+        };
+        const VulkanRenderGraphExecutor::ThreadListBinder bindThread = [](RHICommandBuffer* list)
+        { VulkanCommandBuffer::SetThreadPassList(static_cast<VulkanCommandBuffer*>(list)); };
+        m_PassNodes = m_RenderGraphExecutor.MapToTaskgraphPerPass(
+            m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(), allocate, bindThread);
+        m_RenderGraphExecutor.ExecuteGraph(m_TaskGraph, m_Jobsystem, m_PassNodes);
+        m_RenderGraphExecutor.AssemblePerPass(
+            resolved, m_FrameGraph.GetBuilder().Passes(), primary, m_BarrierEncoder,
+            [this, primary](const RGResolvedPass& pass)
+            {
+                DebugUtils::BeginLabel(static_cast<VkCommandBuffer>(primary), pass.name.c_str());
+                m_GpuTimer.BeginPass(primary, pass.name);
+            },
+            [this, primary](const RGResolvedPass&)
+            {
+                m_GpuTimer.EndPass(primary);
+                DebugUtils::EndLabel(static_cast<VkCommandBuffer>(primary));
+            });
     }
-
-    m_PassNodes =
-        m_RenderGraphExecutor.MapToTaskgraph(m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(),
-                                             m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), m_BarrierEncoder);
-    m_RenderGraphExecutor.ExecuteGraph(m_TaskGraph, m_Jobsystem, m_PassNodes);
+    else
+    {
+        RGResolvedFrame& orderable = resolved;
+        for (size_t slot = 1; slot < orderable.passes.size(); ++slot)
+        {
+            const u32 previous = static_cast<u32>(slot) - 1;
+            auto& deps = orderable.passes[slot].dependencies;
+            if (std::find(deps.begin(), deps.end(), previous) == deps.end())
+                deps.push_back(previous);
+        }
+        m_PassNodes = m_RenderGraphExecutor.MapToTaskgraph(m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(),
+                                                           primary, m_BarrierEncoder);
+        m_RenderGraphExecutor.ExecuteGraph(m_TaskGraph, m_Jobsystem, m_PassNodes);
+    }
     // Recorded: the exported textures end this frame in their final states.
     m_FrameGraphBridge.CommitExports();
     m_TaskGraph.Reset();

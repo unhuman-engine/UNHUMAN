@@ -97,6 +97,14 @@ public:
     /// @brief Begins a command list from the device's pools (RHIDevice::BeginCommandList).
     void BeginList(const CommandListDesc& desc);
     [[nodiscard]] bool IsSecondary() const { return m_IsSecondary; }
+
+    /// @brief The list this thread records a render graph pass into (null: the frame's primary).
+    ///
+    /// Renderers record through RHIDevice::GetCurrentCommandBuffer(); while a
+    /// pass records into its own list on a job thread, that call must name the
+    /// pass's list on that thread, and only there.
+    static void SetThreadPassList(VulkanCommandBuffer* list);
+    [[nodiscard]] static VulkanCommandBuffer* ThreadPassList();
     [[nodiscard]] QueueType GetQueue() const { return m_Queue; }
 
     void SetContext(vk::raii::Device* device, VulkanDescriptorManager* descriptorManager, const VulkanContext* ctx)

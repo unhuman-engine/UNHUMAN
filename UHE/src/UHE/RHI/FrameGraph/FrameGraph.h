@@ -72,6 +72,18 @@ public:
     FGHandle<FGTexture> Write(FGHandle<FGTexture> handle, FGWrite usage, const FGAttachment& attachment = {});
     FGHandle<FGBuffer> Write(FGHandle<FGBuffer> handle, FGWrite usage);
 
+    /**
+     * @brief The pass's execute callback touches nothing but its own data, the
+     *        resources it declared and thread-safe engine state, so it may
+     *        record on a job thread while other passes record (issue #32).
+     *
+     * Each pass records into a command list of its own; a pass that does not
+     * say this records after the pass before it, because renderers that keep
+     * global state (Renderer3D, Renderer2D) would race. Only promise it for a
+     * callback that reads shared state and creates nothing without a lock.
+     */
+    void RecordInParallel();
+
 private:
     friend class FrameGraph;
     FGBuilder(FrameGraph& graph, u32 pass) : m_Graph(graph), m_Pass(pass) {}
@@ -229,6 +241,7 @@ private:
         std::shared_ptr<void> Data; ///< owns the pass data the execute callback refers to
         std::function<void(FGContext&)> Execute;
         std::vector<FGLoweredAccess> Accesses;
+        bool ParallelRecording = false; ///< FGBuilder::RecordInParallel
     };
 
     u32 BeginPass(const std::string& name, FGPassType type, std::shared_ptr<void> data);

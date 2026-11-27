@@ -84,12 +84,17 @@ here. Follow them; if a rule is wrong, change it here first.
   access, state and name matches, and rebinds handle generations. The topology
   hash counts a pass's reads instead of naming them; never key a cache on it.
   `UHE_RENDERGRAPH_NO_CACHE=1` compiles every frame, for an A/B.
-- **Passes record one at a time, in compiled order.** They all record into
-  the frame's one command buffer, and renderers like `Renderer3D` keep global
-  state: two independent passes (shadow cascades and the depth prepass) once
-  recorded at the same time from two job threads and corrupted the heap.
-  `MapToTaskgraph` chains every pass after the previous one; parallel
-  recording would need a command buffer per pass first.
+- **Each pass records into a command list of its own; most record one at a
+  time.** The primary keeps the barriers, rendering scopes, GPU timing and
+  labels and runs the lists in compiled order (`AssemblePerPass`). Renderers
+  like `Renderer3D` keep global state: two passes (shadow cascades and the depth
+  prepass) once recorded at the same time from two job threads and corrupted
+  the heap, so passes stay chained unless their setup calls
+  `FGBuilder::RecordInParallel()`. Only promise that for a callback that
+  touches its own data and creates nothing without a lock (bloom and tonemap
+  do, `s_PostMutex`). `GetCurrentCommandBuffer()` names the pass's list on the
+  recording thread. `UHE_RENDERGRAPH_PRIMARY=1` records everything into the
+  frame's primary, for an A/B.
 - **The 3D scene is drawn by `SceneRenderer`, in several passes.** Shadow
   cascades, the depth prepass, the colour pass and water all draw the scene,
   and they must agree on where everything is: a prepass and a colour pass that

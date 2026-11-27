@@ -355,6 +355,7 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, RenderGraph& 
     for (const FGLoweredPass& pass : frame.Passes)
     {
         RGPassBuilder& builder = graph.AddPass(pass.Name, ToPassType(pass.Type));
+        (void)builder.ParallelRecording(pass.ParallelRecording);
         std::vector<u32> declared;
         for (const FGLoweredAccess& access : pass.Accesses)
         {
@@ -408,9 +409,14 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, RenderGraph& 
             {
                 VulkanFGContext fgContext(name, frontend.Board(), m_Device.GetCurrentCommandBuffer(), context.Extent(),
                                           m_Textures, m_Buffers, declared);
-                m_Device.BeginGpuPass(name);
+                // With a list of its own the executor times and labels the
+                // pass from the primary; recording into the primary, it is here.
+                const bool ownList = context.List() != nullptr;
+                if (!ownList)
+                    m_Device.BeginGpuPass(name);
                 frontend.ExecutePass(index, fgContext);
-                m_Device.EndGpuPass();
+                if (!ownList)
+                    m_Device.EndGpuPass();
             });
     }
 

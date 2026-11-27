@@ -175,6 +175,11 @@ struct RGPassSpec
     std::vector<RGResourceAccess> reads;
     std::vector<RGResourceAccess> writes;
     RGPassExecuteFn execute; // stored in step 1; invoked by the executor (§8.5)
+    /// The pass's recording touches only its own state and the resources it
+    /// declared, so it may record on another thread at the same time as any
+    /// other pass (per-pass command lists, issue #32). Off: it records after
+    /// the pass before it, as renderers with global state need.
+    bool parallelRecording = false;
 };
 
 // ─── Validation results ─────────────────────────────────────────────────────

@@ -238,6 +238,7 @@ private:
     VulkanGpuTimer m_GpuTimer;
     VulkanBarrierEncoder m_BarrierEncoder;
     VulkanCommandLists m_CommandLists;
+    bool m_PerPassLists = true; ///< UHE_RENDERGRAPH_PRIMARY=1: every pass into the frame's primary
     mutable DeviceLimits m_Limits;
     mutable std::once_flag m_LimitsOnce;
 
