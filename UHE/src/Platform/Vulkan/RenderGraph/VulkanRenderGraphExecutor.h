@@ -1,18 +1,20 @@
 #pragma once
 #include <deque>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan_raii.hpp>
-#include "UHE/Jobsystem/Taskgraph.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphCompiler.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphResources.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphTypes.h"
 #include "Platform/Vulkan/VulkanBarrierEncoder.h"
 #include "Platform/Vulkan/VulkanSemaphore.h"
 #include "UHE/Core/Core.h"
+#include "UHE/Jobsystem/Taskgraph.h"
+#include "UHE/RHI/RHICore.h"
+#include "UHE/RHI/RenderGraph/RenderGraphCompiler.h"
+#include "UHE/RHI/RenderGraph/RenderGraphResources.h"
+#include "UHE/RHI/RenderGraph/RenderGraphTypes.h"
 
 // Render graph executor (docs/architecture/rendergraph.md §8.5) — step 3 slice.
 //
@@ -67,6 +69,7 @@ struct RGResolvedColorAttachment
     LoadOp load = LoadOp::Clear;
     StoreOp store = StoreOp::Store;
     vk::ClearColorValue clearColor{std::array<float, 4>{0.f, 0.f, 0.f, 1.f}};
+    TextureFormat format = TextureFormat::RGBA8_UNORM; ///< what a secondary list inherits
 };
 
 struct RGResolvedDepthAttachment
@@ -75,6 +78,7 @@ struct RGResolvedDepthAttachment
     LoadOp load = LoadOp::Clear;
     StoreOp store = StoreOp::Store;
     vk::ClearDepthStencilValue clear{1.0f, 0u};
+    TextureFormat format = TextureFormat::D32_FLOAT;
 };
 
 struct RGResolvedPass
@@ -83,6 +87,7 @@ struct RGResolvedPass
     u32 passIndex = 0;
     std::string name;
     RGPassType type = RGPassType::Graphics;
+    RGQueue queue = RGQueue::Graphics; ///< where the compiler placed it (async compute)
     std::vector<u32> dependencies; // compiled ids this pass depends on (DAG)
     // Graphics passes only; nullopt for compute/transfer (raw recording).
     std::optional<vk::Extent2D> renderExtent;
@@ -91,6 +96,7 @@ struct RGResolvedPass
     std::vector<RGResolvedImageBarrier> preImageBarriers;
     std::vector<RGResolvedImageBarrier> postImageBarriers;
     std::vector<RGResolvedBufferBarrier> preBufferBarriers;
+    std::vector<RGResolvedBufferBarrier> postBufferBarriers; ///< queue releases
 };
 
 struct RGResolvedFrame
@@ -103,14 +109,31 @@ struct RGResolvedFrame
 // Views/buffers resolve with correct state guaranteed by the compiler's
 // pre-barriers; the command buffer is the frame's primary.
 
+} // namespace UHE::RHI::VULKAN
+
+namespace UHE::RHI
+{
+namespace VULKAN
+{
+class VulkanRenderGraphExecutor;
+}
+
+/// The pass context the graph (UHE/RHI/RenderGraph) declares and hands each
+/// pass: an opaque type to the graph, defined by the backend that records it.
 class UHE_API RGPassContext
 {
 public:
-    RGPassContext(const class VulkanRenderGraphExecutor& executor, vk::CommandBuffer cmd,
-                  u32 passIndex, vk::Extent2D extent)
-        : m_Executor(executor), m_Cmd(cmd), m_PassIndex(passIndex), m_Extent(extent)
+    RGPassContext(const VULKAN::VulkanRenderGraphExecutor& executor, vk::CommandBuffer cmd, u32 passIndex,
+                  vk::Extent2D extent, RHICommandBuffer* list = nullptr)
+        : m_Executor(executor), m_Cmd(cmd), m_PassIndex(passIndex), m_Extent(extent), m_List(list)
     {
     }
+
+    /// The pass's own command list when the graph records one per pass
+    /// (VulkanRenderGraphExecutor::MapToTaskgraphPerPass); null when it records
+    /// into the frame's primary. The executor then times and labels the pass
+    /// itself, from the primary, around the list.
+    [[nodiscard]] RHICommandBuffer* List() const { return m_List; }
 
     // Resolved, correct-state view of a texture (shader-read, storage, etc.).
     [[nodiscard]] vk::ImageView View(RGTextureHandle texture) const;
@@ -127,15 +150,34 @@ public:
     [[nodiscard]] u32 PassIndex() const { return m_PassIndex; }
 
 private:
-    const VulkanRenderGraphExecutor& m_Executor;
+    const VULKAN::VulkanRenderGraphExecutor& m_Executor;
     vk::CommandBuffer m_Cmd;
     u32 m_PassIndex = 0;
     vk::Extent2D m_Extent{};
+    RHICommandBuffer* m_List = nullptr;
 };
+
+} // namespace UHE::RHI
+
+namespace UHE::RHI::VULKAN
+{
 
 class VulkanRenderGraphExecutor
 {
 public:
+    /// A pass's own command list: the RHI list and its Vulkan handle.
+    struct PassList
+    {
+        RHICommandBuffer* List = nullptr;
+        vk::CommandBuffer Handle = nullptr;
+    };
+    /// Gives a pass a secondary list to record into (CommandListDesc says how).
+    using PassListAllocator = std::function<PassList(const CommandListDesc&)>;
+    /// Makes \p list the one this thread's renderers record into (null: none).
+    using ThreadListBinder = std::function<void(RHICommandBuffer* list)>;
+    /// Called on the primary around a pass's list: GPU timing and debug labels.
+    using PassHook = std::function<void(const RGResolvedPass&)>;
+
     VulkanRenderGraphExecutor() = default;
     VulkanRenderGraphExecutor(const VulkanRenderGraphExecutor&) = delete;
     VulkanRenderGraphExecutor& operator=(const VulkanRenderGraphExecutor&) = delete;
@@ -198,6 +240,32 @@ public:
     void ExecuteGraph(Jobsystem::TaskGraph& graph, Jobsystem::UheJobsystem& jobs,
                       std::span<const Jobsystem::TaskID> nodes);
 
+    // ─── Per-pass command lists (issue #32) ─────────────────────────────────
+    // Each pass's body records into a secondary list of its own, on a job
+    // thread; the primary keeps the barriers and rendering scopes and runs the
+    // lists in compiled order (AssemblePerPass, main thread). Passes record
+    // one after another unless RGPassSpec::parallelRecording says the pass
+    // touches no state another pass does: renderers keep global state.
+
+    /// @brief Builds the recording nodes; \p allocate hands each a secondary list.
+    std::vector<Jobsystem::TaskID> MapToTaskgraphPerPass(Jobsystem::TaskGraph& graph, const RGResolvedFrame& resolved,
+                                                         const std::vector<RGPassSpec>& specs,
+                                                         const PassListAllocator& allocate,
+                                                         const ThreadListBinder& bindThread) const;
+    /// @brief Records barriers and scopes into \p primary around each pass's list, in compiled order.
+    /// Only the passes the compiler placed on \p queue; the others go into another queue's primary.
+    void AssemblePerPass(const RGResolvedFrame& resolved, const std::vector<RGPassSpec>& specs,
+                         vk::CommandBuffer primary, VulkanBarrierEncoder& encoder, const PassHook& beginPass,
+                         const PassHook& endPass, RGQueue queue = RGQueue::Graphics) const;
+    /// @brief Forgets the frame's pass lists, once every queue's primary has run them.
+    void EndPerPassFrame() const;
+    /// @brief The queue families an ownership transfer names (async compute).
+    void SetQueueFamilies(u32 graphics, u32 compute)
+    {
+        m_GraphicsFamily = graphics;
+        m_ComputeFamily = compute;
+    }
+
     // ─── RGPassContext resolution (called from the callbacks) ───────────────
     [[nodiscard]] vk::ImageView ResolveView(RGTextureHandle texture) const;
     [[nodiscard]] vk::Buffer ResolveBuffer(RGBufferHandle buffer) const;
@@ -224,6 +292,24 @@ private:
     void RecordRange(const RGResolvedFrame& resolved, const std::vector<RGPassSpec>& specs,
                      u32 firstSlot, u32 endSlot, vk::CommandBuffer cmd,
                      VulkanBarrierEncoder& encoder, std::vector<std::string>& errors) const;
+
+    struct PerPassNode
+    {
+        const VulkanRenderGraphExecutor* executor;
+        const RGResolvedFrame* resolved;
+        const std::vector<RGPassSpec>* specs;
+        const PassListAllocator* allocate;
+        const ThreadListBinder* bindThread;
+        u32 passSlot;
+    };
+    mutable std::deque<PerPassNode> m_PerPassNodes;
+    u32 m_GraphicsFamily = 0;
+    u32 m_ComputeFamily = 0;
+    [[nodiscard]] u32 FamilyOf(RGQueue queue) const
+    {
+        return queue == RGQueue::Compute ? m_ComputeFamily : m_GraphicsFamily;
+    }
+    mutable std::vector<PassList> m_PassLists; ///< per slot; empty for a pass with no body
 
     struct RGRegisteredTexture
     {

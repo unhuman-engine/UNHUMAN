@@ -39,6 +39,7 @@ using TextureHandle = struct TextureHandle_T*;
 using PipelineHandle = struct PipelineHandle_T*;
 using ShaderHandle = struct ShaderHandle_T*;
 using DescriptorHandle = struct DescriptorHandle_T*;
+using DescriptorSetLayoutHandle = struct DescriptorSetLayoutHandle_T*; ///< RHICore.h: sets beyond the bindless one
 
 // ─── Enums ──────────────────────────────────────────────────────
 
@@ -48,8 +49,9 @@ enum class BufferUsage : u8
     Vertex,
     Index,
     Uniform,
-    Storage,
-    Staging
+    Storage, ///< also usable as indirect draw/dispatch arguments and as a copy source or target
+    Staging,
+    Readback, ///< host-visible copy target, read with RHIDevice::ReadBuffer (issue #30)
 };
 
 /**
@@ -203,6 +205,10 @@ struct TextureDesc
     TextureFormat format = TextureFormat::RGBA8_SRGB;
     TextureUsage usage = TextureUsage::Sampled;
     const char* debugName = nullptr;
+    /// Array layers (a 2D array or shadow cascades); views over a range come from RHIDevice::CreateTextureView.
+    u32 arrayLayers = 1;
+    /// Samples per texel: 1, or a multisampled target up to DeviceLimits::MaxSamples.
+    u32 sampleCount = 1;
 };
 
 // ─── Buffer Layout ──────────────────────────────────────────────
@@ -362,7 +368,7 @@ struct ShaderDesc
 struct SubpassDesc
 {
     u32 colorAttachmentCount = 0;
-    u32 colorAttachments[8] = {};
+    std::array<u32, 8> colorAttachments = {};
     u32 depthAttachment = 0;
 };
 
@@ -394,10 +400,10 @@ struct DepthAttachment
 /// Everything needed to begin a render pass: targets, subpasses and output extent.
 struct RenderPassDesc
 {
-    ColorAttachment colorAttachments[8] = {};
+    std::array<ColorAttachment, 8> colorAttachments = {};
     u32 colorAttachmentCount = 0;
     u32 subpassCount = 1;
-    SubpassDesc subpasses[8] = {};
+    std::array<SubpassDesc, 8> subpasses = {};
     u32 dependencyCount = 0;
     DepthAttachment depthAttachment = {};
     bool hasDepth = false;
@@ -430,6 +436,9 @@ struct GraphicsPipelineDesc
     u32 pushConstantSize = 0;
     const char* debugName = nullptr;
     RenderPassDesc renderPassDesc = {};
+    /// Sets 1..3 after the bindless set 0 (RHICore.h); part of the pipeline cache key.
+    std::array<DescriptorSetLayoutHandle, 3> descriptorSetLayouts = {};
+    u32 descriptorSetLayoutCount = 0;
 };
 
 /// GPU time of one frame graph pass (RHIDevice::GetGpuPassTimings).
@@ -445,6 +454,9 @@ struct ComputePipelineDesc
     ShaderHandle computeShader = nullptr;
     u32 pushConstantSize = 0;
     const char* debugName = nullptr;
+    /// Sets 1..3 after the bindless set 0 (RHICore.h); part of the pipeline cache key.
+    std::array<DescriptorSetLayoutHandle, 3> descriptorSetLayouts = {};
+    u32 descriptorSetLayoutCount = 0;
 };
 
 // ─── Swapchain Info ─────────────────────────────────────────────

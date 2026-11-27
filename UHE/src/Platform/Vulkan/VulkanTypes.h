@@ -5,12 +5,14 @@
  *
  * Everything the engine expresses in RHITypes.h is lowered to a vk:: value here, so
  * the mappings live in exactly one place. The Stage/Access/ImageState enums are the
- * engine's own synchronisation vocabulary — higher layers reason in those, and only
- * the barrier/submit encoders convert them to VkPipelineStageFlags2 and friends.
+ * engine's own synchronisation vocabulary (UHE/RHI/RHIBarrier.h) — higher layers
+ * reason in those, and only the barrier/submit encoders convert them to
+ * VkPipelineStageFlags2 and friends.
  *
  * \see https://docs.vulkan.org/spec/latest/
  */
 #include <vulkan/vulkan_raii.hpp>
+#include "UHE/RHI/RHIBarrier.h"
 #include "UHE/RHI/RHITypes.h"
 
 namespace UHE::RHI::VULKAN
@@ -31,58 +33,8 @@ namespace UHE::RHI::VULKAN
 [[nodiscard]] vk::DescriptorType ToVkDescriptorType(BufferUsageFlags usage);
 
 // ── Synchronisation vocabulary ───────────────────────────────────────────────
-// Engine-level intent for barriers and submits. The encoders translate these into
-// v2 or v1 Vulkan, so nothing above this layer writes VkPipelineStageFlags2.
-
-/// Pipeline stage where an operation happens (subset of VkPipelineStageFlagBits2).
-enum class Stage : u64
-{
-    None = 0,
-    TopOfPipe,
-    Transfer,
-    Compute,
-    Vertex,
-    Fragment,
-    ColorOutput,
-    DepthEarly,
-    DepthLate,
-    /// Both fragment-test stages: a depth attachment is loaded or cleared at
-    /// the early tests and written at the late ones, so a barrier for it must
-    /// cover both (sync validation: WRITE_AFTER_WRITE at EARLY_FRAGMENT_TESTS).
-    DepthTests,
-    BottomOfPipe,
-    /// Every stage of everything submitted before: the source of a resource's
-    /// first barrier in a frame, which may follow the previous frame's writes
-    /// to the same pooled image, or the swapchain acquire.
-    AllCommands,
-};
-
-/// Memory access kind guarded by a barrier (subset of VkAccessFlagBits2).
-enum class Access : u64
-{
-    None = 0,
-    TransferRead,
-    TransferWrite,
-    ShaderRead,
-    ShaderWrite,
-    ColorWrite,
-    DepthWrite,
-    MemoryRead,
-    MemoryWrite,
-};
-
-/// Logical image layout a resource is in, in the engine's terms.
-enum class ImageState : u8
-{
-    Undefined = 0,
-    ColorAttachment,
-    DepthAttachment,
-    ShaderRead,
-    TransferSrc,
-    TransferDst,
-    Present,
-    Storage,
-};
+// Stage, Access and ImageState are the engine's own (UHE/RHI/RHIBarrier.h): the
+// render graph reasons in them above the backend; this layer only translates.
 
 // ── Sync-vocabulary translation ──────────────────────────────────────────────
 

@@ -2,6 +2,7 @@
 #include <array>
 #include <fastgltf/core.hpp>
 #include <filesystem>
+#include <functional>
 #include <glm/glm.hpp>
 #include <string>
 #include <unordered_map>
@@ -304,12 +305,57 @@ struct PunctualLight
     std::string Name;
 };
 
+/// @brief What a stored image holds, which decides how a cook may encode it.
+enum class CookTextureRole : u8
+{
+    Color,  ///< sRGB colour (base colour, emissive, sheen colour, ...)
+    Data,   ///< linear data (metallic-roughness, occlusion, masks)
+    Normal, ///< a tangent-space normal map
+};
+
+/// @brief A file a cooked model was built from, beside its source.
+struct CookDependency
+{
+    std::filesystem::path Path; ///< relative to the source's folder
+    u64 Size = 0;
+    u64 Hash = 0; ///< Cooked::HashFile
+};
+
+/// @brief How CookModelFile prepares a model for the game (issue #45).
+struct CookOptions
+{
+    /// Re-encodes one stored image in place (to KTX2 in the editor and the cook
+    /// tools, tools/texcook); unset stores the images as the source had them.
+    std::function<bool(std::vector<u8>& bytes, CookTextureRole role, std::string& error)> EncodeTexture;
+    /// Store one copy of images whose bytes and sampler are identical.
+    bool DeduplicateTextures = true;
+    /// Drop animation keys that interpolation reproduces (AnimationCompressor),
+    /// within tolerances below what a viewer can see.
+    bool CompressAnimation = true;
+};
+
+/// @brief What a cook did; uhe_cook prints it.
+struct CookReport
+{
+    u32 TexturesEncoded = 0;
+    u32 TexturesDeduplicated = 0;
+    u64 TextureBytesBefore = 0;
+    u64 TextureBytesAfter = 0;
+    u64 AnimationKeysBefore = 0;
+    u64 AnimationKeysAfter = 0;
+    u32 Dependencies = 0;
+};
+
 /**
  * @brief Cooks the glTF/GLB at \p source into \p cooked without a GPU (ExportOptions::CookModel, uhe_export).
  * @return false with a reason in \p error when the source does not load or the cook cannot be written.
  */
 UHE_API bool CookModelFile(const std::filesystem::path& source, const std::filesystem::path& cooked,
                            std::string& error);
+
+/// @brief The same with \p options; \p report, when given, receives what the cook did.
+UHE_API bool CookModelFile(const std::filesystem::path& source, const std::filesystem::path& cooked, std::string& error,
+                           const CookOptions& options, CookReport* report = nullptr);
 
 class UHE_API Model
 {
@@ -342,6 +388,28 @@ public:
     /// @brief Loads a file SaveCooked wrote; false (with \p error) on a damaged, foreign or newer file.
     bool LoadCooked(const std::filesystem::path& path, const ModelLoadOptions& options = {},
                     std::string* error = nullptr);
+
+    /**
+     * @brief Readies a model loaded for cooking: dedups and encodes its images, compresses its clips.
+     *
+     * Needs keepTextureSources, like SaveCooked. The model is changed in
+     * place: what it holds afterwards is what the cook stores.
+     */
+    bool PrepareForCook(const CookOptions& options, CookReport* report = nullptr, std::string* error = nullptr);
+
+    /// @brief Records the files the source reads, stored in the cook (its DEPS section).
+    void SetCookDependencies(std::vector<CookDependency> dependencies) { m_CookDependencies = std::move(dependencies); }
+    /// @brief The files the cook was made from: set before SaveCooked, or read back by LoadCooked.
+    const std::vector<CookDependency>& GetCookDependencies() const { return m_CookDependencies; }
+
+    /**
+     * @brief Whether the cook at \p cooked is newer than every file it names in its DEPS section.
+     *
+     * A cook beside its source goes stale when an image or buffer the glTF
+     * reads changes, not only the glTF itself. Files that are missing (an
+     * exported game ships none of them) do not make it stale.
+     */
+    [[nodiscard]] static bool CookIsCurrent(const std::filesystem::path& cooked);
 
     /// @brief The cooked sibling loadModel looks for: `<source>.uhemodel`.
     [[nodiscard]] static std::filesystem::path CookedPathFor(const std::filesystem::path& source);
@@ -431,6 +499,7 @@ private:
     std::vector<PunctualLight> m_PunctualLights;
     std::vector<TextureSource> m_TextureSources;                  ///< keepTextureSources only
     std::vector<MaterialTextureSources> m_MaterialTextureSources; ///< parallel to m_LoadedMaterials
+    std::vector<CookDependency> m_CookDependencies;               ///< cooking and cooked loads only
 
     Skeleton m_Skeleton;
     std::vector<AnimationClip> m_Animations;

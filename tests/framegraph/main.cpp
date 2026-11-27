@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
+#include "UHE/RHI/FrameGraph/TransientPlacement.h"
 #include "UHE/RHI/FrameGraph/TransientPool.h"
 
 using namespace UHE;
@@ -705,6 +706,41 @@ int main()
 
         ExportPool failing([](const TextureDesc&) { return TextureHandle{nullptr}; }, [](TextureHandle) {});
         check(failing.Acquire("X", color) == nullptr && failing.Size() == 0, "a failed allocation is reported");
+    }
+
+    section("cross-shape aliasing: textures pack into blocks by lifetime (issue #32)");
+    {
+        // A 4096² shadow atlas (64 MB) used by passes 0-3, an 8 MB SSAO target
+        // in 4-5, and a bloom chain 6-9 of shrinking levels, all one memory type.
+        std::vector<PlacementRequest> requests = {
+            {.Size = 64 << 20, .Alignment = 4096, .First = 0, .Last = 3}, // shadow atlas
+            {.Size = 8 << 20, .Alignment = 4096, .First = 4, .Last = 5},  // SSAO
+            {.Size = 16 << 20, .Alignment = 4096, .First = 6, .Last = 7}, // bloom 0
+            {.Size = 4 << 20, .Alignment = 4096, .First = 7, .Last = 8},  // bloom 1
+            {.Size = 32 << 20, .Alignment = 4096, .First = 2, .Last = 9}, // scene HDR, alive throughout
+        };
+        const Placement placement = PlanTransientPlacement(requests);
+        check(placement.RequestedBytes == u64{124} << 20, "one allocation each would take 124 MB");
+        check(placement.BlockOf[1] == placement.BlockOf[0] && placement.BlockOf[2] == placement.BlockOf[0],
+              "SSAO and bloom 0 live in the shadow atlas's memory, which is dead by then");
+        check(placement.BlockOf[3] != placement.BlockOf[2],
+              "bloom 1 overlaps bloom 0 in pass 7, so it does not share its block");
+        check(placement.BlockOf[4] != placement.BlockOf[0], "the scene HDR overlaps the atlas and keeps its own");
+        check(placement.AllocatedBytes < placement.RequestedBytes && placement.AllocatedBytes == u64{100} << 20,
+              "the blocks take 100 MB: 64 + 32 + 4");
+        bool disjoint = true;
+        for (const PlacementBlock& block : placement.Blocks)
+            for (u32 a : block.Members)
+                for (u32 b : block.Members)
+                    if (a != b && requests[a].First <= requests[b].Last && requests[b].First <= requests[a].Last)
+                        disjoint = false;
+        check(disjoint, "no two members of a block are ever alive at once");
+
+        requests[1].MemoryTypeBits = 0b10;
+        requests[0].MemoryTypeBits = 0b01;
+        const Placement typed = PlanTransientPlacement(requests);
+        check(typed.BlockOf[1] != typed.BlockOf[0], "memory types that do not intersect never share a block");
+        check(PlanTransientPlacement({}).Blocks.empty(), "no textures, no blocks");
     }
 
     std::cout << '\n' << (g_failures == 0 ? "all frame graph checks passed" : "frame graph checks FAILED") << '\n';

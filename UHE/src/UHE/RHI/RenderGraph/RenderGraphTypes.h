@@ -2,8 +2,8 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "UHE/RHI/RHIBarrier.h"
 #include "UHE/RHI/RHITypes.h"
-#include "Platform/Vulkan/VulkanTypes.h"
 
 // Render graph step 1 types (docs/architecture/rendergraph.md §7, §14 step 1).
 //
@@ -16,7 +16,7 @@
 //   - §9.1.4: imported resource descs are part of the topology hash, so
 //     RGImportedDesc hashes to the same material set as RGTextureDesc.
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 namespace RG
@@ -175,6 +175,11 @@ struct RGPassSpec
     std::vector<RGResourceAccess> reads;
     std::vector<RGResourceAccess> writes;
     RGPassExecuteFn execute; // stored in step 1; invoked by the executor (§8.5)
+    /// The pass's recording touches only its own state and the resources it
+    /// declared, so it may record on another thread at the same time as any
+    /// other pass (per-pass command lists, issue #32). Off: it records after
+    /// the pass before it, as renderers with global state need.
+    bool parallelRecording = false;
 };
 
 // ─── Validation results ─────────────────────────────────────────────────────
@@ -195,7 +200,7 @@ enum class RGErrorType : u8
 struct RGValidationError
 {
     RGErrorType type;
-    std::string passName;  // empty for graph-level errors
+    std::string passName; // empty for graph-level errors
     std::string resourceName;
     std::string message;
 };
@@ -252,4 +257,4 @@ struct RGRawGraph
 [[nodiscard]] const char* RGToString(LoadOp op);
 [[nodiscard]] const char* RGToString(StoreOp op);
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

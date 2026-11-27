@@ -56,6 +56,13 @@ here. Follow them; if a rule is wrong, change it here first.
   waits at frame end, or `WaitIdle()` for a one-off — including the pipeline
   rebuild a shader hot reload triggers.
 
+- **The RHI core does nothing implicitly** (`UHE/RHI/RHICore.h`). `Barrier`
+  is the only state change, `BeginRendering` expects attachments already in
+  their attachment state, copies expect TransferSrc/TransferDst, and a list
+  from `BeginCommandList` runs only when `Submit`ted. The convenience calls
+  (`BeginRenderPass`, `BindPipeline`) are built on it. A change to the core is
+  checked on a device by `UHE_RHI_SELFTEST=exit` (CI runs it on lavapipe);
+  run it with `UHE_SYNC_VALIDATION=1` too.
 - **New rendering declares FrameGraph passes.** `RHIDevice::GetFrameGraph()`,
   `AddPass<Data>(setup, execute)`: the pass names what it reads and writes and
   for what use, and the render graph places every barrier. A pass records with
@@ -73,16 +80,30 @@ here. Follow them; if a rule is wrong, change it here first.
   only symptom is a missing scene. Under `UHE_VALIDATION_FATAL` it stops the
   run like a validation error does.
 - **The compiled render graph is cached by exact structure, not by hash.**
-  `VulkanRenderGraphCompileCache` replays the last compile only when every
+  `RenderGraphCompileCache` (UHE/RHI/RenderGraph) replays the last compile only when every
   access, state and name matches, and rebinds handle generations. The topology
   hash counts a pass's reads instead of naming them; never key a cache on it.
   `UHE_RENDERGRAPH_NO_CACHE=1` compiles every frame, for an A/B.
-- **Passes record one at a time, in compiled order.** They all record into
-  the frame's one command buffer, and renderers like `Renderer3D` keep global
-  state: two independent passes (shadow cascades and the depth prepass) once
-  recorded at the same time from two job threads and corrupted the heap.
-  `MapToTaskgraph` chains every pass after the previous one; parallel
-  recording would need a command buffer per pass first.
+- **Each pass records into a command list of its own; most record one at a
+  time.** The primary keeps the barriers, rendering scopes, GPU timing and
+  labels and runs the lists in compiled order (`AssemblePerPass`). Renderers
+  like `Renderer3D` keep global state: two passes (shadow cascades and the depth
+  prepass) once recorded at the same time from two job threads and corrupted
+  the heap, so passes stay chained unless their setup calls
+  `FGBuilder::RecordInParallel()`. Only promise that for a callback that
+  touches its own data and creates nothing without a lock (bloom and tonemap
+  do, `s_PostMutex`). `GetCurrentCommandBuffer()` names the pass's list on the
+  recording thread. `UHE_RENDERGRAPH_PRIMARY=1` records everything into the
+  frame's primary, for an A/B.
+- **Async compute is a request the compiler may refuse.**
+  `FGBuilder::RunOnAsyncCompute()` puts a compute pass on the dedicated
+  compute queue only when everything it touches is created this frame, first
+  written by compute, and untouched by graphics before it; otherwise it runs
+  on graphics and the log says why. The compute work is submitted first and
+  waits for the previous frame's graphics; graphics waits for it only at the
+  stage of the pass that reads its output, through a queue-family release and
+  acquire the compiler adds. Its textures stay out of lifetime aliasing.
+  `UHE_ASYNC_COMPUTE=0` keeps everything on graphics.
 - **The 3D scene is drawn by `SceneRenderer`, in several passes.** Shadow
   cascades, the depth prepass, the colour pass and water all draw the scene,
   and they must agree on where everything is: a prepass and a colour pass that
@@ -127,6 +148,17 @@ here. Follow them; if a rule is wrong, change it here first.
   the lights, skins and clips by name. A field added to one of them is added
   there too, and `kModelVersion` goes up so an older cook is recooked instead
   of misread; `tests/gltf` compares a cooked load with the glTF load.
+- **A cook stores images as KTX2, and only the cook links the encoder.**
+  `tools/texcook` (basisu encoder) is linked by the editor, `uhe_export` and
+  `uhe_cook`, never by libUHE or the runtime, which only transcode. The cook
+  flips rows before encoding because the runtime's PNG load flips and its
+  KTX2 load does not. Encodes are cached in `<project>/.uhecache/textures`.
+- **A cook names the files it was made from.** Its DEPS section lists the
+  glTF's buffers and images with hashes; `Model::CookIsCurrent` makes a cook
+  beside its source stale when any of them is newer, not only the glTF.
+- **Asset IDs come from `<project>/AssetRegistry.yaml`.** An export refreshes
+  it and ships `Assets/AssetManifest.yaml`; commit the registry, or IDs differ
+  per machine. A moved file keeps its ID through its content hash.
 - **Cooking never touches the GPU.** It loads with `upload = false` and
   `keepTextureSources = true`; `uhe_export` links stubs that abort on any
   texture or buffer creation, so a change that makes cooking upload fails there.
@@ -212,7 +244,8 @@ here. Follow them; if a rule is wrong, change it here first.
   exception.
 - **No identifier is called `near` or `far`.** `windows.h` defines both as
   macros: a variable with either name compiled everywhere and broke the
-  Windows build, twice. `nearPlane`, `farPlane`, `closeTo`.
+  Windows build, twice. `nearPlane`, `farPlane`, `closeTo`. The same goes for
+  `MemoryBarrier` (hence `RHI::MemoryDependency`), `CreateWindow` and `min`/`max`.
 - **Editor code reads ImGui internals through `ImGui::GetCurrentContext()`.**
   The inline helpers in `imgui_internal.h` (`GetCurrentWindow`, `GetActiveID`,
   ...) read the global `GImGui`, which the engine DLL does not export on
@@ -259,5 +292,10 @@ here. Follow them; if a rule is wrong, change it here first.
   differs between releases; use the same versions locally. Formatting can
   reorder includes: a header that is not self-contained (`ImGuizmo.h` needs
   `imgui.h` first) keeps its order inside `// clang-format off`.
+- **A parser of untrusted bytes has a fuzz target.** Cooked files, cooked
+  models and KTX2 are in `tests/fuzz` (`cmake --preset fuzz`, Clang + ASan +
+  UBSan); `nightly.yml` runs each for ten minutes with a carried-over corpus,
+  plus a 20-minute Sandbox and editor soak (`script/soak.sh`) that fails on
+  validation errors and on memory growth after warm-up.
 - Sanitizer presets already exist: `cmake --preset sanitizer -DUHE_SANITIZER=<address|thread|undefined>`.
   Binaries land in `bin/Debug-linux-x64-<sanitizer>/`.

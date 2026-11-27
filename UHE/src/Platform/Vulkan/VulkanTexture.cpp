@@ -43,12 +43,23 @@ void VulkanTexture::Init(VulkanDevice& device, const TextureDesc& desc)
         usage |= vk::ImageUsageFlagBits::eTransferDst;
 
     vk::ImageAspectFlags aspect = FormatToAspect(format);
+    m_Aspect = aspect;
+    m_LayerCount = std::max(desc.arrayLayers, 1u);
 
-    CreatedImage created = ::UHE::RHI::VULKAN::CreateImage(m_Width, m_Height, format, usage, m_MipLevels);
+    CreatedImage created =
+        ::UHE::RHI::VULKAN::CreateImage(m_Width, m_Height, format, usage, m_MipLevels, VMA_MEMORY_USAGE_GPU_ONLY,
+                                        m_LayerCount, std::max(desc.sampleCount, 1u));
     textureImage = created.image;
     textureImageMemory = created.allocation;
 
-    textureImageView = CreateImageView(textureImage, format, aspect, m_MipLevels);
+    // A view needs a usage a view serves (VUID-VkImageViewCreateInfo-image-04441):
+    // a texture that is only ever copied to and from has none.
+    const bool viewable = (desc.usage & TextureUsage::Sampled) || (desc.usage & TextureUsage::ColorAttach) ||
+                          (desc.usage & TextureUsage::DepthAttach) || (desc.usage & TextureUsage::Storage);
+    if (viewable)
+        textureImageView = m_LayerCount > 1
+                               ? CreateImageView(textureImage, format, aspect, 0, m_MipLevels, 0, m_LayerCount, true)
+                               : CreateImageView(textureImage, format, aspect, m_MipLevels);
 
     if (desc.usage & TextureUsage::Sampled)
     {
@@ -67,6 +78,94 @@ void VulkanTexture::Init(VulkanDevice& device, const TextureDesc& desc)
         }
         m_TextureIndex =
             device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle, sampledView, *textureSampler);
+    }
+}
+
+vk::ImageSubresourceRange VulkanTexture::GetRange(u32 baseMip, u32 mipCount, u32 baseLayer, u32 layerCount) const
+{
+    const u32 mip = std::min(baseMip, m_MipLevels - 1);
+    const u32 layer = std::min(baseLayer, m_LayerCount - 1);
+    return vk::ImageSubresourceRange{.aspectMask = m_Aspect,
+                                     .baseMipLevel = m_BaseMip + mip,
+                                     .levelCount = std::min(mipCount, m_MipLevels - mip),
+                                     .baseArrayLayer = m_BaseLayer + layer,
+                                     .layerCount = std::min(layerCount, m_LayerCount - layer)};
+}
+
+void VulkanTexture::InitImported(VulkanDevice& device, vk::Image image, vk::ImageView view, const TextureDesc& desc)
+{
+    auto& ctx = GetVulkanContext();
+    m_Device = &device;
+    m_Desc = desc;
+    m_Width = desc.width;
+    m_Height = desc.height;
+    m_MipLevels = std::max(desc.mipLevels, 1u);
+    m_LayerCount = std::max(desc.arrayLayers, 1u);
+    m_allocator = ctx.allocator;
+    const vk::Format format = MapTextureFormat(desc.format);
+    m_Aspect = FormatToAspect(format);
+    // No allocation is recorded: the destructor then frees the views this
+    // made, never the image, which belongs to whoever imported it.
+    textureImage = image;
+    textureImageMemory = nullptr;
+    if (view)
+        textureImageView = vk::raii::ImageView(*ctx.logicalDeviceHandle, view); // adopted: freed with the texture
+    else
+        textureImageView = m_LayerCount > 1
+                               ? CreateImageView(image, format, m_Aspect, 0, m_MipLevels, 0, m_LayerCount, true)
+                               : CreateImageView(image, format, m_Aspect, m_MipLevels);
+    if (desc.usage & TextureUsage::Sampled)
+    {
+        textureSampler = CreateSampler(vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
+                                       vk::SamplerAddressMode::eClampToEdge, static_cast<float>(m_MipLevels));
+        // As in Init: a sampled view names one aspect, so depth-stencil is read through depth.
+        vk::ImageView sampledView = *textureImageView;
+        if (m_Aspect & vk::ImageAspectFlagBits::eDepth)
+        {
+            m_SampledDepthView = m_LayerCount > 1
+                                     ? CreateImageView(image, format, vk::ImageAspectFlagBits::eDepth, 0, m_MipLevels,
+                                                       0, m_LayerCount, true)
+                                     : CreateImageView(image, format, vk::ImageAspectFlagBits::eDepth, m_MipLevels);
+            sampledView = *m_SampledDepthView;
+        }
+        m_TextureIndex =
+            device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle, sampledView, *textureSampler);
+    }
+}
+
+void VulkanTexture::InitView(VulkanDevice& device, VulkanTexture& parent, const TextureViewDesc& desc)
+{
+    auto& ctx = GetVulkanContext();
+    m_Device = &device;
+    m_Desc = parent.m_Desc;
+    if (desc.Format != TextureFormat::Undefined)
+        m_Desc.format = desc.Format;
+    m_allocator = ctx.allocator;
+    m_Aspect = parent.m_Aspect;
+    m_BaseMip = parent.m_BaseMip + std::min(desc.BaseMip, parent.m_MipLevels - 1);
+    m_BaseLayer = parent.m_BaseLayer + std::min(desc.BaseLayer, parent.m_LayerCount - 1);
+    m_MipLevels = std::min(desc.MipCount, parent.m_MipLevels - (m_BaseMip - parent.m_BaseMip));
+    m_LayerCount = std::min(desc.LayerCount, parent.m_LayerCount - (m_BaseLayer - parent.m_BaseLayer));
+    m_Width = std::max(parent.m_Width >> (m_BaseMip - parent.m_BaseMip), 1u);
+    m_Height = std::max(parent.m_Height >> (m_BaseMip - parent.m_BaseMip), 1u);
+    m_Desc.width = m_Width;
+    m_Desc.height = m_Height;
+    m_Desc.mipLevels = m_MipLevels;
+    m_Desc.arrayLayers = m_LayerCount;
+    textureImage = parent.textureImage; // not owned: no allocation recorded
+    textureImageMemory = nullptr;
+    const vk::Format format = MapTextureFormat(m_Desc.format);
+    // A sampled view of depth names the depth aspect alone.
+    const vk::ImageAspectFlags viewAspect =
+        (m_Aspect & vk::ImageAspectFlagBits::eDepth) ? vk::ImageAspectFlagBits::eDepth : m_Aspect;
+    textureImageView = CreateImageView(textureImage, format, viewAspect, m_BaseMip, m_MipLevels, m_BaseLayer,
+                                       m_LayerCount, m_LayerCount > 1);
+    if (m_Desc.usage & TextureUsage::Sampled)
+    {
+        textureSampler = CreateSampler(vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear,
+                                       vk::SamplerAddressMode::eClampToEdge, static_cast<float>(m_MipLevels));
+        m_TextureIndex =
+            device.GetDescriptorManager()->BindTexture(*ctx.logicalDeviceHandle, *textureImageView, *textureSampler);
     }
 }
 
@@ -260,7 +359,10 @@ void VulkanTexture::CreateTextureWithMips(VulkanDevice& device, const void* pixe
     m_Height = height;
     m_allocator = ctx.allocator;
     // The chain is authoritative: the image carries exactly its levels, and
-    // the GPU generator below stays idle.
+    // the GPU generator below stays idle. \p mipChain is levels 1..N; level 0
+    // is \p pixelData.
+    UHE_CORE_ASSERT(mipChain.empty() || mipChain.front().width < width || mipChain.front().height < height,
+                    "CreateTextureWithMips: the chain must start at level 1");
     m_MipLevels = 1 + static_cast<u32>(mipChain.size());
 
     vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;

@@ -4,14 +4,28 @@
 #include "Platform/Vulkan/VulkanBarrierEncoder.h"
 #include "Platform/Vulkan/VulkanCommandBuffer.h"
 #include "Platform/Vulkan/VulkanContext.h"
+#include "UHE/RHI/RHICommandBuffer.h"
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
-
 const vk::detail::DispatchLoaderDynamic& RGPassContext::Dispatcher() const
 {
     return VULKAN_HPP_DEFAULT_DISPATCHER;
 }
+
+vk::ImageView RGPassContext::View(RGTextureHandle texture) const
+{
+    return m_Executor.ResolveView(texture);
+}
+
+vk::Buffer RGPassContext::Buffer(RGBufferHandle buffer) const
+{
+    return m_Executor.ResolveBuffer(buffer);
+}
+} // namespace UHE::RHI
+
+namespace UHE::RHI::VULKAN
+{
 
 namespace
 {
@@ -90,6 +104,7 @@ RGResolvedFrame VulkanRenderGraphExecutor::Resolve(const RGCompiledFrame& compil
         pass.passIndex = compiledPass.passIndex;
         pass.name = compiledPass.name;
         pass.type = compiledPass.type;
+        pass.queue = compiledPass.queue;
         pass.dependencies = compiledPass.dependencies;
 
         // Attachments resolve first: they define the rendering scope.
@@ -123,6 +138,7 @@ RGResolvedFrame VulkanRenderGraphExecutor::Resolve(const RGCompiledFrame& compil
                         std::array<float, 4>{color.clearColor[0], color.clearColor[1],
                                              color.clearColor[2], color.clearColor[3]});
                 }
+                resolvedColor.format = reg.format;
                 pass.colorAttachments.push_back(std::move(resolvedColor));
                 pass.renderExtent = vk::Extent2D{reg.width, reg.height};
             }
@@ -143,6 +159,7 @@ RGResolvedFrame VulkanRenderGraphExecutor::Resolve(const RGCompiledFrame& compil
                     resolvedDepth.store = spec.depth.store;
                     resolvedDepth.clear = vk::ClearDepthStencilValue{spec.depth.clearDepth,
                                                                      spec.depth.clearStencil};
+                    resolvedDepth.format = reg.format;
                     pass.depthAttachment = std::move(resolvedDepth);
                     if (!pass.renderExtent)
                         pass.renderExtent = vk::Extent2D{reg.width, reg.height};
@@ -172,6 +189,11 @@ RGResolvedFrame VulkanRenderGraphExecutor::Resolve(const RGCompiledFrame& compil
             resolvedBarrier.Range =
                 vk::ImageSubresourceRange{AspectMaskFor(reg.format), 0, VK_REMAINING_MIP_LEVELS,
                                           0, VK_REMAINING_ARRAY_LAYERS};
+            if (barrier.srcQueue != barrier.dstQueue && FamilyOf(barrier.srcQueue) != FamilyOf(barrier.dstQueue))
+            {
+                resolvedBarrier.SrcQueueFamily = FamilyOf(barrier.srcQueue);
+                resolvedBarrier.DstQueueFamily = FamilyOf(barrier.dstQueue);
+            }
             pass.preImageBarriers.push_back({resolvedBarrier});
         }
 
@@ -196,26 +218,42 @@ RGResolvedFrame VulkanRenderGraphExecutor::Resolve(const RGCompiledFrame& compil
             resolvedBarrier.Range =
                 vk::ImageSubresourceRange{AspectMaskFor(reg.format), 0, VK_REMAINING_MIP_LEVELS,
                                           0, VK_REMAINING_ARRAY_LAYERS};
+            if (barrier.srcQueue != barrier.dstQueue && FamilyOf(barrier.srcQueue) != FamilyOf(barrier.dstQueue))
+            {
+                resolvedBarrier.SrcQueueFamily = FamilyOf(barrier.srcQueue);
+                resolvedBarrier.DstQueueFamily = FamilyOf(barrier.dstQueue);
+            }
             pass.postImageBarriers.push_back({resolvedBarrier});
         }
 
-        for (const RGCompiledBufferBarrier& barrier : compiledPass.preBufferBarriers)
+        const auto resolveBuffers =
+            [&](const std::vector<RGCompiledBufferBarrier>& from, std::vector<RGResolvedBufferBarrier>& to)
         {
-            const auto it = m_Buffers.find(barrier.buffer.index);
-            if (it == m_Buffers.end() || it->second.generation != barrier.buffer.generation)
+            for (const RGCompiledBufferBarrier& barrier : from)
             {
-                fail(pass.name + ": buffer barrier buffer#" + std::to_string(barrier.buffer.index) +
-                     " is not registered");
-                continue;
+                const auto it = m_Buffers.find(barrier.buffer.index);
+                if (it == m_Buffers.end() || it->second.generation != barrier.buffer.generation)
+                {
+                    fail(pass.name + ": buffer barrier buffer#" + std::to_string(barrier.buffer.index) +
+                         " is not registered");
+                    continue;
+                }
+                BufferBarrier resolvedBarrier;
+                resolvedBarrier.Buffer = it->second.buffer;
+                resolvedBarrier.SrcStage = barrier.srcStage;
+                resolvedBarrier.DstStage = barrier.dstStage;
+                resolvedBarrier.SrcAccess = barrier.srcAccess;
+                resolvedBarrier.DstAccess = barrier.dstAccess;
+                if (barrier.srcQueue != barrier.dstQueue && FamilyOf(barrier.srcQueue) != FamilyOf(barrier.dstQueue))
+                {
+                    resolvedBarrier.SrcQueueFamily = FamilyOf(barrier.srcQueue);
+                    resolvedBarrier.DstQueueFamily = FamilyOf(barrier.dstQueue);
+                }
+                to.push_back({resolvedBarrier});
             }
-            BufferBarrier resolvedBarrier;
-            resolvedBarrier.Buffer = it->second.buffer;
-            resolvedBarrier.SrcStage = barrier.srcStage;
-            resolvedBarrier.DstStage = barrier.dstStage;
-            resolvedBarrier.SrcAccess = barrier.srcAccess;
-            resolvedBarrier.DstAccess = barrier.dstAccess;
-            pass.preBufferBarriers.push_back({resolvedBarrier});
-        }
+        };
+        resolveBuffers(compiledPass.preBufferBarriers, pass.preBufferBarriers);
+        resolveBuffers(compiledPass.postBufferBarriers, pass.postBufferBarriers);
 
         resolved.passes.push_back(std::move(pass));
     }
@@ -391,6 +429,167 @@ std::vector<Jobsystem::TaskID> VulkanRenderGraphExecutor::MapToTaskgraph(
     return nodes;
 }
 
+// ─── Per-pass command lists (issue #32) ────────────────────────────────────
+
+namespace
+{
+bool HasScope(const RGResolvedPass& pass)
+{
+    return pass.type == RGPassType::Graphics && pass.renderExtent.has_value();
+}
+
+/// A depth-stencil target is bound as both: a secondary list inherits the
+/// pipeline's stencil format, and that must match the scope.
+bool HasStencil(const RGResolvedPass& pass)
+{
+    return pass.depthAttachment && pass.depthAttachment->format == TextureFormat::D24_UNORM_S8;
+}
+} // namespace
+
+std::vector<Jobsystem::TaskID> VulkanRenderGraphExecutor::MapToTaskgraphPerPass(
+    Jobsystem::TaskGraph& graph, const RGResolvedFrame& resolved, const std::vector<RGPassSpec>& specs,
+    const PassListAllocator& allocate, const ThreadListBinder& bindThread) const
+{
+    m_PerPassNodes.clear();
+    m_PassLists.assign(resolved.passes.size(), PassList{});
+    std::vector<Jobsystem::TaskID> nodes;
+    nodes.reserve(resolved.passes.size());
+    for (u32 slot = 0; slot < resolved.passes.size(); ++slot)
+    {
+        PerPassNode* node =
+            &m_PerPassNodes.emplace_back(PerPassNode{this, &resolved, &specs, &allocate, &bindThread, slot});
+        const auto entry = [](void* p)
+        {
+            const PerPassNode& node = *static_cast<const PerPassNode*>(p);
+            const RGResolvedPass& pass = node.resolved->passes[node.passSlot];
+            const RGPassSpec& spec = (*node.specs)[pass.passIndex];
+            if (!spec.execute)
+                return;
+            // A list for this pass from this thread's pool; a graphics pass's
+            // list draws inside the scope the primary opens, with its formats.
+            CommandListDesc desc{.Queue = pass.queue == RGQueue::Compute ? QueueType::Compute : QueueType::Graphics,
+                                 .Level = CommandListLevel::Secondary,
+                                 .ThreadIndex = Jobsystem::UheJobsystem::GetCurrentThreadIndex(),
+                                 .InsideRendering = HasScope(pass),
+                                 .DebugName = pass.name.c_str()};
+            for (const RGResolvedColorAttachment& color : pass.colorAttachments)
+                if (desc.ColorFormatCount < desc.ColorFormats.size())
+                    desc.ColorFormats[desc.ColorFormatCount++] = color.format;
+            if (pass.depthAttachment)
+                desc.DepthFormat = pass.depthAttachment->format;
+            desc.StencilAttachment = HasStencil(pass);
+            const PassList list = (*node.allocate)(desc);
+            if (list.List == nullptr)
+                return;
+            node.executor->m_PassLists[node.passSlot] = list;
+            (*node.bindThread)(list.List);
+            RGPassContext context(*node.executor, list.Handle, pass.passIndex,
+                                  HasScope(pass) ? *pass.renderExtent : vk::Extent2D{}, list.List);
+            spec.execute(context);
+            (*node.bindThread)(nullptr);
+        };
+        nodes.push_back(graph.CreateTask(entry, node));
+    }
+    // Command order is the assembly's business now; recording order matters
+    // only for renderers' shared state. Passes that are not parallel-safe
+    // record in compiled order, one after the other.
+    i64 previousSerial = -1;
+    for (u32 slot = 0; slot < resolved.passes.size(); ++slot)
+    {
+        if (specs[resolved.passes[slot].passIndex].parallelRecording)
+            continue;
+        if (previousSerial >= 0)
+            graph.AddDependency(nodes[static_cast<u32>(previousSerial)], nodes[slot]);
+        previousSerial = slot;
+    }
+    return nodes;
+}
+
+void VulkanRenderGraphExecutor::AssemblePerPass(const RGResolvedFrame& resolved, const std::vector<RGPassSpec>& specs,
+                                                vk::CommandBuffer primary, VulkanBarrierEncoder& encoder,
+                                                const PassHook& beginPass, const PassHook& endPass, RGQueue queue) const
+{
+    (void)specs;
+    for (u32 slot = 0; slot < resolved.passes.size(); ++slot)
+    {
+        const RGResolvedPass& pass = resolved.passes[slot];
+        if (pass.queue != queue)
+            continue;
+        std::vector<ImageBarrier> images;
+        images.reserve(pass.preImageBarriers.size());
+        for (const RGResolvedImageBarrier& barrier : pass.preImageBarriers)
+            images.push_back(barrier.barrier);
+        std::vector<BufferBarrier> buffers;
+        buffers.reserve(pass.preBufferBarriers.size());
+        for (const RGResolvedBufferBarrier& barrier : pass.preBufferBarriers)
+            buffers.push_back(barrier.barrier);
+        encoder.Encode(primary, images, buffers, nullptr);
+
+        // Timing and labels outside the scope: a scope whose contents are
+        // secondary lists admits nothing but vkCmdExecuteCommands.
+        if (beginPass)
+            beginPass(pass);
+        const PassList list = slot < m_PassLists.size() ? m_PassLists[slot] : PassList{};
+        if (HasScope(pass))
+        {
+            std::vector<vk::RenderingAttachmentInfo> colorInfos;
+            colorInfos.reserve(pass.colorAttachments.size());
+            for (const RGResolvedColorAttachment& color : pass.colorAttachments)
+                colorInfos.push_back({.imageView = color.view,
+                                      .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+                                      .loadOp = ToVkLoadOp(color.load),
+                                      .storeOp = ToVkStoreOp(color.store),
+                                      .clearValue = color.clearColor});
+            vk::RenderingAttachmentInfo depthInfo{};
+            if (pass.depthAttachment)
+                depthInfo = vk::RenderingAttachmentInfo{
+                    .imageView = pass.depthAttachment->view,
+                    .imageLayout = HasStencil(pass) ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                                                    : vk::ImageLayout::eDepthAttachmentOptimal,
+                    .loadOp = ToVkLoadOp(pass.depthAttachment->load),
+                    .storeOp = ToVkStoreOp(pass.depthAttachment->store),
+                    .clearValue = pass.depthAttachment->clear};
+            primary.beginRendering(vk::RenderingInfo{
+                .flags = list.List != nullptr ? vk::RenderingFlagBits::eContentsSecondaryCommandBuffers
+                                              : vk::RenderingFlags{},
+                .renderArea = vk::Rect2D{vk::Offset2D{0, 0}, pass.renderExtent.value_or(vk::Extent2D{})},
+                .layerCount = 1,
+                .colorAttachmentCount = static_cast<u32>(colorInfos.size()),
+                .pColorAttachments = colorInfos.data(),
+                .pDepthAttachment = pass.depthAttachment ? &depthInfo : nullptr,
+                .pStencilAttachment = HasStencil(pass) ? &depthInfo : nullptr});
+        }
+        if (list.List != nullptr)
+        {
+            list.List->End();
+            primary.executeCommands({list.Handle});
+        }
+        if (HasScope(pass))
+            primary.endRendering();
+        if (endPass)
+            endPass(pass);
+
+        if (!pass.postImageBarriers.empty() || !pass.postBufferBarriers.empty())
+        {
+            std::vector<ImageBarrier> postImages;
+            postImages.reserve(pass.postImageBarriers.size());
+            for (const RGResolvedImageBarrier& barrier : pass.postImageBarriers)
+                postImages.push_back(barrier.barrier);
+            std::vector<BufferBarrier> postBuffers;
+            postBuffers.reserve(pass.postBufferBarriers.size());
+            for (const RGResolvedBufferBarrier& barrier : pass.postBufferBarriers)
+                postBuffers.push_back(barrier.barrier);
+            encoder.Encode(primary, postImages, postBuffers, nullptr);
+        }
+    }
+}
+
+void VulkanRenderGraphExecutor::EndPerPassFrame() const
+{
+    m_PassLists.clear();
+    m_PerPassNodes.clear();
+}
+
 void VulkanRenderGraphExecutor::ExecuteGraph(Jobsystem::TaskGraph& graph, Jobsystem::UheJobsystem& jobs,
                                              std::span<const Jobsystem::TaskID> nodes)
 {
@@ -419,16 +618,6 @@ vk::Buffer VulkanRenderGraphExecutor::ResolveBuffer(RGBufferHandle buffer) const
     const auto it = m_Buffers.find(buffer.index);
     return it != m_Buffers.end() && it->second.generation == buffer.generation ? it->second.buffer
                                                                                : vk::Buffer{nullptr};
-}
-
-vk::ImageView RGPassContext::View(RGTextureHandle texture) const
-{
-    return m_Executor.ResolveView(texture);
-}
-
-vk::Buffer RGPassContext::Buffer(RGBufferHandle buffer) const
-{
-    return m_Executor.ResolveBuffer(buffer);
 }
 
 vk::Extent2D VulkanRenderGraphExecutor::ResolveExtent(RGTextureHandle texture) const

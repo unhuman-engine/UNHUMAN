@@ -2,14 +2,14 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphTypes.h"
+#include "UHE/RHI/RenderGraph/RenderGraphTypes.h"
 
 // Render graph resource registry (docs/architecture/rendergraph.md §8.2, step 1
 // slice). Names, versions and generations only — no allocation, no Vulkan
 // objects. The alias heap / VMA pool arrives with the executor milestone
 // (rendergraph.md §13.2 item 7); this registry is the bookkeeping it plugs into.
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 // One declared write bumps the version. The (resource, version) pair is what
@@ -44,13 +44,13 @@ struct RGBufferSlot
     std::vector<RGResourceVersion> versionLog;
 };
 
-class VulkanRenderGraphResources
+class RenderGraphResources
 {
 public:
-    VulkanRenderGraphResources() = default;
-    VulkanRenderGraphResources(const VulkanRenderGraphResources&) = delete;
-    VulkanRenderGraphResources& operator=(const VulkanRenderGraphResources&) = delete;
-    ~VulkanRenderGraphResources() = default;
+    RenderGraphResources() = default;
+    RenderGraphResources(const RenderGraphResources&) = delete;
+    RenderGraphResources& operator=(const RenderGraphResources&) = delete;
+    ~RenderGraphResources() = default;
 
     // ─── Creation (declare-time only; never on the hot path) ───
 
@@ -61,8 +61,8 @@ public:
     // Imported resource: allocated outside the graph (swapchain, sensor buffer).
     // identityHash must change when the external resource is replaced (e.g.
     // swapchain generation) — it feeds the topology hash (§9.1.4).
-    RGTextureHandle ImportTexture(const std::string& name, const RGImportedDesc& identity,
-                                  ImageState initialState, ImageState finalState);
+    RGTextureHandle ImportTexture(const std::string& name, const RGImportedDesc& identity, ImageState initialState,
+                                  ImageState finalState);
     RGBufferHandle ImportBuffer(const std::string& name, const RGImportedDesc& identity);
 
     // ─── Registry queries ───
@@ -118,4 +118,4 @@ private:
     std::unordered_map<std::string, u32> m_BufferIndices;
 };
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

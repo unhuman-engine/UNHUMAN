@@ -1,11 +1,11 @@
 #include "uhepch.h"
-#include "VulkanRenderGraphCompiler.h"
+#include "RenderGraphCompiler.h"
 #include <algorithm>
 #include <map>
 #include <queue>
 #include <tuple>
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 namespace
@@ -75,12 +75,17 @@ RGUseRequirement FinalStateRequirement(ImageState state)
 {
     switch (state)
     {
-        case ImageState::ShaderRead: return {state, Stage::Fragment, Access::ShaderRead};
-        case ImageState::TransferSrc: return {state, Stage::Transfer, Access::TransferRead};
-        case ImageState::TransferDst: return {state, Stage::Transfer, Access::TransferWrite};
-        case ImageState::Storage: return {state, Stage::Compute, Access::ShaderWrite};
+        case ImageState::ShaderRead:
+            return {state, Stage::Fragment, Access::ShaderRead};
+        case ImageState::TransferSrc:
+            return {state, Stage::Transfer, Access::TransferRead};
+        case ImageState::TransferDst:
+            return {state, Stage::Transfer, Access::TransferWrite};
+        case ImageState::Storage:
+            return {state, Stage::Compute, Access::ShaderWrite};
         case ImageState::Present:
-        default: return {state, Stage::BottomOfPipe, Access::None};
+        default:
+            return {state, Stage::BottomOfPipe, Access::None};
     }
 }
 
@@ -97,8 +102,7 @@ struct RGPassRequirements
     std::map<u32, RGBufferHandle> bufferHandles;
 };
 
-RGPassRequirements CollectRequirements(const RGPassSpec& spec,
-                                       std::vector<RGValidationError>& errors)
+RGPassRequirements CollectRequirements(const RGPassSpec& spec, std::vector<RGValidationError>& errors)
 {
     RGPassRequirements reqs;
 
@@ -153,8 +157,8 @@ RGPassRequirements CollectRequirements(const RGPassSpec& spec,
 
 // ─── Compile ────────────────────────────────────────────────────────────────
 
-RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>& passes,
-                                                   const VulkanRenderGraphResources& resources)
+RGCompileResult RenderGraphCompiler::Compile(const std::vector<RGPassSpec>& passes,
+                                             const RenderGraphResources& resources, const RGCompileOptions& options)
 {
     RGCompileResult result;
     RGCompiledFrame& frame = result.frame;
@@ -171,8 +175,7 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
     {
         if (spec.name.empty())
         {
-            errors.push_back({RGErrorType::UnsubmittedPass, "", "",
-                              "Compiler found an unsubmitted pass builder"});
+            errors.push_back({RGErrorType::UnsubmittedPass, "", "", "Compiler found an unsubmitted pass builder"});
             passDropped[reqsByPass.size()] = true;
         }
         reqsByPass.push_back(CollectRequirements(spec, errors));
@@ -263,8 +266,8 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
         liveDeclCount += passDropped[p] ? 0 : 1;
     if (topoOrder.size() != liveDeclCount)
     {
-        errors.push_back({RGErrorType::PassCycle, "", "",
-                          "Pass dependency cycle detected (Kahn's queue emptied early)"});
+        errors.push_back(
+            {RGErrorType::PassCycle, "", "", "Pass dependency cycle detected (Kahn's queue emptied early)"});
         return result; // a cycle makes every later stage meaningless
     }
 
@@ -339,7 +342,7 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
         compiled.passIndex = p;
         compiled.name = passes[p].name;
         compiled.type = passes[p].type;
-        compiled.queue = passes[p].queue;
+        compiled.queue = RGQueue::Graphics; // Stage 8 decides; declaring Compute is a request
         compiledIdOfDecl[p] = compiled.id;
         frame.passes.push_back(std::move(compiled));
     }
@@ -353,9 +356,8 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
                 compiled.dependencies.push_back(compiledIdOfDecl[producer]);
         }
         std::sort(compiled.dependencies.begin(), compiled.dependencies.end());
-        compiled.dependencies.erase(
-            std::unique(compiled.dependencies.begin(), compiled.dependencies.end()),
-            compiled.dependencies.end());
+        compiled.dependencies.erase(std::unique(compiled.dependencies.begin(), compiled.dependencies.end()),
+                                    compiled.dependencies.end());
     }
 
     // ── Stage 4: lifetimes, in compiled order ───────────────────────────────
@@ -363,8 +365,8 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
     std::map<std::pair<bool, u32>, u32> lifetimeIndex;
     const auto TouchLifetime = [&](bool isTexture, u32 slot, u32 compiledId, bool isWrite)
     {
-        const auto [it, inserted] = lifetimeIndex.emplace(LifetimeKey(isTexture, slot),
-                                                          static_cast<u32>(frame.lifetimes.size()));
+        const auto [it, inserted] =
+            lifetimeIndex.emplace(LifetimeKey(isTexture, slot), static_cast<u32>(frame.lifetimes.size()));
         if (inserted)
         {
             RGCompiledResourceLifetime lifetime;
@@ -462,9 +464,8 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
                 // after any write: two passes rendering into one attachment in
                 // a row are separate rendering scopes, and nothing orders the
                 // second's load and writes after the first's without this.
-                compiled.preImageBarriers.push_back({reqs.textureHandles.at(slot), track.state,
-                                                     req.state, track.stage, req.stage,
-                                                     track.access, req.access});
+                compiled.preImageBarriers.push_back({reqs.textureHandles.at(slot), track.state, req.state, track.stage,
+                                                     req.stage, track.access, req.access});
                 track.stage = req.stage;
                 track.access = req.access;
             }
@@ -482,8 +483,8 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
             }
             else if (track.stage != req.stage || track.access != req.access)
             {
-                compiled.preBufferBarriers.push_back({reqs.bufferHandles.at(slot), track.stage,
-                                                      req.stage, track.access, req.access});
+                compiled.preBufferBarriers.push_back(
+                    {reqs.bufferHandles.at(slot), track.stage, req.stage, track.access, req.access});
                 track.stage = req.stage;
                 track.access = req.access;
             }
@@ -503,8 +504,12 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
 
         const RGUseRequirement dst = FinalStateRequirement(finalState);
         RGCompiledImageBarrier barrier{RGTextureHandle{slot, textureSlot.generation},
-                                       track.state, finalState, track.stage, dst.stage,
-                                       track.access, dst.access};
+                                       track.state,
+                                       finalState,
+                                       track.stage,
+                                       dst.stage,
+                                       track.access,
+                                       dst.access};
 
         u32 targetId = RG::kInvalidIndex;
         for (auto it = frame.passes.rbegin(); it != frame.passes.rend(); ++it)
@@ -521,7 +526,111 @@ RGCompileResult VulkanRenderGraphCompiler::Compile(const std::vector<RGPassSpec>
             frame.passes[targetId].postImageBarriers.push_back(barrier);
     }
 
+    // ── Stage 8: queues (issue #32) ─────────────────────────────────────────
+    // A pass declared RGQueue::Compute runs on the async compute queue when
+    // the device has one and nothing in this frame forces it to wait for
+    // graphics: it is a compute pass, every resource it touches is created
+    // this frame and first written by compute, and no graphics pass touched
+    // any of them before it. Then its work can start at the top of the frame,
+    // next to the graphics work before it, and only the graphics passes that
+    // use its output wait for it. Anything else runs on graphics, as declared
+    // order would; frame.demotedPasses says why.
+    std::map<std::pair<bool, u32>, RGQueue> lastQueue; // resource -> queue of its last toucher
+    std::map<std::pair<bool, u32>, u32> lastComputeToucher;
+    for (RGCompiledPass& compiled : frame.passes)
+    {
+        const RGPassSpec& spec = passes[compiled.passIndex];
+        const RGPassRequirements& reqs = reqsByPass[compiled.passIndex];
+        std::vector<std::pair<bool, u32>> touched;
+        for (const auto& [slot, handle] : reqs.textureHandles)
+            touched.emplace_back(true, slot);
+        for (const auto& [slot, handle] : reqs.bufferHandles)
+            touched.emplace_back(false, slot);
+
+        if (spec.queue == RGQueue::Compute)
+        {
+            std::string why;
+            if (!options.asyncCompute)
+                why = "the device has no dedicated compute queue";
+            else if (spec.type != RGPassType::Compute)
+                why = "it is not a compute pass";
+            for (const auto& key : touched)
+            {
+                if (!why.empty())
+                    break;
+                const bool imported =
+                    key.first ? resources.Textures()[key.second].imported : resources.Buffers()[key.second].imported;
+                const auto previous = lastQueue.find(key);
+                if (imported)
+                    why = "it uses an imported resource, which graphics may own";
+                else if (previous != lastQueue.end() && previous->second == RGQueue::Graphics)
+                    why = "a graphics pass uses one of its resources before it";
+                else if (previous == lastQueue.end() &&
+                         (key.first ? reqs.textures.count(key.second) == 0 : reqs.buffers.count(key.second) == 0))
+                    why = "it reads a resource before anything wrote it";
+            }
+            if (why.empty())
+                compiled.queue = RGQueue::Compute;
+            else
+                frame.demotedPasses.push_back(compiled.name + ": " + why);
+        }
+
+        for (const auto& key : touched)
+        {
+            const auto previous = lastQueue.find(key);
+            if (compiled.queue == RGQueue::Graphics && previous != lastQueue.end() &&
+                previous->second == RGQueue::Compute)
+            {
+                // The handover: release on compute after its last use there,
+                // acquire here; the graphics submission waits for compute.
+                const u32 producer = lastComputeToucher.at(key);
+                RGCompiledPass& source = frame.passes[producer];
+                Stage waitStage = Stage::AllCommands;
+                if (key.first)
+                {
+                    for (RGCompiledImageBarrier& barrier : compiled.preImageBarriers)
+                        if (barrier.texture.index == key.second)
+                        {
+                            RGCompiledImageBarrier release = barrier;
+                            release.dstStage = Stage::BottomOfPipe;
+                            release.dstAccess = Access::None;
+                            release.srcQueue = RGQueue::Compute;
+                            release.dstQueue = RGQueue::Graphics;
+                            source.postImageBarriers.push_back(release);
+                            barrier.srcStage = barrier.dstStage; // after the semaphore wait at that stage
+                            barrier.srcAccess = Access::None;
+                            barrier.srcQueue = RGQueue::Compute;
+                            barrier.dstQueue = RGQueue::Graphics;
+                            waitStage = barrier.dstStage;
+                        }
+                }
+                else
+                {
+                    for (RGCompiledBufferBarrier& barrier : compiled.preBufferBarriers)
+                        if (barrier.buffer.index == key.second)
+                        {
+                            RGCompiledBufferBarrier release = barrier;
+                            release.dstStage = Stage::BottomOfPipe;
+                            release.dstAccess = Access::None;
+                            release.srcQueue = RGQueue::Compute;
+                            release.dstQueue = RGQueue::Graphics;
+                            source.postBufferBarriers.push_back(release);
+                            barrier.srcStage = barrier.dstStage;
+                            barrier.srcAccess = Access::None;
+                            barrier.srcQueue = RGQueue::Compute;
+                            barrier.dstQueue = RGQueue::Graphics;
+                            waitStage = barrier.dstStage;
+                        }
+                }
+                frame.crossQueueEdges.push_back({producer, compiled.id, waitStage});
+            }
+            lastQueue[key] = compiled.queue;
+            if (compiled.queue == RGQueue::Compute)
+                lastComputeToucher[key] = compiled.id;
+        }
+    }
+
     return result;
 }
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

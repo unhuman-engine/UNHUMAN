@@ -47,11 +47,15 @@ struct CreatedImage
 
 /// Creates a 2D image; \p memUsage defaults to GPU-only (pair with a staging upload).
 CreatedImage CreateImage(u32 width, u32 height, vk::Format format, vk::ImageUsageFlags usage, u32 mipLevels = 1,
-                         VmaMemoryUsage memUsage = VMA_MEMORY_USAGE_GPU_ONLY);
+                         VmaMemoryUsage memUsage = VMA_MEMORY_USAGE_GPU_ONLY, u32 arrayLayers = 1, u32 sampleCount = 1);
 
 /// Creates a full-range image view over \p image. \p aspect selects colour or depth/stencil.
 [[nodiscard]] vk::raii::ImageView CreateImageView(vk::Image image, vk::Format format, vk::ImageAspectFlags aspect,
                                                   u32 mipLevels = 1);
+/// A view over part of \p image: a 2D view for one layer, a 2D array view for several.
+[[nodiscard]] vk::raii::ImageView CreateImageView(vk::Image image, vk::Format format, vk::ImageAspectFlags aspect,
+                                                  u32 baseMip, u32 mipLevels, u32 baseLayer, u32 layerCount,
+                                                  bool arrayView);
 
 // ── Buffer creation ──────────────────────────────────────────────────────────
 

@@ -192,8 +192,7 @@ void VulkanFrameGraphBridge::CommitExports()
     m_PendingExports.clear();
 }
 
-bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderGraph& graph,
-                                       std::vector<std::string>& errors)
+bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, RenderGraph& graph, std::vector<std::string>& errors)
 {
     if (frontend.PassCount() == 0)
         return true;
@@ -211,10 +210,11 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
 
     // Pass interval each resource is used in. Passes compile in declaration
     // order (single queue, ties toward declaration), so these are the
-    // compiled lifetimes, or wider when a pass is culled. Two created textures
-    // of one shape whose intervals do not touch share an image (#32): the
-    // second's first barrier discards and waits on everything before it.
-    // UHE_RENDERGRAPH_NO_ALIAS=1 gives every texture its own image, for an A/B.
+    // compiled lifetimes, or wider when a pass is culled. Created textures
+    // whose intervals do not touch share memory whatever their shapes (#32,
+    // VulkanTransientHeap): each one's first barrier discards and waits on
+    // everything before it. UHE_RENDERGRAPH_NO_ALIAS=1 gives every texture its
+    // own pooled image, for an A/B.
     static const bool aliasing = []
     {
         const char* off = std::getenv("UHE_RENDERGRAPH_NO_ALIAS");
@@ -235,6 +235,35 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
 
     const u64 aliasedBefore = m_Pool.AliasedCount();
     u32 createdTextures = 0;
+
+    // Cross-shape aliasing (#32): the frame's transient textures, packed by
+    // lifetime into shared memory blocks (VulkanTransientHeap). A texture no
+    // pass uses keeps its own pooled image.
+    std::vector<i32> heapSlot(frame.Resources.size(), -1);
+    std::vector<VulkanTransientHeap::Request> heapRequests;
+    // A texture an async compute pass touches is used outside compiled order
+    // (that pass runs beside the graphics work before it), so it is not aliased.
+    std::vector<bool> asyncTouched(frame.Resources.size(), false);
+    for (const FGLoweredPass& pass : frame.Passes)
+        if (pass.AsyncCompute)
+            for (const FGLoweredAccess& access : pass.Accesses)
+                if (access.Resource < asyncTouched.size())
+                    asyncTouched[access.Resource] = true;
+    if (aliasing)
+    {
+        for (u32 i = 0; i < frame.Resources.size(); ++i)
+        {
+            const FGLoweredResource& resource = frame.Resources[i];
+            if (!resource.IsTexture || resource.Backbuffer || resource.Imported || resource.Exported || asyncTouched[i])
+                continue;
+            const auto [first, last] = lifetimes[i];
+            if (first > last)
+                continue;
+            heapSlot[i] = static_cast<i32>(heapRequests.size());
+            heapRequests.push_back({PhysicalDesc(frame, i), first, last});
+        }
+    }
+    const std::vector<TextureHandle>& heapTextures = m_Heap.Acquire(heapRequests);
 
     // Resources first: every physical object must exist before a pass names it.
     std::vector<RGTextureHandle> rgTextures(frame.Resources.size());
@@ -325,8 +354,7 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
             continue;
         }
         ++createdTextures;
-        const auto [first, last] = lifetimes[i];
-        m_Textures[i] = aliasing && first <= last ? m_Pool.Acquire(desc, first, last) : m_Pool.Acquire(desc);
+        m_Textures[i] = heapSlot[i] >= 0 ? heapTextures[static_cast<std::size_t>(heapSlot[i])] : m_Pool.Acquire(desc);
         if (m_Textures[i] == nullptr)
         {
             errors.push_back("'" + resource.Name + "': could not allocate a " + std::to_string(desc.width) + "x" +
@@ -355,7 +383,9 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
 
     for (const FGLoweredPass& pass : frame.Passes)
     {
-        RGPassBuilder& builder = graph.AddPass(pass.Name, ToPassType(pass.Type));
+        RGPassBuilder& builder =
+            graph.AddPass(pass.Name, ToPassType(pass.Type), pass.AsyncCompute ? RGQueue::Compute : RGQueue::Graphics);
+        (void)builder.ParallelRecording(pass.ParallelRecording);
         std::vector<u32> declared;
         for (const FGLoweredAccess& access : pass.Accesses)
         {
@@ -409,9 +439,14 @@ bool VulkanFrameGraphBridge::Translate(const FrameGraph& frontend, VulkanRenderG
             {
                 VulkanFGContext fgContext(name, frontend.Board(), m_Device.GetCurrentCommandBuffer(), context.Extent(),
                                           m_Textures, m_Buffers, declared);
-                m_Device.BeginGpuPass(name);
+                // With a list of its own the executor times and labels the
+                // pass from the primary; recording into the primary, it is here.
+                const bool ownList = context.List() != nullptr;
+                if (!ownList)
+                    m_Device.BeginGpuPass(name);
                 frontend.ExecutePass(index, fgContext);
-                m_Device.EndGpuPass();
+                if (!ownList)
+                    m_Device.EndGpuPass();
             });
     }
 

@@ -8,8 +8,12 @@
 
 #include "uhepch.h"
 #include <array>
+#include <map>
+#include <meshoptimizer.h>
 #include "LoadModel.h"
 #include "UHE/AssetsManager/CookedFile.h"
+#include "UHE/AssetsManager/GltfFiles.h"
+#include "UHE/Renderer3D/AnimationCompression.h"
 
 namespace UHE::RD3d
 {
@@ -26,9 +30,24 @@ constexpr u32 kSectionMaterials = FourCC("MATS");
 constexpr u32 kSectionGeometry = FourCC("GEOM");
 constexpr u32 kSectionScene = FourCC("SCNE");
 constexpr u32 kSectionAnimation = FourCC("ANIM");
+constexpr u32 kSectionDependencies = FourCC("DEPS");
 
 /// The model sections' own layout version, inside the container's.
-constexpr u32 kModelVersion = 1;
+/// 2: GEOM holds meshopt-encoded vertex and index buffers; DEPS added.
+constexpr u32 kModelVersion = 2;
+
+/// How an index buffer is stored in GEOM.
+enum class IndexCodec : u8
+{
+    Triangles = 0, ///< meshopt_encodeIndexBuffer (a triangle list)
+    Sequence = 1,  ///< meshopt_encodeIndexSequence (any other count)
+};
+
+// A damaged count must not allocate without limit. The meshopt codecs never
+// shrink data by more than these factors, so a count beyond them cannot be
+// what the encoded bytes hold.
+constexpr u64 kMaxVertexExpansion = 1024;
+constexpr u64 kMaxIndexExpansion = 64;
 
 constexpr std::size_t kSlotCount = static_cast<std::size_t>(MaterialTextureSlot::Count);
 
@@ -251,20 +270,245 @@ void SetError(std::string* error, const std::string& message)
     if (error != nullptr)
         *error = message;
 }
+
+bool SameSampler(const RHI::SamplerDesc& a, const RHI::SamplerDesc& b)
+{
+    return a.magFilter == b.magFilter && a.minFilter == b.minFilter && a.wrapS == b.wrapS && a.wrapT == b.wrapT &&
+           a.maxAnisotropy == b.maxAnisotropy && a.maxLod == b.maxLod && a.colorSpace == b.colorSpace;
+}
+
+std::vector<u8> EncodeVertices(const std::vector<Vertex>& vertices)
+{
+    std::vector<u8> out(meshopt_encodeVertexBufferBound(vertices.size(), sizeof(Vertex)));
+    out.resize(meshopt_encodeVertexBuffer(out.data(), out.size(), vertices.data(), vertices.size(), sizeof(Vertex)));
+    return out;
+}
+
+std::vector<u8> EncodeIndices(const std::vector<u32>& indices, std::size_t vertexCount, IndexCodec& codec)
+{
+    codec = indices.size() % 3 == 0 ? IndexCodec::Triangles : IndexCodec::Sequence;
+    std::vector<u8> out;
+    if (codec == IndexCodec::Triangles)
+    {
+        out.resize(meshopt_encodeIndexBufferBound(indices.size(), vertexCount));
+        out.resize(meshopt_encodeIndexBuffer(out.data(), out.size(), indices.data(), indices.size()));
+    }
+    else
+    {
+        out.resize(meshopt_encodeIndexSequenceBound(indices.size(), vertexCount));
+        out.resize(meshopt_encodeIndexSequence(out.data(), out.size(), indices.data(), indices.size()));
+    }
+    return out;
+}
+
+/// Reads one primitive's buffers; false on a damaged or implausible encoding.
+bool DecodePrimitiveData(BinaryReader& r, Primitive& prim)
+{
+    const u64 vertexCount = r.Get<u64>();
+    std::vector<u8> encoded;
+    r.GetVector(encoded);
+    if (!r.Ok() || vertexCount * sizeof(Vertex) > (encoded.size() + 64) * kMaxVertexExpansion)
+        return false;
+    prim.vertices.resize(static_cast<std::size_t>(vertexCount));
+    if (vertexCount > 0 && meshopt_decodeVertexBuffer(prim.vertices.data(), prim.vertices.size(), sizeof(Vertex),
+                                                      encoded.data(), encoded.size()) != 0)
+        return false;
+
+    const u64 indexCount = r.Get<u64>();
+    const auto codec = r.Get<IndexCodec>();
+    r.GetVector(encoded);
+    if (!r.Ok() || indexCount > (encoded.size() + 64) * kMaxIndexExpansion)
+        return false;
+    prim.indices.resize(static_cast<std::size_t>(indexCount));
+    if (indexCount > 0)
+    {
+        int result = -1;
+        if (codec == IndexCodec::Triangles && indexCount % 3 == 0)
+            result = meshopt_decodeIndexBuffer(prim.indices.data(), prim.indices.size(), sizeof(u32), encoded.data(),
+                                               encoded.size());
+        else if (codec == IndexCodec::Sequence)
+            result = meshopt_decodeIndexSequence(prim.indices.data(), prim.indices.size(), sizeof(u32), encoded.data(),
+                                                 encoded.size());
+        if (result != 0)
+            return false;
+    }
+    // An index past the vertices would read out of the GPU buffer.
+    for (const u32 index : prim.indices)
+        if (index >= prim.vertices.size())
+            return false;
+    return true;
+}
+
+/// The files beside \p source that it reads, with their sizes and hashes.
+std::vector<CookDependency> SourceDependencies(const std::filesystem::path& source)
+{
+    std::vector<CookDependency> out;
+    const auto files = GltfExternalFiles(source);
+    if (!files)
+        return out;
+    for (const std::filesystem::path& relative : *files)
+    {
+        const std::filesystem::path file = source.parent_path() / relative;
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(file, ec))
+            continue;
+        out.push_back({relative, static_cast<u64>(std::filesystem::file_size(file, ec)), Cooked::HashFile(file)});
+    }
+    return out;
+}
+
+/// Reads a DEPS section's records.
+bool ReadDependencies(const std::vector<u8>& bytes, std::vector<CookDependency>& out)
+{
+    BinaryReader r(bytes);
+    out.resize(static_cast<std::size_t>(r.GetCount(r.Remaining())));
+    for (CookDependency& dependency : out)
+    {
+        dependency.Path = std::filesystem::path(r.GetString());
+        dependency.Size = r.Get<u64>();
+        dependency.Hash = r.Get<u64>();
+        if (!r.Ok())
+            break;
+    }
+    return r.Ok();
+}
 } // namespace
 
 bool CookModelFile(const std::filesystem::path& source, const std::filesystem::path& cooked, std::string& error)
 {
-    ModelLoadOptions options;
-    options.keepTextureSources = true;
-    options.upload = false;
+    return CookModelFile(source, cooked, error, CookOptions{});
+}
+
+bool CookModelFile(const std::filesystem::path& source, const std::filesystem::path& cooked, std::string& error,
+                   const CookOptions& options, CookReport* report)
+{
+    ModelLoadOptions loadOptions;
+    loadOptions.keepTextureSources = true;
+    loadOptions.upload = false;
     Model model;
-    if (!model.loadModel(source, options))
+    if (!model.loadModel(source, loadOptions))
     {
         error = "it does not load";
         return false;
     }
+    if (!model.PrepareForCook(options, report, &error))
+        return false;
+    model.SetCookDependencies(SourceDependencies(source));
+    if (report != nullptr)
+        report->Dependencies = static_cast<u32>(model.GetCookDependencies().size());
     return model.SaveCooked(cooked, Cooked::HashFile(source), &error);
+}
+
+bool Model::PrepareForCook(const CookOptions& options, CookReport* report, std::string* error)
+{
+    if (!m_Options.keepTextureSources)
+    {
+        SetError(error, "the model was not loaded with keepTextureSources: its images are not available to cook");
+        return false;
+    }
+    CookReport local;
+    CookReport& out = report != nullptr ? *report : local;
+
+    // One copy of each identical image: materials are pointed at the first.
+    if (options.DeduplicateTextures && !m_TextureSources.empty())
+    {
+        std::vector<i32> remap(m_TextureSources.size());
+        std::vector<TextureSource> kept;
+        std::multimap<u64, std::size_t> byHash; // hash -> index into kept
+        for (std::size_t i = 0; i < m_TextureSources.size(); ++i)
+        {
+            TextureSource& source = m_TextureSources[i];
+            const u64 hash = Cooked::HashBytes(source.Bytes.data(), source.Bytes.size());
+            i32 found = -1;
+            for (auto [it, end] = byHash.equal_range(hash); it != end; ++it)
+            {
+                const TextureSource& other = kept[it->second];
+                if (other.Bytes == source.Bytes && SameSampler(other.Sampler, source.Sampler))
+                {
+                    found = static_cast<i32>(it->second);
+                    break;
+                }
+            }
+            if (found >= 0)
+            {
+                remap[i] = found;
+                ++out.TexturesDeduplicated;
+                continue;
+            }
+            remap[i] = static_cast<i32>(kept.size());
+            byHash.emplace(hash, kept.size());
+            kept.push_back(std::move(source));
+        }
+        m_TextureSources = std::move(kept);
+        for (MaterialTextureSources& slots : m_MaterialTextureSources)
+            for (i32& source : slots)
+                if (source >= 0 && static_cast<std::size_t>(source) < remap.size())
+                    source = remap[static_cast<std::size_t>(source)];
+    }
+
+    if (options.EncodeTexture)
+    {
+        // A normal map anywhere makes the image a normal map; otherwise the
+        // sampler's colour space tells colour from data.
+        std::vector<CookTextureRole> roles(m_TextureSources.size(), CookTextureRole::Data);
+        for (std::size_t i = 0; i < m_TextureSources.size(); ++i)
+            if (m_TextureSources[i].Sampler.colorSpace == RHI::SamplerDesc::ColorSpace::SRGB)
+                roles[i] = CookTextureRole::Color;
+        for (const MaterialTextureSources& slots : m_MaterialTextureSources)
+            for (const MaterialTextureSlot slot : {MaterialTextureSlot::Normal, MaterialTextureSlot::ClearcoatNormal})
+            {
+                const i32 source = slots[static_cast<std::size_t>(slot)];
+                if (source >= 0 && static_cast<std::size_t>(source) < roles.size())
+                    roles[static_cast<std::size_t>(source)] = CookTextureRole::Normal;
+            }
+        for (std::size_t i = 0; i < m_TextureSources.size(); ++i)
+        {
+            TextureSource& source = m_TextureSources[i];
+            out.TextureBytesBefore += source.Bytes.size();
+            std::string why;
+            if (!options.EncodeTexture(source.Bytes, roles[i], why))
+            {
+                SetError(error, "image '" + source.Name + "' did not encode: " + why);
+                return false;
+            }
+            out.TextureBytesAfter += source.Bytes.size();
+            ++out.TexturesEncoded;
+        }
+    }
+
+    if (options.CompressAnimation)
+    {
+        // Tighter than the compressor's defaults: a cook must look like its source.
+        CompressSettings settings;
+        settings.PositionTolerance = 1e-4f;
+        settings.ScaleTolerance = 1e-5f;
+        settings.RotationTolerance = 1e-3f;
+        for (AnimationClip& clip : m_Animations)
+        {
+            const CompressionStats stats = AnimationCompressor::CompressClip(clip, settings);
+            out.AnimationKeysBefore += stats.KeysBefore;
+            out.AnimationKeysAfter += stats.KeysAfter;
+        }
+    }
+    return true;
+}
+
+bool Model::CookIsCurrent(const std::filesystem::path& cooked)
+{
+    Cooked::Reader file;
+    std::vector<u8> bytes;
+    std::vector<CookDependency> dependencies;
+    if (!file.Open(cooked) || !file.ReadSection(kSectionDependencies, bytes) || !ReadDependencies(bytes, dependencies))
+        return false;
+    std::error_code ec;
+    const auto cookedTime = std::filesystem::last_write_time(cooked, ec);
+    for (const CookDependency& dependency : dependencies)
+    {
+        const std::filesystem::path file = cooked.parent_path() / dependency.Path;
+        if (std::filesystem::exists(file, ec) && std::filesystem::last_write_time(file, ec) > cookedTime)
+            return false;
+    }
+    return true;
 }
 
 std::filesystem::path Model::CookedPathFor(const std::filesystem::path& source)
@@ -326,9 +570,16 @@ bool Model::SaveCooked(const std::filesystem::path& path, u64 sourceHash, std::s
             w.Put<u64>(geometry.primitive.size());
             for (const Primitive& prim : geometry.primitive)
             {
+                // meshopt's codecs, then zstd over the section: together a
+                // fraction of the raw 96-byte vertices, and lossless.
                 PutPrimitiveHeader(w, prim);
-                w.PutVector(prim.vertices);
-                w.PutVector(prim.indices);
+                w.Put<u64>(prim.vertices.size());
+                w.PutVector(EncodeVertices(prim.vertices));
+                IndexCodec codec = IndexCodec::Triangles;
+                const std::vector<u8> indices = EncodeIndices(prim.indices, prim.vertices.size(), codec);
+                w.Put<u64>(prim.indices.size());
+                w.Put(codec);
+                w.PutVector(indices);
             }
         }
         file.AddSection(kSectionGeometry, w.Take());
@@ -422,6 +673,19 @@ bool Model::SaveCooked(const std::filesystem::path& path, u64 sourceHash, std::s
             }
         }
         file.AddSection(kSectionAnimation, w.Take());
+    }
+    {
+        // The files the source read: a cook beside its source is stale once
+        // one of them is newer (CookIsCurrent), and uhe_cook --inspect lists them.
+        BinaryWriter w;
+        w.Put<u64>(m_CookDependencies.size());
+        for (const CookDependency& dependency : m_CookDependencies)
+        {
+            w.PutString(dependency.Path.generic_string());
+            w.Put(dependency.Size);
+            w.Put(dependency.Hash);
+        }
+        file.AddSection(kSectionDependencies, w.Take());
     }
     return file.Write(path, kAssetModel, sourceHash, error);
 }
@@ -532,8 +796,8 @@ bool Model::LoadCooked(const std::filesystem::path& path, const ModelLoadOptions
             for (Primitive& prim : geometry.primitive)
             {
                 GetPrimitiveHeader(r, prim);
-                r.GetVector(prim.vertices);
-                r.GetVector(prim.indices);
+                if (!DecodePrimitiveData(r, prim))
+                    r.Fail();
                 if (prim.materialIndex >= m_LoadedMaterials.size() && !m_LoadedMaterials.empty())
                     r.Fail();
             }
@@ -649,6 +913,11 @@ bool Model::LoadCooked(const std::filesystem::path& path, const ModelLoadOptions
         if (!r.Ok())
             return fail("damaged ANIM section");
     }
+
+    if (!file.ReadSection(kSectionDependencies, bytes, &why))
+        return fail(why);
+    if (!ReadDependencies(bytes, m_CookDependencies))
+        return fail("damaged DEPS section");
 
     if (options.upload)
     {

@@ -11,6 +11,9 @@
 #include <set>
 #include <sstream>
 #include <yaml-cpp/yaml.h>
+#include "UHE/AssetsManager/AssetCatalog.h"
+#include "UHE/AssetsManager/CookedFile.h"
+#include "UHE/AssetsManager/GltfFiles.h"
 
 namespace UHE
 {
@@ -92,47 +95,6 @@ std::string ReadText(const fs::path& file)
     std::ostringstream text;
     text << in.rdbuf();
     return text.str();
-}
-
-/// The JSON a glTF file holds: the whole .gltf, or the first chunk of a .glb;
-/// nothing for a .glb whose header does not fit the file (truncated or not a glTF).
-std::optional<std::string> GltfJson(const fs::path& file)
-{
-    if (Lower(file.extension().string()) != ".glb")
-        return ReadText(file);
-    std::error_code ec;
-    const std::uintmax_t size = fs::file_size(file, ec);
-    std::ifstream in(file, std::ios::binary);
-    std::array<std::uint32_t, 5> header{}; // magic, version, length, chunk length, chunk type
-    in.read(reinterpret_cast<char*>(header.data()), sizeof(header));
-    // The lengths come from the file: checked against its real size before
-    // anything is allocated, so a broken header cannot ask for 4 GB.
-    if (!in || ec || header[0] != 0x46546C67u || header[4] != 0x4E4F534Au || header[2] > size ||
-        std::uintmax_t{header[3]} > size - std::min<std::uintmax_t>(size, sizeof(header)))
-        return std::nullopt;
-    std::string json(header[3], '\0');
-    in.read(json.data(), static_cast<std::streamsize>(json.size()));
-    if (!in)
-        return std::nullopt;
-    return json;
-}
-
-/// "%20" and friends in a glTF URI, decoded to the file name on disk.
-std::string DecodeUri(const std::string& uri)
-{
-    std::string out;
-    for (std::size_t i = 0; i < uri.size(); ++i)
-    {
-        if (uri[i] == '%' && i + 2 < uri.size() && std::isxdigit(static_cast<unsigned char>(uri[i + 1])) &&
-            std::isxdigit(static_cast<unsigned char>(uri[i + 2])))
-        {
-            out += static_cast<char>(std::stoi(uri.substr(i + 1, 2), nullptr, 16));
-            i += 2;
-        }
-        else
-            out += uri[i];
-    }
-    return out;
 }
 
 bool IsLicence(const fs::path& file)
@@ -336,20 +298,15 @@ private:
         else if (extension == ".gltf" || extension == ".glb")
         {
             // Buffers and images beside the model, relative to its folder.
-            static const std::regex kUri(R"json("uri"\s*:\s*"([^"]*)")json");
-            const std::optional<std::string> parsed = GltfJson(file);
-            if (!parsed)
+            const std::optional<std::vector<fs::path>> files = GltfExternalFiles(file);
+            if (!files)
             {
                 Warn(relative, "is not a valid glTF binary (truncated?); its dependencies were not followed");
                 return;
             }
-            const std::string& json = *parsed;
-            for (std::sregex_iterator it(json.begin(), json.end(), kUri), end; it != end; ++it)
+            for (const fs::path& uri : *files)
             {
-                const std::string uri = (*it)[1].str();
-                if (uri.starts_with("data:"))
-                    continue;
-                const std::optional<fs::path> dependency = Inside(relative.parent_path() / DecodeUri(uri));
+                const std::optional<fs::path> dependency = Inside(relative.parent_path() / uri);
                 std::error_code ec;
                 if (dependency && fs::is_regular_file(m_Roots[root] / *dependency, ec))
                 {
@@ -357,7 +314,7 @@ private:
                     m_ModelDependencies[root][relative].push_back(*dependency);
                 }
                 else
-                    Warn(relative, "points at '" + uri + "', which is missing");
+                    Warn(relative, "points at '" + uri.generic_string() + "', which is missing");
             }
         }
     }
@@ -441,6 +398,104 @@ private:
     ExportReport& m_Report;
 };
 } // namespace
+
+namespace
+{
+/// Every file under \p root, relative and generic, with its hash; generated files left out.
+std::map<std::string, u64> HashTree(const fs::path& root)
+{
+    std::map<std::string, u64> files;
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(root, ec); !ec && it != fs::recursive_directory_iterator();
+         it.increment(ec))
+    {
+        if (!it->is_regular_file(ec))
+            continue;
+        const std::string extension = Lower(it->path().extension().string());
+        const std::string name = it->path().filename().string();
+        // Cooks and temporaries are made from other files; dot files are the OS's or an editor's.
+        if (extension == ".uhemodel" || extension == ".tmp" || name.starts_with("."))
+            continue;
+        files[it->path().lexically_relative(root).generic_string()] = Cooked::HashFile(it->path());
+    }
+    return files;
+}
+} // namespace
+
+void GameExporter::WriteAssetManifest(const ProjectInfo& project, const ExportOptions& options, const fs::path& out,
+                                      ExportReport& report)
+{
+    // The project's registry: one ID per file, kept across exports and moves.
+    AssetCatalog registry;
+    const fs::path registryFile = project.RootPath / AssetCatalog::kRegistryName;
+    std::string error;
+    if (!registry.Load(registryFile, &error))
+        report.Warnings.push_back(error + "; asset IDs start over");
+    if (options.UpdateRegistry && registry.Assign(HashTree(project.AssetPath)) && !registry.Save(registryFile, &error))
+        report.Warnings.push_back("asset IDs were not saved: " + error);
+
+    // What shipped, as the game finds it.
+    AssetCatalog manifest;
+    manifest.Platform = options.Platform;
+    const auto add = [&](const std::string& rootName, const fs::path& root)
+    {
+        std::error_code ec;
+        for (auto it = fs::recursive_directory_iterator(root, ec); !ec && it != fs::recursive_directory_iterator();
+             it.increment(ec))
+        {
+            if (!it->is_regular_file(ec) || it->path().filename() == AssetCatalog::kManifestName)
+                continue;
+            AssetCatalogEntry entry;
+            entry.Root = rootName;
+            const std::string stored = it->path().lexically_relative(root).generic_string();
+            entry.Path = stored;
+            // A cook is listed under the path scenes name, with the file that stores it.
+            for (const char* cookedSuffix : {".uhemodel", ".uheaudio", ".ktx2"})
+            {
+                const std::string suffix = cookedSuffix;
+                const std::string source =
+                    stored.size() > suffix.size() ? stored.substr(0, stored.size() - suffix.size()) : std::string();
+                // ".ktx2" is a cook only after an image name: "tree.png.ktx2", not "bark.ktx2".
+                if (!stored.ends_with(suffix) || fs::path(source).extension().empty() ||
+                    (suffix == ".ktx2" && AssetCatalog::TypeOf(source) != "texture"))
+                    continue;
+                entry.Path = source;
+                entry.Stored = stored;
+                break;
+            }
+            entry.Type = AssetCatalog::TypeOf(entry.Path);
+            entry.Size = static_cast<u64>(it->file_size(ec));
+            entry.Hash = Cooked::HashFile(it->path());
+            const AssetID known = rootName == "project" ? registry.IdFor(entry.Path) : AssetID(0);
+            entry.ID = static_cast<u64>(known) != 0 ? known : AssetCatalog::DerivedID(rootName, entry.Path);
+            manifest.Add(std::move(entry));
+        }
+    };
+    add("project", out / Project::kAssetFolderName);
+    add("engine", out / "assets");
+
+    // A glTF that shipped as it is reads its buffers and images: those are its dependencies.
+    std::vector<AssetCatalogEntry> entries = manifest.Entries();
+    for (AssetCatalogEntry& entry : entries)
+    {
+        if (!entry.Stored.empty() || entry.Type != "model")
+            continue;
+        const fs::path folder = entry.Root == "project" ? out / Project::kAssetFolderName : out / "assets";
+        if (const auto files = GltfExternalFiles(folder / entry.Path))
+            for (const fs::path& file : *files)
+                if (const AssetCatalogEntry* dependency = manifest.FindByPath(
+                        (fs::path(entry.Path).parent_path() / file).lexically_normal().generic_string()))
+                    entry.Dependencies.push_back(dependency->ID);
+    }
+    AssetCatalog finished;
+    finished.Platform = manifest.Platform;
+    for (AssetCatalogEntry& entry : entries)
+        finished.Add(std::move(entry));
+    if (!finished.Save(out / Project::kAssetFolderName / AssetCatalog::kManifestName, &error))
+        report.Errors.push_back("could not write the asset manifest: " + error);
+    else
+        ++report.FilesCopied;
+}
 
 AssetManifest GameExporter::CollectAssets(const fs::path& projectAssets, const fs::path& engineAssets,
                                           const std::vector<fs::path>& extraScenes)
@@ -596,6 +651,10 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
             IsBinary(entry.path()))
             copy.File(entry.path(), out / entry.path().filename());
     }
+    // The licenses of the libraries above travel with them: a packaged editor
+    // keeps THIRD_PARTY_NOTICES.txt beside the runtime (script/package.py).
+    if (const fs::path notices = options.RuntimeDir / "THIRD_PARTY_NOTICES.txt"; fs::is_regular_file(notices, ec))
+        copy.File(notices, out / notices.filename());
 
     // ── The manifest: the settings being exported, which may not be saved yet ──
     {
@@ -672,6 +731,41 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
             cookRoot(0, manifest.ProjectModelFiles, project.AssetPath, out / Project::kAssetFolderName);
             cookRoot(1, manifest.EngineModelFiles, options.EngineAssets, out / "assets");
         }
+        // Standalone images and WAVs (issue #45): what scenes and scripts name
+        // directly ships cooked, so the game parses no PNG, JPEG or WAV. An
+        // image a model reads is the model's business: cooked inside it, or
+        // kept for a glTF that shipped uncooked.
+        if (options.CookTexture || options.CookAudio)
+        {
+            std::set<fs::path> modelFiles;
+            for (const auto& [model, files] : manifest.ProjectModelFiles)
+                modelFiles.insert(files.begin(), files.end());
+            for (const fs::path& file : manifest.ProjectFiles)
+            {
+                if (skipped[0].contains(file) || modelFiles.contains(file))
+                    continue;
+                const std::string extension = Lower(file.extension().string());
+                const bool image = extension == ".png" || extension == ".jpg" || extension == ".jpeg" ||
+                                   extension == ".tga" || extension == ".bmp";
+                const bool sound = extension == ".wav";
+                const auto& cook = image ? options.CookTexture : options.CookAudio;
+                if ((!image && !sound) || !cook)
+                    continue;
+                const fs::path target =
+                    out / Project::kAssetFolderName / (file.string() + (image ? ".ktx2" : ".uheaudio"));
+                std::error_code ec;
+                fs::create_directories(target.parent_path(), ec);
+                std::string why;
+                if (cook(project.AssetPath / file, target, why))
+                {
+                    skipped[0].insert(file);
+                    ++(image ? report.ImagesCooked : report.SoundsCooked);
+                    report.BytesCopied += fs::file_size(target, ec);
+                }
+                else
+                    report.Warnings.push_back(file.generic_string() + " was not cooked (" + why + "); it ships as is");
+            }
+        }
         for (const fs::path& file : manifest.EngineFiles)
         {
             if (!skipped[1].contains(file))
@@ -683,6 +777,8 @@ ExportReport GameExporter::Export(const ProjectInfo& project, const ExportOption
                 copy.File(project.AssetPath / file, out / Project::kAssetFolderName / file);
         }
     }
+
+    WriteAssetManifest(project, options, out, report);
 
     {
         std::ofstream marker(out / kMarkerName);

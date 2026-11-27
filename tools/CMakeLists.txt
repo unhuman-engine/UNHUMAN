@@ -17,6 +17,8 @@ set(UHE_SHADER_SOURCES
     "${UHE_SHADER_DIR}/Bloom.slang"
     "${UHE_SHADER_DIR}/Grid.slang"
     "${UHE_SHADER_DIR}/ImGuiSrgb.slang"
+    "${UHE_SHADER_DIR}/RHISelfTest.slang"
+    "${UHE_SHADER_DIR}/RHISelfTestFill.slang"
     "${UHE_SHADER_DIR}/Sky.slang"
     "${UHE_SHADER_DIR}/SSAO.slang"
     "${UHE_SHADER_DIR}/Texture.slang"
@@ -98,4 +100,19 @@ target_include_directories(uhe_imgdiff PRIVATE "${CMAKE_SOURCE_DIR}/UHE/vendor/s
 if(MSVC)
     target_compile_options(uhe_imgdiff PRIVATE /utf-8)
 endif()
+# Texture cook (issue #45): a cooked model's images to KTX2. A static library
+# so the encoder reaches only what cooks: the editor, uhe_export and uhe_cook.
+add_library(uhe_texcook STATIC texcook/TextureCook.cpp texcook/TextureCook.h)
+target_include_directories(uhe_texcook PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/texcook"
+                                       PRIVATE "${CMAKE_SOURCE_DIR}/UHE/vendor/stb_image")
+target_link_libraries(uhe_texcook PUBLIC basisu_encoder basisu_transcoder)
+target_compile_features(uhe_texcook PUBLIC cxx_std_20)
+set_target_properties(uhe_texcook PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(MSVC)
+    target_compile_options(uhe_texcook PRIVATE /utf-8)
+else()
+    # Decoding and copying 2K images at -O0 is seconds per image.
+    target_compile_options(uhe_texcook PRIVATE $<$<CONFIG:Debug>:-O2>)
+endif()
+
 add_subdirectory(export)

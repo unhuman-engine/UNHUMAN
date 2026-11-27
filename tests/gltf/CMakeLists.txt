@@ -14,6 +14,9 @@ set(GLTF_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LoadModelGeometry.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/LoadModelAnimation.cpp
     ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/MeshoptDecode.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Renderer3D/AnimationCompression.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/Jobsystem/Jobsystem.cpp
+    ${CMAKE_SOURCE_DIR}/UHE/src/UHE/AssetsManager/GltfFiles.cpp
     # Renderer-facing but GPU-free: material packing (what reaches the shader's
     # per-material buffer), light extraction (what reaches the frame's light
     # list) and KTX2 decoding (what reaches the texture upload). All are pure
@@ -52,7 +55,7 @@ target_include_directories(gltf_test PRIVATE
 # meshoptimizer are the only two the CPU path actually calls into; the
 # transcoder decodes KTX2 (KTX2.cpp) and the test-only encoder generates the
 # round-trip fixtures.
-target_link_libraries(gltf_test PRIVATE fastgltf::fastgltf meshoptimizer basisu_transcoder basisu_encoder_testlib)
+target_link_libraries(gltf_test PRIVATE fastgltf::fastgltf meshoptimizer basisu_transcoder basisu_encoder uhe_texcook)
 
 target_compile_definitions(gltf_test PRIVATE
     GLM_FORCE_DEPTH_ZERO_TO_ONE

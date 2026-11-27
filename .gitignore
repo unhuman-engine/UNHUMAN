@@ -451,3 +451,6 @@ editor_debug.ini
 # ForestLake: Poly Haven downloads and the Blender build (projects/ForestLake/Assets/README.md)
 projects/ForestLake/.polyhaven/
 projects/ForestLake/.build/
+
+# Texture cook cache (tools/texcook): per project, rebuilt on demand
+.uhecache/

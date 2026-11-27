@@ -9,6 +9,10 @@ Writes, under --out:
                        the example projects. File > Export Game works from it.
   PondDemo-<name>/     the PondDemo project exported as a game (uhe_export).
 
+Both carry THIRD_PARTY_NOTICES.txt, the licenses of the libraries they ship
+(script/third_party_notices.py). The editor's copy sits beside UHE_RUNTIME, so
+a game exported from the editor bundle gets it too (GameExporter).
+
 The build folder also holds unit tests, static libraries, the Sandbox and
 CMake leftovers; none of those are copied. On Linux the executables and
 libraries are stripped of their symbols when `strip` is installed. --zip also writes a .zip of each
@@ -21,6 +25,8 @@ import os
 import shutil
 import subprocess
 import sys
+
+import third_party_notices
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -68,6 +74,7 @@ def copy_editor(bin_dir, dest):
     for name in ["LICENSE", "LICENSE.md", "README.md"]:
         if os.path.isfile(os.path.join(ROOT, name)):
             shutil.copy2(os.path.join(ROOT, name), dest)
+    third_party_notices.write(os.path.join(dest, third_party_notices.FILE_NAME))
 
 
 def start_scene(project):
@@ -142,6 +149,7 @@ def main():
             generate_demo(os.path.join(ROOT, "projects", project))
     copy_editor(bin_dir, packages[0])
     export_demo(bin_dir, packages[1])
+    third_party_notices.write(os.path.join(packages[1], third_party_notices.FILE_NAME))
     for package in packages:
         strip_binaries(package)
         print(f"package: {os.path.relpath(package, out)} ({size_mb(package):.0f} MB)")

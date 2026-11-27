@@ -4,17 +4,20 @@
 // then every validation rule: read-before-write, double-write via name dedup,
 // stale handles after Reset, attachment declaration, hash comparability and
 // the JSON dump.
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphTypes.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphResources.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphBuilder.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
-#include "UHE/Jobsystem/Taskgraph.h"
-
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
+#include "UHE/Jobsystem/Jobsystem.h"
+#include "UHE/Jobsystem/Taskgraph.h"
+#include "UHE/RHI/RHICommandBuffer.h"
+#include "UHE/RHI/RenderGraph/RenderGraph.h"
+#include "UHE/RHI/RenderGraph/RenderGraphBuilder.h"
+#include "UHE/RHI/RenderGraph/RenderGraphResources.h"
+#include "UHE/RHI/RenderGraph/RenderGraphTypes.h"
 using namespace UHE::RHI;         // TextureFormat, TextureUsage, LoadOp…
 using namespace UHE::RHI::VULKAN;
 
@@ -44,7 +47,7 @@ static std::vector<RGValidationError> ErrorsOf(const std::vector<RGValidationErr
 
 // ─── A realistic frame: GBuffer → Lighting → present ───
 
-static void BuildFrame(VulkanRenderGraph& rg, u32 width, u32 height, u64 swapGeneration)
+static void BuildFrame(RenderGraph& rg, u32 width, u32 height, u64 swapGeneration)
 {
     RGTextureHandle swap = rg.ImportTexture("Swapchain", swapGeneration, width, height, 1,
                                             ImageState::Present, ImageState::Present);
@@ -74,7 +77,7 @@ int main()
 
     // ── Valid frame declares, versions and validates clean ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         BuildFrame(rg, 1920, 1080, 7);
 
         const std::vector<RGValidationError> errors = rg.Validate();
@@ -101,7 +104,7 @@ int main()
 
     // ── Read-before-write on a transient resource is rejected ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle orphan = rg.CreateTexture({"Orphan", TextureFormat::RGBA8_UNORM, 64, 64});
         auto& pass = rg.AddPass("Reader");
         (void)pass.Read(orphan);
@@ -113,7 +116,7 @@ int main()
 
     // ── Imported resources may be read at v0 ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle external = rg.ImportTexture("External", 1, 64, 64, 1,
                                                     ImageState::ShaderRead, ImageState::ShaderRead);
         auto& pass = rg.AddPass("Consumer");
@@ -124,7 +127,7 @@ int main()
 
     // ── Double-write via name dedup (two handles into one slot) is caught ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle a = rg.CreateTexture({"Dup", TextureFormat::RGBA8_UNORM, 64, 64});
         // Same name, materially different desc → same slot, second handle also valid.
         RGTextureHandle b = rg.CreateTexture({"Dup", TextureFormat::RGBA32F, 64, 64});
@@ -145,7 +148,7 @@ int main()
 
     // ── Attachment implies write (§7 contract, both declaration orders) ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle target = rg.CreateTexture({"Target", TextureFormat::RGBA8_UNORM, 64, 64});
         // Color() without an explicit Write(): the attachment itself is the
         // production — validation must report NO UndeclaredAttachment and the
@@ -157,7 +160,7 @@ int main()
         CHECK(rg.GetBuilder().Passes()[0].writes.size() == 1,
               "color-only pass carries exactly one implied write");
         // Write()-then-Color() stays one production too (no orphaned version).
-        VulkanRenderGraph rg2;
+        RenderGraph rg2;
         RGTextureHandle target2 = rg2.CreateTexture({"Target", TextureFormat::RGBA8_UNORM, 64, 64});
         auto& pass2 = rg2.AddPass("Painter2");
         (void)pass2.Write(target2).Color({target2, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}});
@@ -169,7 +172,7 @@ int main()
 
     // ── Stale handles after Reset are reported, not crashed on ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle texture = rg.CreateTexture({"T", TextureFormat::RGBA8_UNORM, 32, 32});
         rg.Reset();
         auto& pass = rg.AddPass("Zombie");
@@ -180,27 +183,27 @@ int main()
 
     // ── Hash comparability (§7): equal material, equal hash; extent differs, hash differs ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         BuildFrame(rg, 1920, 1080, 7);
         const u64 hashA = rg.ComputeTopologyHash();
 
-        VulkanRenderGraph rg2;
+        RenderGraph rg2;
         BuildFrame(rg2, 1920, 1080, 7);
         const u64 hashB = rg2.ComputeTopologyHash();
         CHECK(hashA == hashB, "identical frames hash identically");
 
-        VulkanRenderGraph rg3;
+        RenderGraph rg3;
         BuildFrame(rg3, 1280, 720, 7);
         CHECK(rg3.ComputeTopologyHash() != hashA, "extent change changes the hash");
 
-        VulkanRenderGraph rg4;
+        RenderGraph rg4;
         BuildFrame(rg4, 1920, 1080, 8);
         CHECK(rg4.ComputeTopologyHash() != hashA, "swapchain generation change changes the hash (§9.1.4)");
 
         // Declaration-order independence of the resource slice: rebuild with the
         // same content but pass order swapped → pass hash differs (expected),
         // resource material slice must not depend on insertion order.
-        VulkanRenderGraph rg5;
+        RenderGraph rg5;
         RGTextureHandle swap5 = rg5.ImportTexture("Swapchain", 7, 1920, 1080, 1,
                                                   ImageState::Present, ImageState::Present);
         RGTextureHandle depth5 = rg5.CreateTexture({"MainDepth", TextureFormat::D32_FLOAT, 1920, 1080});
@@ -213,7 +216,7 @@ int main()
 
     // ── Version chain across a reset frame boundary ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         BuildFrame(rg, 640, 480, 1);
         (void)rg.Validate();
         const u64 hashBeforeReset = rg.ComputeTopologyHash();
@@ -228,7 +231,7 @@ int main()
     // Imported resource so the read at v0 is legal; a later write must not
     // retroactively rebind the earlier read declaration to a higher version.
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle tex = rg.ImportTexture("Ext", 1, 64, 64, 1,
                                                ImageState::ShaderRead, ImageState::ShaderRead);
         auto& reader = rg.AddPass("Reader");
@@ -246,7 +249,7 @@ int main()
 
     // ── Same pass writing one resource twice is a DoubleWrite error (§7) ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle tex = rg.CreateTexture({"Twice", TextureFormat::RGBA8_UNORM, 64, 64});
         auto& pass = rg.AddPass("DoubleWriter");
         (void)pass.Write(tex).Write(tex).Submit();
@@ -260,11 +263,11 @@ int main()
     {
         RGTextureHandle retained{};
         {
-            VulkanRenderGraph rg;
+            RenderGraph rg;
             retained = rg.CreateTexture({"Old", TextureFormat::RGBA8_UNORM, 32, 32});
             rg.Reset(); // slot pruned; next registry reuses the index 0
             // New frame declares a different resource into the same index.
-            VulkanRenderGraph& rg2 = rg;
+            RenderGraph& rg2 = rg;
             (void)rg2.CreateTexture({"New", TextureFormat::RGBA32F, 64, 64});
             CHECK(!rg2.GetBuilder().Resources().GetTexture(retained),
                   "handle from before Reset fails lookup on a reused index");
@@ -274,7 +277,7 @@ int main()
 
     // ── Step 2: compiler — topo, barriers, lifetimes, finalState exits (§8.3) ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         BuildFrame(rg, 1920, 1080, 7);
         const RGCompileResult result = rg.Compile();
         CHECK(result.Ok(), "valid frame compiles without errors");
@@ -331,7 +334,7 @@ int main()
 
     // ── Compiler: culling removes passes unreachable from import roots ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         BuildFrame(rg, 640, 480, 1);
         RGTextureHandle orphanTex = rg.CreateTexture({"Orphan", TextureFormat::RGBA8_UNORM, 64, 64});
         auto& orphanWriter = rg.AddPass("OrphanWriter");
@@ -351,7 +354,7 @@ int main()
 
     // ── Compiler: execute callback resolves via declaration passIndex ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle out = rg.ImportTexture("Out", 1, 16, 16, 1, ImageState::Undefined,
                                                ImageState::Undefined);
         bool ran = false;
@@ -366,7 +369,7 @@ int main()
 
     // ── Step 3: executor Resolve — headless binding of handles to live objects ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle swap = rg.ImportTexture("Swap", 1, 64, 64, 1, ImageState::Present,
                                                 ImageState::Present);
         RGTextureHandle color = rg.CreateTexture({"Color", TextureFormat::RGBA8_UNORM, 64, 64});
@@ -431,7 +434,7 @@ int main()
 
     // ── Step 3: executor Resolve — buffer barriers between differing guards ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGBufferHandle staging = rg.ImportBuffer("Staging", 5);
         RGBufferHandle gpu =
             rg.CreateBuffer({"GpuBuf", 4096, BufferUsageFlags::StorageBuffer});
@@ -471,7 +474,7 @@ int main()
 
     // ── Step 5: TaskGraph mapping — one node per pass, DAG edges (§8.5) ──
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         BuildFrame(rg, 64, 64, 1); // GBuffer → Lighting (Lighting depends on GBuffer)
         const RGCompileResult compiled = rg.Compile();
         CHECK(compiled.Ok(), "taskgraph frame compiles");
@@ -505,12 +508,205 @@ int main()
         CHECK(edgeOk, "GBuffer node lists Lighting as a dependent");
     }
 
+    // ── Per-pass command lists (issue #32): each pass records into its own
+    // list; passes that are not parallel-safe stay chained, parallel ones are
+    // free; the recording thread's binding is set around the pass and cleared.
+    {
+        RenderGraph rg;
+        RGTextureHandle a = rg.CreateTexture({"A", TextureFormat::RGBA8_UNORM, 8, 8});
+        RGTextureHandle b = rg.CreateTexture({"B", TextureFormat::RGBA8_UNORM, 8, 8});
+        RGTextureHandle out = rg.ImportTexture("Out", 30, 8, 8, 1, ImageState::Undefined, ImageState::ShaderRead);
+        std::vector<std::string> order;
+        std::mutex orderMutex; // the parallel pass records on another job thread
+        const auto record = [&order, &orderMutex](const char* name)
+        {
+            return [&order, &orderMutex, name](RGPassContext&)
+            {
+                std::scoped_lock lock(orderMutex);
+                order.push_back(name);
+            };
+        };
+        rg.AddPass("Serial0")
+            .Write(a)
+            .Color({a, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute(record("Serial0"));
+        (void)rg.AddPass("Parallel1")
+            .ParallelRecording(true)
+            .Write(b)
+            .Color({b, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute(record("Parallel1"));
+        rg.AddPass("Serial2")
+            .Read(a)
+            .Read(b)
+            .Write(out)
+            .Color({out, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+            .Execute(record("Serial2"));
+        const RGCompileResult compiled = rg.Compile();
+        CHECK(compiled.Ok() && compiled.frame.passes.size() == 3, "per-pass frame compiles");
+
+        VulkanRenderGraphExecutor executor;
+        const vk::Image fakeImage = reinterpret_cast<VkImage>(0x42424242ull);
+        const vk::ImageView fakeView = reinterpret_cast<VkImageView>(0x24242424ull);
+        for (const RGTextureSlot& slot : rg.GetBuilder().Resources().Textures())
+            executor.RegisterTexture(
+                RGTextureHandle{static_cast<u32>(&slot - rg.GetBuilder().Resources().Textures().data()),
+                                slot.generation},
+                fakeImage, fakeView, 8, 8, TextureFormat::RGBA8_UNORM);
+        std::vector<std::string> errors;
+        const RGResolvedFrame resolved = executor.Resolve(compiled.frame, rg.GetBuilder().Passes(), errors);
+        CHECK(errors.empty(), "per-pass frame resolves");
+
+        struct FakeList final : RHICommandBuffer
+        {
+            void Begin() override {}
+            void End() override {}
+            void BeginRenderPass(const RenderPassDesc&) override {}
+            void EndRenderPass() override {}
+            void BindPipeline(PipelineHandle) override {}
+            void BindVertexBuffer(BufferHandle, u64) override {}
+            void BindIndexBuffer(BufferHandle, u64) override {}
+            void BindTexture(u32, TextureHandle) override {}
+            void SetViewport(float, float, float, float) override {}
+            void SetScissor(i32, i32, u32, u32) override {}
+            void PushConstants(ShaderStage, const void*, u32, u32) override {}
+            void UpdateBuffer(BufferHandle, const void*, u64, u64) override {}
+            void UpdateTexture(TextureHandle, std::span<const u8>) override {}
+            void Draw(u32, u32) override {}
+            void DrawIndexed(u32, u32, i32) override {}
+            void Dispatch(u32, u32, u32) override {}
+        };
+        std::array<FakeList, 3> lists;
+        std::vector<CommandListDesc> asked;
+        std::mutex mutex;
+        u32 handedOut = 0;
+        std::vector<RHICommandBuffer*> bound;
+        const VulkanRenderGraphExecutor::PassListAllocator allocate = [&](const CommandListDesc& desc)
+        {
+            std::scoped_lock lock(mutex);
+            asked.push_back(desc);
+            return VulkanRenderGraphExecutor::PassList{&lists[handedOut++ % lists.size()], nullptr};
+        };
+        const VulkanRenderGraphExecutor::ThreadListBinder bind = [&](RHICommandBuffer* list)
+        {
+            std::scoped_lock lock(mutex);
+            bound.push_back(list);
+        };
+        UHE::Jobsystem::TaskGraph graph;
+        const std::vector<UHE::Jobsystem::TaskID> nodes =
+            executor.MapToTaskgraphPerPass(graph, resolved, rg.GetBuilder().Passes(), allocate, bind);
+        CHECK(nodes.size() == 3, "one recording node per pass");
+        const auto dependsOn = [&](u32 later, u32 earlier)
+        {
+            const auto& dependents = graph.GetNode(nodes[earlier]).dependents;
+            return std::find(dependents.begin(), dependents.end(), nodes[later]) != dependents.end();
+        };
+        CHECK(dependsOn(2, 0) && graph.GetNode(nodes[1]).dependencyCount == 0 && !dependsOn(1, 0) && !dependsOn(2, 1),
+              "serial passes are chained to each other; the parallel pass to nothing");
+        UHE::Jobsystem::UheJobsystem jobs;
+        jobs.Init();
+        graph.Execute(jobs);
+        jobs.ShutDown();
+        const auto at = [&](const char* name) { return std::find(order.begin(), order.end(), name) - order.begin(); };
+        CHECK(order.size() == 3 && at("Serial0") < at("Serial2"), "every pass recorded, serial ones in order");
+        CHECK(asked.size() == 3 && asked[0].Level == CommandListLevel::Secondary && asked[0].InsideRendering &&
+                  asked[0].ColorFormatCount == 1 && asked[0].ColorFormats[0] == TextureFormat::RGBA8_UNORM,
+              "each pass asks for a secondary list inheriting its scope's formats");
+        u32 binds = 0, unbinds = 0;
+        for (RHICommandBuffer* list : bound)
+            (list != nullptr ? binds : unbinds) += 1;
+        CHECK(binds == 3 && unbinds == 3, "the recording thread is bound to the pass's list, then released");
+    }
+
+    // ── Async compute (issue #32): queue placement and the handover ───────
+    {
+        const auto build = [](RenderGraph& rg, bool importParticles, bool graphicsFirst)
+        {
+            RGBufferHandle particles = importParticles
+                                           ? rg.ImportBuffer("Particles", 7)
+                                           : rg.CreateBuffer({"Particles", 4096, BufferUsageFlags::StorageBuffer});
+            RGTextureHandle out = rg.ImportTexture("Out", 31, 8, 8, 1, ImageState::Undefined, ImageState::ShaderRead);
+            if (graphicsFirst)
+                rg.AddPass("Clear", RGPassType::Compute).Write(particles).Execute([](RGPassContext&) {});
+            RGPassBuilder& simulate = rg.AddPass("Simulate", RGPassType::Compute, RGQueue::Compute);
+            if (graphicsFirst)
+                (void)simulate.Read(particles); // keeps "Clear" alive: it reads what Clear wrote
+            simulate.Write(particles).Execute([](RGPassContext&) {});
+            rg.AddPass("Draw")
+                .Read(particles)
+                .Write(out)
+                .Color({out, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
+                .Execute([](RGPassContext&) {});
+        };
+        const auto passNamed = [](const RGCompileResult& result, const std::string& name) -> const RGCompiledPass*
+        {
+            for (const RGCompiledPass& pass : result.frame.passes)
+                if (pass.name == name)
+                    return &pass;
+            return nullptr;
+        };
+
+        RenderGraph noQueue;
+        build(noQueue, false, false);
+        const RGCompileResult plain = noQueue.Compile();
+        CHECK(plain.Ok() && passNamed(plain, "Simulate")->queue == RGQueue::Graphics &&
+                  plain.frame.demotedPasses.size() == 1 && plain.frame.crossQueueEdges.empty(),
+              "without a compute queue the pass runs on graphics, and says why");
+
+        RenderGraph async;
+        async.SetCompileOptions({.asyncCompute = true});
+        build(async, false, false);
+        const RGCompileResult placed = async.Compile();
+        const RGCompiledPass* simulate = passNamed(placed, "Simulate");
+        const RGCompiledPass* draw = passNamed(placed, "Draw");
+        CHECK(placed.Ok() && simulate != nullptr && simulate->queue == RGQueue::Compute && draw != nullptr &&
+                  draw->queue == RGQueue::Graphics && placed.frame.demotedPasses.empty(),
+              "a compute pass on a buffer it creates runs on the compute queue");
+        CHECK(placed.frame.crossQueueEdges.size() == 1 && placed.frame.crossQueueEdges[0].producer == simulate->id &&
+                  placed.frame.crossQueueEdges[0].consumer == draw->id,
+              "the graphics pass that reads its output waits for it");
+        CHECK(simulate->postBufferBarriers.size() == 1 &&
+                  simulate->postBufferBarriers[0].srcQueue == RGQueue::Compute &&
+                  simulate->postBufferBarriers[0].dstQueue == RGQueue::Graphics &&
+                  simulate->postBufferBarriers[0].dstAccess == Access::None,
+              "compute releases the buffer to graphics after its last use");
+        CHECK(draw->preBufferBarriers.size() == 1 && draw->preBufferBarriers[0].srcQueue == RGQueue::Compute &&
+                  draw->preBufferBarriers[0].dstQueue == RGQueue::Graphics &&
+                  draw->preBufferBarriers[0].srcAccess == Access::None &&
+                  placed.frame.crossQueueEdges[0].waitStage == draw->preBufferBarriers[0].dstStage,
+              "graphics acquires it, at the stage the submission waits");
+
+        RenderGraph imported;
+        imported.SetCompileOptions({.asyncCompute = true});
+        build(imported, true, false);
+        const RGCompileResult importedResult = imported.Compile();
+        CHECK(passNamed(importedResult, "Simulate")->queue == RGQueue::Graphics &&
+                  importedResult.frame.demotedPasses.size() == 1 &&
+                  importedResult.frame.demotedPasses[0].find("imported") != std::string::npos,
+              "an imported resource keeps the pass on graphics");
+
+        RenderGraph after;
+        after.SetCompileOptions({.asyncCompute = true});
+        build(after, false, true);
+        const RGCompileResult afterResult = after.Compile();
+        CHECK(passNamed(afterResult, "Simulate")->queue == RGQueue::Graphics &&
+                  afterResult.frame.demotedPasses.size() == 1 &&
+                  afterResult.frame.demotedPasses[0].find("before it") != std::string::npos,
+              "so does a resource a graphics pass used before it");
+
+        RenderGraph cached;
+        build(cached, false, false);
+        (void)cached.CompileCached();
+        cached.SetCompileOptions({.asyncCompute = true});
+        CHECK(passNamed(cached.CompileCached(), "Simulate")->queue == RGQueue::Compute,
+              "the options are part of the cache key");
+    }
+
     // ── A Load attachment depends on the previous writer ──────────────────
     // "Copy" fills a transient that "Water" then draws over with LoadOp::Load.
     // Nothing samples the copy, so with only read edges it was culled and the
     // water pass loaded an uninitialized image.
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle out =
             rg.ImportTexture("Viewport", 21, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
         RGTextureHandle hdr = rg.CreateTexture({"HDR.Water", TextureFormat::RGBA16F, 16, 16});
@@ -537,7 +733,7 @@ int main()
     // Every pass records into one command buffer, so two passes the DAG leaves
     // unrelated must not run at the same time (they did, from two threads).
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle a =
             rg.ImportTexture("ShadowAtlas", 11, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
         RGTextureHandle b = rg.ImportTexture("Prepass", 12, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
@@ -575,7 +771,7 @@ int main()
     // and the second must wait for the first's writes. A barrier only on layout
     // or guard changes left this pair unordered.
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         RGTextureHandle swap = rg.ImportTexture("Swapchain", 1, 64, 64, 1, ImageState::Undefined, ImageState::Present);
         rg.AddPass("Scene")
             .Write(swap)
@@ -601,7 +797,7 @@ int main()
 
         // Reads still transition once: a texture sampled by two passes needs
         // no barrier between them.
-        VulkanRenderGraph reads;
+        RenderGraph reads;
         RGTextureHandle tex = reads.ImportTexture("Lut", 2, 16, 16, 1, ImageState::ShaderRead, ImageState::ShaderRead);
         RGTextureHandle outA = reads.ImportTexture("OutA", 3, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
         RGTextureHandle outB = reads.ImportTexture("OutB", 4, 16, 16, 1, ImageState::Undefined, ImageState::ShaderRead);
@@ -629,7 +825,7 @@ int main()
     // barriers (which resource a pass reads, an import's starting state)
     // compiles again, even when the coarse topology hash would not notice.
     {
-        VulkanRenderGraph rg;
+        RenderGraph rg;
         BuildFrame(rg, 1280, 720, 1);
         const RGCompileResult first = rg.CompileCached();
         CHECK(first.Ok() && rg.CompileCache().Misses() == 1, "the first frame compiles");
@@ -668,7 +864,7 @@ int main()
         CHECK(staleFree, "no cached handle keeps the previous frame's generation");
 
         // Same counts, different resource: the topology hash cannot tell.
-        const auto readsOne = [](VulkanRenderGraph& g, const char* source)
+        const auto readsOne = [](RenderGraph& g, const char* source)
         {
             RGTextureHandle a = g.ImportTexture("A", 10, 8, 8, 1, ImageState::ShaderRead, ImageState::ShaderRead);
             RGTextureHandle b = g.ImportTexture("B", 11, 8, 8, 1, ImageState::Undefined, ImageState::ShaderRead);
@@ -679,7 +875,7 @@ int main()
                 .Color({out, LoadOp::Clear, StoreOp::Store, {0, 0, 0, 1}})
                 .Execute([](RGPassContext&) {});
         };
-        VulkanRenderGraph post;
+        RenderGraph post;
         readsOne(post, "A");
         (void)post.CompileCached();
         const u64 hashA = post.ComputeTopologyHash();
@@ -697,7 +893,7 @@ int main()
                     transitionsB || (b.oldState == ImageState::Undefined && b.newState == ImageState::ShaderRead);
         CHECK(transitionsB, "and the recompile has B's transition");
 
-        VulkanRenderGraph states;
+        RenderGraph states;
         RGTextureHandle swap1 =
             states.ImportTexture("Swapchain", 1, 8, 8, 1, ImageState::Undefined, ImageState::Present);
         states.AddPass("UI")
@@ -714,7 +910,7 @@ int main()
         (void)states.CompileCached();
         CHECK(states.CompileCache().Misses() == 2, "an import's starting state is part of the key");
 
-        VulkanRenderGraph broken;
+        RenderGraph broken;
         RGTextureHandle orphan =
             broken.CreateTexture({"Orphan", TextureFormat::RGBA8_UNORM, 8, 8, 1, 1, 1, 1, TextureUsage::Sampled});
         RGTextureHandle target = broken.ImportTexture("T", 5, 8, 8, 1, ImageState::Undefined, ImageState::Present);

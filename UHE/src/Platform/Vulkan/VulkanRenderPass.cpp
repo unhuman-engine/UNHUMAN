@@ -24,7 +24,7 @@ void VulkanRenderPass::Init(const VulkanContext& ctx, const UHE::RHI::RenderPass
                                .finalLayout = ToVkImageLayout(src.finalusage)});
     }
 
-    const auto vkSubpasses = reinterpret_cast<const vk::SubpassDescription*>(renderdesc.subpasses);
+    const auto vkSubpasses = reinterpret_cast<const vk::SubpassDescription*>(renderdesc.subpasses.data());
 
     vk::RenderPassCreateInfo RenderPass{
         .flags = {},

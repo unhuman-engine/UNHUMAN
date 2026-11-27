@@ -77,6 +77,20 @@ void VulkanBuffer::UploadData(const void* data, vk::DeviceSize size, vk::DeviceS
         UHE_CORE_ERROR("Failed to flush Vulkan buffer memory (VkResult={})", static_cast<i32>(flushResult));
 }
 
+bool VulkanBuffer::ReadData(void* out, vk::DeviceSize size, vk::DeviceSize offset) const
+{
+    if (out == nullptr || offset + size > m_Size)
+        return false;
+    void* mappedData = nullptr;
+    if (vmaMapMemory(m_Allocator, m_Allocation, &mappedData) != VK_SUCCESS || mappedData == nullptr)
+        return false;
+    // The GPU wrote it: make its writes visible to the host before reading.
+    vmaInvalidateAllocation(m_Allocator, m_Allocation, offset, size);
+    memcpy(out, static_cast<const uint8_t*>(mappedData) + offset, size);
+    vmaUnmapMemory(m_Allocator, m_Allocation);
+    return true;
+}
+
 void VulkanBuffer::CopyTo(VulkanBuffer& dstBuffer, vk::DeviceSize size, vk::raii::CommandBuffer& commandBuffer)
 {
     vk::BufferCopy copyRegion{};

@@ -197,6 +197,8 @@ struct FGLoweredPass
     FGPassType Type = FGPassType::Graphics;
     u32 Index = 0; ///< declaration index: FrameGraph::ExecutePass(Index, ...)
     std::vector<FGLoweredAccess> Accesses;
+    bool ParallelRecording = false; ///< FGBuilder::RecordInParallel
+    bool AsyncCompute = false;      ///< FGBuilder::RunOnAsyncCompute
 };
 
 struct FGLoweredFrame

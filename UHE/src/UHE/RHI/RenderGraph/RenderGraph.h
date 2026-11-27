@@ -1,29 +1,27 @@
 #pragma once
 #include <string>
-#include <vulkan/vulkan_raii.hpp>
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphBuilder.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphCompileCache.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphCompiler.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphResources.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphTypes.h"
 #include "UHE/Core/Core.h"
-
+#include "UHE/RHI/RenderGraph/RenderGraphBuilder.h"
+#include "UHE/RHI/RenderGraph/RenderGraphCompileCache.h"
+#include "UHE/RHI/RenderGraph/RenderGraphCompiler.h"
+#include "UHE/RHI/RenderGraph/RenderGraphResources.h"
+#include "UHE/RHI/RenderGraph/RenderGraphTypes.h"
 
 // Render graph facade (docs/architecture/rendergraph.md §8.1) — step 2 slice.
 //
 // Declare + validate + compile + dump. Execution lands with the executor
 // milestone (§13.2 item 8), so nothing here touches the GPU yet.
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
-class UHE_API VulkanRenderGraph
+class UHE_API RenderGraph
 {
 public:
-    VulkanRenderGraph() = default;
-    VulkanRenderGraph(const VulkanRenderGraph&) = delete;
-    VulkanRenderGraph& operator=(const VulkanRenderGraph&) = delete;
-    ~VulkanRenderGraph() = default;
+    RenderGraph() = default;
+    RenderGraph(const RenderGraph&) = delete;
+    RenderGraph& operator=(const RenderGraph&) = delete;
+    ~RenderGraph() = default;
 
     // ─── Declaration (per frame, or persistent until Reset) ───
 
@@ -33,8 +31,8 @@ public:
     // Swapchain-shaped import: identity hash separates generations of the
     // external resource (§9.1.4 — resize rebuilds the cache because this hash
     // enters the topology hash).
-    RGTextureHandle ImportTexture(const std::string& name, u64 identityHash, u32 width, u32 height,
-                                  u32 sampleCount, ImageState initialState, ImageState finalState)
+    RGTextureHandle ImportTexture(const std::string& name, u64 identityHash, u32 width, u32 height, u32 sampleCount,
+                                  ImageState initialState, ImageState finalState)
     {
         const RGImportedDesc identity{identityHash, width, height, 1u, sampleCount};
         return m_Builder.ImportTexture(name, identity, initialState, finalState);
@@ -67,7 +65,7 @@ public:
         RGCompileResult result;
         result.errors = m_Builder.Validate();
         RGCompileResult compilerResult =
-            VulkanRenderGraphCompiler::Compile(m_Builder.Passes(), m_Builder.Resources());
+            RenderGraphCompiler::Compile(m_Builder.Passes(), m_Builder.Resources(), m_Options);
         result.errors.insert(result.errors.end(), compilerResult.errors.begin(), compilerResult.errors.end());
         result.frame = std::move(compilerResult.frame);
         // The compiler hashes the resource slice; the cache key is the full
@@ -77,9 +75,13 @@ public:
     }
 
     /// @brief Compile(), reusing the previous frame's result when the declared
-    /// frame is structurally identical (see VulkanRenderGraphCompileCache).
-    [[nodiscard]] RGCompileResult CompileCached() { return m_CompileCache.Compile(m_Builder); }
-    [[nodiscard]] const VulkanRenderGraphCompileCache& CompileCache() const { return m_CompileCache; }
+    /// frame is structurally identical (see RenderGraphCompileCache).
+    [[nodiscard]] RGCompileResult CompileCached() { return m_CompileCache.Compile(m_Builder, m_Options); }
+
+    /// @brief How passes may be placed (async compute); part of the cache key.
+    void SetCompileOptions(const RGCompileOptions& options) { m_Options = options; }
+    [[nodiscard]] const RGCompileOptions& CompileOptions() const { return m_Options; }
+    [[nodiscard]] const RenderGraphCompileCache& CompileCache() const { return m_CompileCache; }
 
     // §8.3 cache key (resource material + pass structure slice for step 1).
     [[nodiscard]] u64 ComputeTopologyHash() const { return m_Builder.ComputeTopologyHash(); }
@@ -94,11 +96,12 @@ public:
     // deterministically (stale-handle validation) instead of aliasing.
     void Reset() { m_Builder.Reset(); }
 
-    [[nodiscard]] const VulkanRenderGraphBuilder& GetBuilder() const { return m_Builder; }
+    [[nodiscard]] const RenderGraphBuilder& GetBuilder() const { return m_Builder; }
 
 private:
-    VulkanRenderGraphBuilder m_Builder;
-    VulkanRenderGraphCompileCache m_CompileCache; // survives Reset(): it is keyed, not owned by a frame
+    RenderGraphBuilder m_Builder;
+    RenderGraphCompileCache m_CompileCache; // survives Reset(): it is keyed, not owned by a frame
+    RGCompileOptions m_Options;
 };
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

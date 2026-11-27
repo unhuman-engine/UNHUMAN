@@ -1,9 +1,8 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <vulkan/vulkan_raii.hpp>
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphResources.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphTypes.h"
+#include "UHE/RHI/RenderGraph/RenderGraphResources.h"
+#include "UHE/RHI/RenderGraph/RenderGraphTypes.h"
 
 // Render graph compiler (docs/architecture/rendergraph.md §8.3) — step 2 slice.
 //
@@ -46,7 +45,7 @@
 //   - Graphics-pass buffer reads map to Stage::Vertex (uniform/vertex input);
 //     buffer writes belong in compute/transfer passes in v1.
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 // One image layout transition at a pass boundary. Old/Next are engine
@@ -60,6 +59,10 @@ struct RGCompiledImageBarrier
     Stage dstStage = Stage::None;
     Access srcAccess = Access::None;
     Access dstAccess = Access::None;
+    /// A queue-family ownership transfer when the two differ: the release half
+    /// on the source queue, the acquire half on the destination (async compute).
+    RGQueue srcQueue = RGQueue::Graphics;
+    RGQueue dstQueue = RGQueue::Graphics;
 };
 
 struct RGCompiledBufferBarrier
@@ -69,6 +72,25 @@ struct RGCompiledBufferBarrier
     Stage dstStage = Stage::None;
     Access srcAccess = Access::None;
     Access dstAccess = Access::None;
+    RGQueue srcQueue = RGQueue::Graphics; ///< see RGCompiledImageBarrier
+    RGQueue dstQueue = RGQueue::Graphics;
+};
+
+/// A graphics pass that uses what an async compute pass made: the graphics
+/// submission waits for the compute one, at \p waitStage.
+struct RGCrossQueueEdge
+{
+    u32 producer = 0; ///< compiled id, on the compute queue
+    u32 consumer = 0; ///< compiled id, on the graphics queue
+    Stage waitStage = Stage::AllCommands;
+};
+
+/// How the compiler may place passes.
+struct RGCompileOptions
+{
+    /// The device has a dedicated compute queue: passes declared with
+    /// RGQueue::Compute may run on it (Stage 8). Off: every pass is graphics.
+    bool asyncCompute = false;
 };
 
 struct RGCompiledPass
@@ -79,9 +101,10 @@ struct RGCompiledPass
     RGPassType type = RGPassType::Graphics;
     RGQueue queue = RGQueue::Graphics;
     std::vector<RGCompiledImageBarrier> preImageBarriers;
-    std::vector<RGCompiledImageBarrier> postImageBarriers; // finalState exits
+    std::vector<RGCompiledImageBarrier> postImageBarriers; // finalState exits, queue releases
     std::vector<RGCompiledBufferBarrier> preBufferBarriers;
-    std::vector<u32> dependencies; // compiled indices of passes that precede
+    std::vector<RGCompiledBufferBarrier> postBufferBarriers; // queue releases
+    std::vector<u32> dependencies;                           // compiled indices of passes that precede
 };
 
 // [firstUse, lastUse] per resource in compiled order; aliasing (§8.2) and the
@@ -101,11 +124,22 @@ struct RGCompiledResourceLifetime
 
 struct RGCompiledFrame
 {
-    u64 topologyHash = 0; // §8.3 cache key (caching itself lands in §13.3 item 14)
-    u32 declaredPassCount = 0; // pre-cull, debug
-    std::vector<RGCompiledPass> passes;     // topological, live only
+    u64 topologyHash = 0;               // §8.3 cache key (caching itself lands in §13.3 item 14)
+    u32 declaredPassCount = 0;          // pre-cull, debug
+    std::vector<RGCompiledPass> passes; // topological, live only
     std::vector<RGCompiledResourceLifetime> lifetimes;
-    std::vector<std::string> culledPasses;  // debug UX: which passes were cut
+    std::vector<std::string> culledPasses; // debug UX: which passes were cut
+    std::vector<RGCrossQueueEdge> crossQueueEdges;
+    /// Passes that asked for async compute and run on graphics, with why.
+    std::vector<std::string> demotedPasses;
+    [[nodiscard]] bool UsesAsyncCompute() const { return !crossQueueEdges.empty() || HasComputeQueuePass(); }
+    [[nodiscard]] bool HasComputeQueuePass() const
+    {
+        for (const RGCompiledPass& pass : passes)
+            if (pass.queue == RGQueue::Compute)
+                return true;
+        return false;
+    }
 };
 
 struct RGCompileResult
@@ -115,20 +149,21 @@ struct RGCompileResult
     [[nodiscard]] bool Ok() const { return errors.empty(); }
 };
 
-class VulkanRenderGraphCompiler
+class RenderGraphCompiler
 {
 public:
-    VulkanRenderGraphCompiler() = default;
-    VulkanRenderGraphCompiler(const VulkanRenderGraphCompiler&) = delete;
-    VulkanRenderGraphCompiler& operator=(const VulkanRenderGraphCompiler&) = delete;
-    ~VulkanRenderGraphCompiler() = default;
+    RenderGraphCompiler() = default;
+    RenderGraphCompiler(const RenderGraphCompiler&) = delete;
+    RenderGraphCompiler& operator=(const RenderGraphCompiler&) = delete;
+    ~RenderGraphCompiler() = default;
 
     // Compiles the declared passes into an executable frame. Collects all
     // errors (never throws); a failed result carries an empty frame.
     // `passes` must be the builder's declaration-ordered list; `resources`
     // supplies slot metadata (imported initial states, version logs, names).
     [[nodiscard]] static RGCompileResult Compile(const std::vector<RGPassSpec>& passes,
-                                                 const VulkanRenderGraphResources& resources);
+                                                 const RenderGraphResources& resources,
+                                                 const RGCompileOptions& options = {});
 };
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

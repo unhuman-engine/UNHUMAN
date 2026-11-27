@@ -97,6 +97,11 @@ u64 VulkanPipelineStateCache::Hash(const GraphicsPipelineDesc& desc)
     HashAddEnum(seed, renderPass.depthAttachment.loadOp);
     HashAddEnum(seed, renderPass.depthAttachment.storeOp);
 
+    // Extra descriptor sets change the pipeline layout (issue #30).
+    HashAdd(seed, desc.descriptorSetLayoutCount);
+    for (u32 i = 0; i < desc.descriptorSetLayoutCount && i < desc.descriptorSetLayouts.size(); ++i)
+        HashAdd(seed, reinterpret_cast<std::uintptr_t>(desc.descriptorSetLayouts[i]));
+
     return seed;
 }
 
@@ -107,6 +112,9 @@ u64 VulkanPipelineStateCache::Hash(const ComputePipelineDesc& desc)
     const auto* computeShader = reinterpret_cast<const VulkanShader*>(desc.computeShader);
     HashAdd(seed, computeShader ? computeShader->GetStableId() : 0);
     HashAdd(seed, desc.pushConstantSize);
+    HashAdd(seed, desc.descriptorSetLayoutCount);
+    for (u32 i = 0; i < desc.descriptorSetLayoutCount && i < desc.descriptorSetLayouts.size(); ++i)
+        HashAdd(seed, reinterpret_cast<std::uintptr_t>(desc.descriptorSetLayouts[i]));
 
     return seed;
 }

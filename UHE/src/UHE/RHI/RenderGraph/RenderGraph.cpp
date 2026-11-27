@@ -1,8 +1,8 @@
 #include "uhepch.h"
-#include "VulkanRenderGraph.h"
+#include "RenderGraph.h"
 #include <sstream>
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 namespace
@@ -15,11 +15,21 @@ std::string JsonEscape(const std::string& text)
     {
         switch (c)
         {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20)
                 {
@@ -49,13 +59,13 @@ void JsonArrayFromNames(std::ostringstream& out, const std::vector<std::string>&
 }
 } // namespace
 
-RGRawGraph VulkanRenderGraph::DumpRawGraph() const
+RGRawGraph RenderGraph::DumpRawGraph() const
 {
     RGRawGraph raw;
     raw.topologyHash = ComputeTopologyHash();
     raw.errors = m_Builder.Validate();
 
-    const VulkanRenderGraphResources& resources = m_Builder.Resources();
+    const RenderGraphResources& resources = m_Builder.Resources();
 
     for (const RGTextureSlot& slot : resources.Textures())
     {
@@ -92,15 +102,13 @@ RGRawGraph VulkanRenderGraph::DumpRawGraph() const
         // the slot's current version would retroactively rebind reads (§7).
         for (const RGResourceAccess& access : pass.reads)
         {
-            declared.readNames.push_back(
-                access.isTexture ? resources.TextureNameAt(access.texture, access.version)
-                                 : resources.BufferNameAt(access.buffer, access.version));
+            declared.readNames.push_back(access.isTexture ? resources.TextureNameAt(access.texture, access.version)
+                                                          : resources.BufferNameAt(access.buffer, access.version));
         }
         for (const RGResourceAccess& access : pass.writes)
         {
-            declared.writeNames.push_back(
-                access.isTexture ? resources.TextureNameAt(access.texture, access.version)
-                                 : resources.BufferNameAt(access.buffer, access.version));
+            declared.writeNames.push_back(access.isTexture ? resources.TextureNameAt(access.texture, access.version)
+                                                           : resources.BufferNameAt(access.buffer, access.version));
         }
         raw.passes.push_back(std::move(declared));
     }
@@ -108,7 +116,7 @@ RGRawGraph VulkanRenderGraph::DumpRawGraph() const
     return raw;
 }
 
-std::string VulkanRenderGraph::DumpRawGraphJson() const
+std::string RenderGraph::DumpRawGraphJson() const
 {
     const RGRawGraph raw = DumpRawGraph();
     std::ostringstream out;
@@ -120,11 +128,9 @@ std::string VulkanRenderGraph::DumpRawGraphJson() const
     for (size_t i = 0; i < raw.textures.size(); ++i)
     {
         const RGDeclaredTexture& texture = raw.textures[i];
-        out << "    {\"name\": \"" << JsonEscape(texture.name)
-            << "\", \"versions\": " << texture.versionCount
-            << ", \"imported\": " << (texture.imported ? "true" : "false")
-            << ", \"initialState\": \"" << RGToString(texture.initialState)
-            << "\", \"finalState\": \"" << RGToString(texture.finalState) << "\"}"
+        out << "    {\"name\": \"" << JsonEscape(texture.name) << "\", \"versions\": " << texture.versionCount
+            << ", \"imported\": " << (texture.imported ? "true" : "false") << ", \"initialState\": \""
+            << RGToString(texture.initialState) << "\", \"finalState\": \"" << RGToString(texture.finalState) << "\"}"
             << (i + 1 < raw.textures.size() ? "," : "") << "\n";
     }
     out << "  ],\n";
@@ -133,8 +139,7 @@ std::string VulkanRenderGraph::DumpRawGraphJson() const
     for (size_t i = 0; i < raw.buffers.size(); ++i)
     {
         const RGDeclaredBuffer& buffer = raw.buffers[i];
-        out << "    {\"name\": \"" << JsonEscape(buffer.name)
-            << "\", \"versions\": " << buffer.versionCount
+        out << "    {\"name\": \"" << JsonEscape(buffer.name) << "\", \"versions\": " << buffer.versionCount
             << ", \"imported\": " << (buffer.imported ? "true" : "false") << "}"
             << (i + 1 < raw.buffers.size() ? "," : "") << "\n";
     }
@@ -144,15 +149,13 @@ std::string VulkanRenderGraph::DumpRawGraphJson() const
     for (size_t i = 0; i < raw.passes.size(); ++i)
     {
         const RGDeclaredPass& pass = raw.passes[i];
-        out << "    {\"name\": \"" << JsonEscape(pass.name)
-            << "\", \"type\": \"" << RGToString(pass.type) << "\", \"queue\": \""
-            << RGToString(pass.queue) << "\", \"reads\": ";
+        out << "    {\"name\": \"" << JsonEscape(pass.name) << "\", \"type\": \"" << RGToString(pass.type)
+            << "\", \"queue\": \"" << RGToString(pass.queue) << "\", \"reads\": ";
         JsonArrayFromNames(out, pass.readNames);
         out << ", \"writes\": ";
         JsonArrayFromNames(out, pass.writeNames);
-        out << ", \"colorCount\": " << pass.colorCount
-            << ", \"hasDepth\": " << (pass.hasDepth ? "true" : "false") << "}"
-            << (i + 1 < raw.passes.size() ? "," : "") << "\n";
+        out << ", \"colorCount\": " << pass.colorCount << ", \"hasDepth\": " << (pass.hasDepth ? "true" : "false")
+            << "}" << (i + 1 < raw.passes.size() ? "," : "") << "\n";
     }
     out << "  ],\n";
 
@@ -160,10 +163,9 @@ std::string VulkanRenderGraph::DumpRawGraphJson() const
     for (size_t i = 0; i < raw.errors.size(); ++i)
     {
         const RGValidationError& error = raw.errors[i];
-        out << "    {\"type\": " << static_cast<u32>(error.type) << ", \"pass\": \""
-            << JsonEscape(error.passName) << "\", \"resource\": \"" << JsonEscape(error.resourceName)
-            << "\", \"message\": \"" << JsonEscape(error.message) << "\"}"
-            << (i + 1 < raw.errors.size() ? "," : "") << "\n";
+        out << "    {\"type\": " << static_cast<u32>(error.type) << ", \"pass\": \"" << JsonEscape(error.passName)
+            << "\", \"resource\": \"" << JsonEscape(error.resourceName) << "\", \"message\": \""
+            << JsonEscape(error.message) << "\"}" << (i + 1 < raw.errors.size() ? "," : "") << "\n";
     }
     out << "  ]\n";
 
@@ -171,4 +173,4 @@ std::string VulkanRenderGraph::DumpRawGraphJson() const
     return out.str();
 }
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

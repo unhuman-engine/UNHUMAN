@@ -8,6 +8,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "UHE/AssetsManager/AssetCatalog.h"
 #include "UHE/AssetsManager/AssetID.h"
 #include "UHE/Core/Core.h"
 
@@ -265,6 +266,19 @@ public:
     bool IsReady(AssetID id) const;
     AssetID FindByPath(std::string_view path) const;
 
+    /**
+     * @brief Takes the stable IDs of a game's AssetManifest.yaml (AssetCatalog, issue #45).
+     *
+     * An asset loaded later by a path the catalog lists is registered under
+     * the catalog's ID instead of a fresh one, so the same asset has the same
+     * ID on every run and in every tool that reads the manifest. Paths are
+     * matched as the catalog lists them (its Path and Stored, relative to the
+     * asset root) and also by their end, for loads that pass a resolved path.
+     */
+    void LoadCatalog(const AssetCatalog& catalog);
+    /// @brief The ID the loaded catalog gives \p path; 0 when it lists no such asset.
+    [[nodiscard]] AssetID CatalogIDFor(std::string_view path) const;
+
     // Hot reload: when enabled, Update() polls mtimes of Ready assets and
     // reloads changed files, bumping the generation and notifying listeners.
     void SetHotReloadEnabled(bool enable) { m_HotReload = enable; }
@@ -280,12 +294,14 @@ private:
     std::shared_ptr<AssetRecord> CreateRecord(const std::string& path, AssetType type,
                                               const std::shared_ptr<IAssetLoader>& loader);
     std::shared_ptr<AssetRecord> FindRecord(AssetID id) const;
+    AssetID CatalogIDForLocked(std::string_view path) const;
     void FinalizeRecord(AssetRecord& record);
     void ReloadIfChanged(AssetRecord& record, std::vector<std::function<void()>>& listenersOut);
 
     mutable std::mutex m_Mutex;
     std::unordered_map<AssetID, std::shared_ptr<AssetRecord>> m_Registry;
     std::unordered_map<std::string, AssetID> m_PathToID;
+    std::unordered_map<std::string, AssetID> m_CatalogIDs; ///< LoadCatalog: relative path -> stable ID
     std::unordered_map<AssetType, std::shared_ptr<IAssetLoader>> m_Loaders;
     std::vector<std::pair<AssetID, LoadCallback>> m_PendingCallbacks;
     Jobsystem::UheJobsystem* m_Jobs = nullptr;

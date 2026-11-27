@@ -1,8 +1,8 @@
 #include "uhepch.h"
-#include "VulkanRenderGraphBuilder.h"
+#include "RenderGraphBuilder.h"
 #include <algorithm>
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 namespace
@@ -19,8 +19,8 @@ bool RGPassBuilder::WroteTexture(RGTextureHandle texture) const
 {
     // An explicit Write() or an attachment-implied production both count: the
     // resource already has a version bound to this pass.
-    return std::any_of(m_Spec.writes.begin(), m_Spec.writes.end(), [&](const RGResourceAccess& access)
-                       { return access.isTexture && access.texture == texture; });
+    return std::any_of(m_Spec.writes.begin(), m_Spec.writes.end(),
+                       [&](const RGResourceAccess& access) { return access.isTexture && access.texture == texture; });
 }
 
 // ─── RGPassBuilder ──────────────────────────────────────────────────────────
@@ -93,6 +93,13 @@ RGPassBuilder& RGPassBuilder::Write(RGBufferHandle buffer)
     return *this;
 }
 
+RGPassBuilder& RGPassBuilder::ParallelRecording(bool parallel)
+{
+    UHE_CORE_ASSERT(!m_Submitted, "RenderGraph: pass builder used after Submit()");
+    m_Spec.parallelRecording = parallel;
+    return *this;
+}
+
 RGPassBuilder& RGPassBuilder::Queue(RGQueue queue)
 {
     UHE_CORE_ASSERT(!m_Submitted, "RenderGraph: pass builder used after Submit()");
@@ -124,34 +131,30 @@ void RGPassBuilder::Submit()
         m_Builder.m_Passes[m_PassIndex] = std::move(m_Spec);
 }
 
-// ─── VulkanRenderGraphBuilder ───────────────────────────────────────────────
+// ─── RenderGraphBuilder ───────────────────────────────────────────────
 
-RGTextureHandle VulkanRenderGraphBuilder::CreateTexture(const RGTextureDesc& desc)
+RGTextureHandle RenderGraphBuilder::CreateTexture(const RGTextureDesc& desc)
 {
     return m_Resources.CreateTexture(desc);
 }
 
-RGBufferHandle VulkanRenderGraphBuilder::CreateBuffer(const RGBufferDesc& desc)
+RGBufferHandle RenderGraphBuilder::CreateBuffer(const RGBufferDesc& desc)
 {
     return m_Resources.CreateBuffer(desc);
 }
 
-RGTextureHandle VulkanRenderGraphBuilder::ImportTexture(const std::string& name,
-                                                        const RGImportedDesc& identity,
-                                                        ImageState initialState,
-                                                        ImageState finalState)
+RGTextureHandle RenderGraphBuilder::ImportTexture(const std::string& name, const RGImportedDesc& identity,
+                                                  ImageState initialState, ImageState finalState)
 {
     return m_Resources.ImportTexture(name, identity, initialState, finalState);
 }
 
-RGBufferHandle VulkanRenderGraphBuilder::ImportBuffer(const std::string& name,
-                                                      const RGImportedDesc& identity)
+RGBufferHandle RenderGraphBuilder::ImportBuffer(const std::string& name, const RGImportedDesc& identity)
 {
     return m_Resources.ImportBuffer(name, identity);
 }
 
-RGPassBuilder& VulkanRenderGraphBuilder::AddPass(const std::string& name, RGPassType type,
-                                                RGQueue queue)
+RGPassBuilder& RenderGraphBuilder::AddPass(const std::string& name, RGPassType type, RGQueue queue)
 {
     UHE_CORE_ASSERT(!name.empty(), "RenderGraph: pass name must not be empty");
 
@@ -177,8 +180,7 @@ RGPassBuilder& VulkanRenderGraphBuilder::AddPass(const std::string& name, RGPass
 // reset in release builds and we want the graph to name the offender instead of
 // crashing (rendergraph.md §7 rules).
 
-bool VulkanRenderGraphBuilder::RecordTextureWrite(RGPassSpec& spec, RGTextureHandle handle,
-                                                  u32 passIndex)
+bool RenderGraphBuilder::RecordTextureWrite(RGPassSpec& spec, RGTextureHandle handle, u32 passIndex)
 {
     const RGTextureSlot* slot = m_Resources.GetTexture(handle);
     if (!slot)
@@ -197,8 +199,7 @@ bool VulkanRenderGraphBuilder::RecordTextureWrite(RGPassSpec& spec, RGTextureHan
     return true;
 }
 
-bool VulkanRenderGraphBuilder::RecordBufferWrite(RGPassSpec& spec, RGBufferHandle handle,
-                                                 u32 passIndex)
+bool RenderGraphBuilder::RecordBufferWrite(RGPassSpec& spec, RGBufferHandle handle, u32 passIndex)
 {
     const RGBufferSlot* slot = m_Resources.GetBuffer(handle);
     if (!slot)
@@ -213,8 +214,7 @@ bool VulkanRenderGraphBuilder::RecordBufferWrite(RGPassSpec& spec, RGBufferHandl
     return true;
 }
 
-bool VulkanRenderGraphBuilder::RecordTextureRead(RGPassSpec& spec, RGTextureHandle handle,
-                                                 u32 passIndex)
+bool RenderGraphBuilder::RecordTextureRead(RGPassSpec& spec, RGTextureHandle handle, u32 passIndex)
 {
     const RGTextureSlot* slot = m_Resources.GetTexture(handle);
     if (!slot)
@@ -230,8 +230,8 @@ bool VulkanRenderGraphBuilder::RecordTextureRead(RGPassSpec& spec, RGTextureHand
     // (rendergraph.md §7).
     if (slot->currentVersion == 0 && !slot->imported)
     {
-        PushError({RGErrorType::ReadBeforeWrite, spec.name, slot->name,
-                   "Read() before any Write() on non-imported texture"});
+        PushError(
+            {RGErrorType::ReadBeforeWrite, spec.name, slot->name, "Read() before any Write() on non-imported texture"});
         return false;
     }
 
@@ -243,8 +243,7 @@ bool VulkanRenderGraphBuilder::RecordTextureRead(RGPassSpec& spec, RGTextureHand
     return true;
 }
 
-bool VulkanRenderGraphBuilder::RecordBufferRead(RGPassSpec& spec, RGBufferHandle handle,
-                                                u32 passIndex)
+bool RenderGraphBuilder::RecordBufferRead(RGPassSpec& spec, RGBufferHandle handle, u32 passIndex)
 {
     const RGBufferSlot* slot = m_Resources.GetBuffer(handle);
     if (!slot)
@@ -256,8 +255,8 @@ bool VulkanRenderGraphBuilder::RecordBufferRead(RGPassSpec& spec, RGBufferHandle
 
     if (slot->currentVersion == 0 && !slot->imported)
     {
-        PushError({RGErrorType::ReadBeforeWrite, spec.name, slot->name,
-                   "Read() before any Write() on non-imported buffer"});
+        PushError(
+            {RGErrorType::ReadBeforeWrite, spec.name, slot->name, "Read() before any Write() on non-imported buffer"});
         return false;
     }
 
@@ -274,7 +273,7 @@ bool VulkanRenderGraphBuilder::RecordBufferRead(RGPassSpec& spec, RGBufferHandle
 // collide via aliased name handles — the desc-conflict check below. All other
 // rules are collected here too so one Validate() call reports everything.
 
-std::vector<RGValidationError> VulkanRenderGraphBuilder::Validate() const
+std::vector<RGValidationError> RenderGraphBuilder::Validate() const
 {
     std::vector<RGValidationError> errors = m_Errors;
 
@@ -298,14 +297,12 @@ std::vector<RGValidationError> VulkanRenderGraphBuilder::Validate() const
                 const RGResourceAccess& b = pass.writes[j];
                 if (a.isTexture != b.isTexture)
                     continue;
-                const bool sameResource =
-                    a.isTexture ? (a.texture == b.texture) : (a.buffer == b.buffer);
+                const bool sameResource = a.isTexture ? (a.texture == b.texture) : (a.buffer == b.buffer);
                 if (sameResource)
                 {
                     errors.push_back(
                         {RGErrorType::DoubleWrite, pass.name,
-                         a.isTexture ? m_Resources.TextureName(a.texture)
-                                     : m_Resources.BufferName(a.buffer),
+                         a.isTexture ? m_Resources.TextureName(a.texture) : m_Resources.BufferName(a.buffer),
                          "Resource written twice by one pass — the first write is orphaned"});
                 }
             }
@@ -318,27 +315,24 @@ std::vector<RGValidationError> VulkanRenderGraphBuilder::Validate() const
         {
             if (color.texture.IsValid())
             {
-                const bool declaredWritten = std::any_of(
-                    pass.writes.begin(), pass.writes.end(),
-                    [&](const RGResourceAccess& access)
-                    { return access.isTexture && access.texture == color.texture; });
+                const bool declaredWritten =
+                    std::any_of(pass.writes.begin(), pass.writes.end(), [&](const RGResourceAccess& access)
+                                { return access.isTexture && access.texture == color.texture; });
                 if (!declaredWritten)
                 {
-                    errors.push_back(
-                        {RGErrorType::UndeclaredAttachment, pass.name,
-                         m_Resources.TextureName(color.texture),
-                         "Color attachment not declared with Write() — attach via "
-                         "Write() then Color(), or call Color() before other access"});
+                    errors.push_back({RGErrorType::UndeclaredAttachment, pass.name,
+                                      m_Resources.TextureName(color.texture),
+                                      "Color attachment not declared with Write() — attach via "
+                                      "Write() then Color(), or call Color() before other access"});
                 }
             }
         }
 
         if (pass.hasDepth && pass.depth.texture.IsValid())
         {
-            const bool declaredWritten = std::any_of(
-                pass.writes.begin(), pass.writes.end(),
-                [&](const RGResourceAccess& access)
-                { return access.isTexture && access.texture == pass.depth.texture; });
+            const bool declaredWritten =
+                std::any_of(pass.writes.begin(), pass.writes.end(), [&](const RGResourceAccess& access)
+                            { return access.isTexture && access.texture == pass.depth.texture; });
             if (!declaredWritten)
             {
                 errors.push_back({RGErrorType::UndeclaredAttachment, pass.name,
@@ -359,7 +353,7 @@ std::vector<RGValidationError> VulkanRenderGraphBuilder::Validate() const
 
 // ─── Reset & hash ───────────────────────────────────────────────────────────
 
-void VulkanRenderGraphBuilder::Reset()
+void RenderGraphBuilder::Reset()
 {
     m_Resources.Reset();
     m_Passes.clear();
@@ -367,7 +361,7 @@ void VulkanRenderGraphBuilder::Reset()
     m_Errors.clear();
 }
 
-u64 VulkanRenderGraphBuilder::ComputeTopologyHash() const
+u64 RenderGraphBuilder::ComputeTopologyHash() const
 {
     // Resource material hash, order-independent …
     u64 hash = m_Resources.ComputeTopologyHash();
@@ -376,8 +370,7 @@ u64 VulkanRenderGraphBuilder::ComputeTopologyHash() const
     // imports carry real dimensions.
     for (const RGPassSpec& pass : m_Passes)
     {
-        hash ^= std::hash<std::string>{}(pass.name) + 0x9e3779b97f4a7c15ull + (hash << 6) +
-                (hash >> 2);
+        hash ^= std::hash<std::string>{}(pass.name) + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
         hash ^= static_cast<u64>(pass.type) << 1;
         hash ^= static_cast<u64>(pass.queue) << 2;
         hash ^= (static_cast<u64>(pass.reads.size()) << 8) ^ static_cast<u64>(pass.writes.size());
@@ -387,4 +380,4 @@ u64 VulkanRenderGraphBuilder::ComputeTopologyHash() const
     return hash;
 }
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

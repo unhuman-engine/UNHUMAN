@@ -3,9 +3,10 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
+#include "Platform/Vulkan/RenderGraph/VulkanTransientHeap.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/FrameGraph/TransientPool.h"
+#include "UHE/RHI/RenderGraph/RenderGraph.h"
 
 namespace UHE::RHI::VULKAN
 {
@@ -31,7 +32,7 @@ public:
      * @brief Declares \p frontend's passes into \p graph.
      * @return false when the frame cannot be realized; \p errors says why and no pass was declared.
      */
-    bool Translate(const FrameGraph& frontend, VulkanRenderGraph& graph, std::vector<std::string>& errors);
+    bool Translate(const FrameGraph& frontend, RenderGraph& graph, std::vector<std::string>& errors);
 
     /**
      * @brief The object behind the texture \p frontend exports as \p name (RHIDevice::GetExportedTexture).
@@ -57,6 +58,7 @@ public:
     /// @brief Releases every pooled object. Call with the device idle.
     void Shutdown()
     {
+        m_Heap.Clear();
         m_Pool.Clear();
         m_BufferPool.Clear();
         m_Exports.Clear();
@@ -64,11 +66,13 @@ public:
     }
 
     [[nodiscard]] const TransientTexturePool& Pool() const { return m_Pool; }
+    [[nodiscard]] const VulkanTransientHeap& Heap() const { return m_Heap; }
     [[nodiscard]] const TransientBufferPool& BufferPool() const { return m_BufferPool; }
     [[nodiscard]] const ExportPool& Exports() const { return m_Exports; }
 
 private:
     VulkanDevice& m_Device;
+    VulkanTransientHeap m_Heap{m_Device}; ///< transient textures, aliased across shapes (#32)
     TransientTexturePool m_Pool;
     TransientBufferPool m_BufferPool;
     ExportPool m_Exports;

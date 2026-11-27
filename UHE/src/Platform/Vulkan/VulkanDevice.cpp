@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <iostream>
+#include <set>
 #include "Platform/Vulkan/VulkanDebugUtils.h"
 
 // ─── Frame-loop timeouts (§9.1.5: bounded waits, never UINT64_MAX) ──────────
@@ -154,6 +155,26 @@ void VulkanDevice::InitVulkan(const SwapchainDesc& swapDesc)
         m_FrameTimelineValues[i] = 1;
     }
     m_BarrierEncoder.Init(&m_Context);
+    m_CommandLists.Init(*this, &m_Context);
+    m_RenderGraphExecutor.SetQueueFamilies(m_LogicalDevice.getGraphicsQueueFamilyIndex(),
+                                           m_LogicalDevice.getComputeQueueFamilyIndex());
+    m_ComputeTimeline.Init(/*requestTimeline=*/true, 0, &m_Context);
+    // One command list per render graph pass unless asked otherwise: the A/B
+    // for a suspected regression, like UHE_RENDERGRAPH_NO_CACHE.
+    {
+        const char* primaryOnly = std::getenv("UHE_RENDERGRAPH_PRIMARY");
+        m_PerPassLists = primaryOnly == nullptr || *primaryOnly == '\0' || std::string_view(primaryOnly) == "0";
+        UHE_CORE_INFO("Render graph: {}", m_PerPassLists ? "a command list per pass" : "one primary command buffer");
+        // Async compute (issue #32): a dedicated compute queue, timeline
+        // semaphores to order it against graphics, and per-pass lists (a
+        // compute pass's list runs from the compute queue's primary).
+        // UHE_ASYNC_COMPUTE=0 keeps every pass on graphics.
+        const char* async = std::getenv("UHE_ASYNC_COMPUTE");
+        const bool asked = async == nullptr || *async == '\0' || std::string_view(async) != "0";
+        const bool able = m_PerPassLists && m_LogicalDevice.HasDedicatedCompute() && m_ComputeTimeline.IsTimeline();
+        m_FrameGraph.SetCompileOptions(RGCompileOptions{.asyncCompute = asked && able});
+        UHE_CORE_INFO("Render graph: async compute {}", asked && able ? "on" : asked ? "unavailable" : "off");
+    }
     m_Jobsystem.Init();
 
     UHE_CORE_INFO("Vulkan sync tier: {}", SyncTierName(m_ExtensionCheck.GetSyncTier()));
@@ -175,6 +196,7 @@ void VulkanDevice::CleanupVulkan()
     g_VulkanContext = nullptr;
 
     WaitIdle();
+    m_CommandLists.Shutdown();
     m_GpuTimer.Shutdown();
 
     // Pooled frame graph textures go the way of any texture: through the
@@ -202,6 +224,7 @@ void VulkanDevice::CleanupVulkan()
     m_BarrierEncoder.Shutdown();
     for (auto& timeline : m_FrameTimelines)
         timeline.ShutDown();
+    m_ComputeTimeline.ShutDown();
     m_Jobsystem.ShutDown();
 
     m_SwapChain.cleanupSwapChain();
@@ -276,14 +299,20 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc)
         // Transfer both ways too: a storage buffer is also what a frame graph
         // pass copies into or out of.
         usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
-                vk::BufferUsageFlagBits::eTransferDst;
+                vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndirectBuffer;
     }
     else if (desc.usage == BufferUsage::Staging)
     {
         usage = vk::BufferUsageFlagBits::eTransferSrc;
     }
+    else if (desc.usage == BufferUsage::Readback)
+    {
+        usage = vk::BufferUsageFlagBits::eTransferDst;
+    }
 
-    VmaMemoryUsage memUsage = desc.hostVisible ? VMA_MEMORY_USAGE_CPU_TO_GPU : VMA_MEMORY_USAGE_GPU_ONLY;
+    VmaMemoryUsage memUsage = desc.usage == BufferUsage::Readback ? VMA_MEMORY_USAGE_GPU_TO_CPU
+                              : desc.hostVisible                  ? VMA_MEMORY_USAGE_CPU_TO_GPU
+                                                                  : VMA_MEMORY_USAGE_GPU_ONLY;
     buffer->init(m_Allocator, desc.size, usage, memUsage);
     if (desc.debugName != nullptr)
         DebugUtils::Name(static_cast<VkDevice>(*m_LogicalDevice.getLogicalDevice()),
@@ -473,6 +502,7 @@ void VulkanDevice::Begin()
                                                                        VK_TRUE, UINT64_MAX);
     UHE_CORE_ASSERT(waitResult == vk::Result::eSuccess, "Failed to wait for in-flight fence!");
     CollectPixelReadback(); // this slot's fence passed: its copy has landed
+    m_CommandLists.BeginFrame(m_CurrentFrame); // and so did its command lists
     m_GpuTimer.Collect(m_CurrentFrame);
 
     // ── Acquire ONCE (§9.1.4): no retry loop. Out-of-date → recreate + skip
@@ -605,7 +635,11 @@ void VulkanDevice::End()
         SemaphoreSignal{.Semaphore = *m_RenderFinishedSemaphores[m_ImageIndex], .Value = 0};
     const SemaphoreSignal framePaced =
         m_FrameTimelines[m_CurrentFrame].GetSignal(m_FrameTimelineValues[m_CurrentFrame]);
-    const SemaphoreWait waits[] = {acquireWait};
+    // The graphics passes that use async compute output wait for it there.
+    std::vector<SemaphoreWait> waits = {acquireWait};
+    if (m_ComputeWait)
+        waits.push_back(*m_ComputeWait);
+    m_ComputeWait.reset();
     const SemaphoreSignal signals[] = {renderDone, framePaced};
 
     vk::raii::Queue& graphicsQueue = m_LogicalDevice.getGraphicsQueue();
@@ -644,6 +678,9 @@ void VulkanDevice::End()
 
 RHICommandBuffer& VulkanDevice::GetCurrentCommandBuffer()
 {
+    // Inside a render graph pass recording into its own list: that list.
+    if (VulkanCommandBuffer* passList = VulkanCommandBuffer::ThreadPassList())
+        return *passList;
     return m_Frames[m_CurrentFrame].GetCommandBuffer();
 }
 
@@ -766,6 +803,39 @@ void VulkanDevice::RegisterFrameTextureImpl(RGTextureHandle rgTexture, TextureHa
                                           vulkanTexture->GetDesc().height, vulkanTexture->GetDesc().format);
 }
 
+void VulkanDevice::SubmitAsyncCompute(const RGCompiledFrame& compiled, const RGResolvedFrame& resolved)
+{
+    VulkanCommandBuffer* list = m_CommandLists.Begin(
+        CommandListDesc{.Queue = QueueType::Compute, .DebugName = "RenderGraph.AsyncCompute"}, m_CurrentFrame);
+    const vk::CommandBuffer computePrimary = *list->GetHandle();
+    m_RenderGraphExecutor.AssemblePerPass(
+        resolved, m_FrameGraph.GetBuilder().Passes(), computePrimary, m_BarrierEncoder,
+        [computePrimary](const RGResolvedPass& pass)
+        { DebugUtils::BeginLabel(static_cast<VkCommandBuffer>(computePrimary), pass.name.c_str()); },
+        [computePrimary](const RGResolvedPass&) { DebugUtils::EndLabel(static_cast<VkCommandBuffer>(computePrimary)); },
+        RGQueue::Compute);
+    list->End();
+
+    // It may reuse pooled memory the previous frame's graphics work used:
+    // wait for that frame (a signal covers everything submitted before it).
+    std::vector<SemaphoreWait> waits;
+    const u32 previous = (m_CurrentFrame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+    if (m_FrameTimelineValues[previous] > 1)
+        waits.push_back(m_FrameTimelines[previous].GetWait(Stage::AllCommands, m_FrameTimelineValues[previous] - 1));
+    const SemaphoreSignal done = m_ComputeTimeline.GetSignal(++m_ComputeTimelineValue);
+    const CommandBufferRef commands[] = {computePrimary};
+    VulkanSemaphore::Submit(&m_Context, m_LogicalDevice.getComputeQueue(),
+                            SubmitInfo{.Waits = waits, .CommandBuffers = commands, .Signals = std::span(&done, 1)});
+
+    // Graphics waits where its first consumer needs the output; several
+    // consumers at different stages wait at the earliest, all commands.
+    Stage waitStage = compiled.crossQueueEdges.empty() ? Stage::AllCommands : compiled.crossQueueEdges[0].waitStage;
+    for (const RGCrossQueueEdge& edge : compiled.crossQueueEdges)
+        if (edge.waitStage != waitStage)
+            waitStage = Stage::AllCommands;
+    m_ComputeWait = m_ComputeTimeline.GetWait(waitStage, m_ComputeTimelineValue);
+}
+
 void VulkanDevice::EndFrameGraph()
 {
     if (!m_ExtensionCheck.SupportsDynamicRendering())
@@ -788,6 +858,17 @@ void VulkanDevice::EndFrameGraph()
     // cache bug, read once (the answer cannot change mid-run).
     static const bool s_NoCache = Validation::ParseEnabledFlag(std::getenv("UHE_RENDERGRAPH_NO_CACHE"));
     RGCompileResult compiled = s_NoCache ? m_FrameGraph.Compile() : m_FrameGraph.CompileCached();
+    // Said once per pass: an async compute request the compiler could not honour.
+    static std::set<std::string> s_ReportedDemotions;
+    for (const std::string& demoted : compiled.frame.demotedPasses)
+        if (s_ReportedDemotions.insert(demoted).second)
+            UHE_CORE_WARN("[RENDERGRAPH] async compute: {0}; it runs on graphics", demoted);
+    if (static bool s_ReportedAsync = false; !s_ReportedAsync && compiled.frame.HasComputeQueuePass())
+    {
+        s_ReportedAsync = true;
+        UHE_CORE_INFO("[RENDERGRAPH] async compute: passes on the compute queue, {0} handover(s) to graphics",
+                      compiled.frame.crossQueueEdges.size());
+    }
     if (!compiled.Ok())
     {
         for (const RGValidationError& error : compiled.errors)
@@ -824,19 +905,54 @@ void VulkanDevice::EndFrameGraph()
     // which draws into a different framebuffer). Chaining every pass to its
     // predecessor preserves the compiled order; §8.5 lifts this later by
     // giving each pass its own command buffer (per-thread pools).
-    RGResolvedFrame& orderable = resolved;
-    for (size_t slot = 1; slot < orderable.passes.size(); ++slot)
+    const vk::CommandBuffer primary = *m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle();
+    if (m_PerPassLists)
     {
-        const u32 previous = static_cast<u32>(slot) - 1;
-        auto& deps = orderable.passes[slot].dependencies;
-        if (std::find(deps.begin(), deps.end(), previous) == deps.end())
-            deps.push_back(previous);
+        // Each pass records into a list of its own (issue #32); the primary
+        // gets barriers, scopes, timing and the lists, in compiled order.
+        const VulkanRenderGraphExecutor::PassListAllocator allocate = [this](const CommandListDesc& desc)
+        {
+            VulkanCommandBuffer* list = m_CommandLists.Begin(desc, m_CurrentFrame);
+            return VulkanRenderGraphExecutor::PassList{list, list != nullptr ? *list->GetHandle() : nullptr};
+        };
+        const VulkanRenderGraphExecutor::ThreadListBinder bindThread = [](RHICommandBuffer* list)
+        { VulkanCommandBuffer::SetThreadPassList(static_cast<VulkanCommandBuffer*>(list)); };
+        m_PassNodes = m_RenderGraphExecutor.MapToTaskgraphPerPass(
+            m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(), allocate, bindThread);
+        m_RenderGraphExecutor.ExecuteGraph(m_TaskGraph, m_Jobsystem, m_PassNodes);
+        // Async compute first: its passes go into the compute queue's primary
+        // and are submitted now, so they run beside this frame's graphics work.
+        m_ComputeWait.reset();
+        if (compiled.frame.HasComputeQueuePass())
+            SubmitAsyncCompute(compiled.frame, resolved);
+        m_RenderGraphExecutor.AssemblePerPass(
+            resolved, m_FrameGraph.GetBuilder().Passes(), primary, m_BarrierEncoder,
+            [this, primary](const RGResolvedPass& pass)
+            {
+                DebugUtils::BeginLabel(static_cast<VkCommandBuffer>(primary), pass.name.c_str());
+                m_GpuTimer.BeginPass(primary, pass.name);
+            },
+            [this, primary](const RGResolvedPass&)
+            {
+                m_GpuTimer.EndPass(primary);
+                DebugUtils::EndLabel(static_cast<VkCommandBuffer>(primary));
+            });
+        m_RenderGraphExecutor.EndPerPassFrame();
     }
-
-    m_PassNodes =
-        m_RenderGraphExecutor.MapToTaskgraph(m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(),
-                                             m_Frames[m_CurrentFrame].GetCommandBuffer().GetHandle(), m_BarrierEncoder);
-    m_RenderGraphExecutor.ExecuteGraph(m_TaskGraph, m_Jobsystem, m_PassNodes);
+    else
+    {
+        RGResolvedFrame& orderable = resolved;
+        for (size_t slot = 1; slot < orderable.passes.size(); ++slot)
+        {
+            const u32 previous = static_cast<u32>(slot) - 1;
+            auto& deps = orderable.passes[slot].dependencies;
+            if (std::find(deps.begin(), deps.end(), previous) == deps.end())
+                deps.push_back(previous);
+        }
+        m_PassNodes = m_RenderGraphExecutor.MapToTaskgraph(m_TaskGraph, resolved, m_FrameGraph.GetBuilder().Passes(),
+                                                           primary, m_BarrierEncoder);
+        m_RenderGraphExecutor.ExecuteGraph(m_TaskGraph, m_Jobsystem, m_PassNodes);
+    }
     // Recorded: the exported textures end this frame in their final states.
     m_FrameGraphBridge.CommitExports();
     m_TaskGraph.Reset();

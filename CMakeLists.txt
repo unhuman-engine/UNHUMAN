@@ -29,6 +29,7 @@ option(VG_PROFILE "Enable Tracy profiling" ON)
 # Build + register the no-GPU unit tests under CTest (ctest -L unit).
 # See tests/CMakeLists.txt; CI rollout in docs/architecture/ci-cd.md §"Test infrastructure".
 option(UHE_TESTS "Build UHE unit tests and register them with CTest" ON)
+option(UHE_FUZZ "Build the libFuzzer targets in tests/fuzz (Clang; see the fuzz preset)" OFF)
 
 # ---------------------------------------------------------------------------
 # Sanitizer support (GCC / Clang) - one flag to pick them all:
@@ -283,12 +284,12 @@ target_compile_definitions(basisu_transcoder PUBLIC
     BASISU_DISABLE_ANDROID_ASTC_DECOMP=1
 )
 
-# Test-only encoder for the KTX2 round-trip harness: encodes real .ktx2
-# fixtures at run time so the decode assertions run against genuine files
-# rather than hand-packed bytes. EXCLUDE_FROM_ALL keeps it out of normal
-# builds; only tests/gltf links it. SSE is off so the lib needs no special
-# compile flags (encoding speed is irrelevant for a 32x32 fixture).
-add_library(basisu_encoder_testlib EXCLUDE_FROM_ALL STATIC
+# The Basis Universal encoder: the texture cook (tools/texcook, linked by the
+# editor, uhe_export and uhe_cook) encodes a cooked model's images to KTX2
+# with it, and tests/gltf encodes its KTX2 fixtures. libUHE and the runtime
+# never link it; they only transcode. SSE is off so the lib needs no special
+# compile flags; the cook spreads each image over a job pool instead.
+add_library(basisu_encoder EXCLUDE_FROM_ALL STATIC
     "${BASISU_DIR}/encoder/basisu_backend.cpp"
     "${BASISU_DIR}/encoder/basisu_basis_file.cpp"
     "${BASISU_DIR}/encoder/basisu_comp.cpp"
@@ -321,19 +322,25 @@ add_library(basisu_encoder_testlib EXCLUDE_FROM_ALL STATIC
     "${BASISU_DIR}/encoder/basisu_astc_ldr_fencode.cpp"
     "${BASISU_DIR}/encoder/basisu_xbc7_encode.cpp"
 )
-target_include_directories(basisu_encoder_testlib PUBLIC
+target_include_directories(basisu_encoder PUBLIC
     "${BASISU_DIR}/transcoder"
     "${BASISU_DIR}/encoder"
 )
 if(NOT MSVC)
-    target_compile_options(basisu_encoder_testlib PRIVATE -fno-strict-aliasing)
+    target_compile_options(basisu_encoder PRIVATE -fno-strict-aliasing)
 endif()
 # zstd for UASTC supercompression resolves from basisu_transcoder at link time.
-target_compile_definitions(basisu_encoder_testlib PUBLIC
+target_compile_definitions(basisu_encoder PUBLIC
     BASISU_SUPPORT_SSE=0
     BASISU_SUPPORT_KTX2=1
     BASISU_SUPPORT_KTX2_ZSTD=1
 )
+# The codec is vendor code nobody steps through, and at -O0 a Debug cook of
+# one 4K image takes minutes instead of seconds: optimise it in every build.
+if(NOT MSVC)
+    target_compile_options(basisu_encoder PRIVATE $<$<CONFIG:Debug>:-O2>)
+    target_compile_options(basisu_transcoder PRIVATE $<$<CONFIG:Debug>:-O2>)
+endif()
 
 # MSDF text rendering (msdf-atlas-gen + msdfgen)
 set(MSDF_ATLAS_USE_VCPKG OFF        CACHE BOOL "" FORCE)

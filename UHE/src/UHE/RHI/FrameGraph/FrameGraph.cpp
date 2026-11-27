@@ -276,6 +276,16 @@ FGHandle<FGTexture> FGBuilder::Write(FGHandle<FGTexture> handle, FGWrite usage, 
     return {index, resource.Version, m_Graph.m_Frame};
 }
 
+void FGBuilder::RecordInParallel()
+{
+    m_Graph.m_Passes[m_Pass].ParallelRecording = true;
+}
+
+void FGBuilder::RunOnAsyncCompute()
+{
+    m_Graph.m_Passes[m_Pass].AsyncCompute = true;
+}
+
 FGHandle<FGBuffer> FGBuilder::Write(FGHandle<FGBuffer> handle, FGWrite usage)
 {
     auto& pass = m_Graph.m_Passes[m_Pass];
@@ -496,6 +506,8 @@ FGLoweredFrame FrameGraph::Lower() const
         lowered.Type = m_Passes[i].Type;
         lowered.Index = i;
         lowered.Accesses = m_Passes[i].Accesses;
+        lowered.ParallelRecording = m_Passes[i].ParallelRecording;
+        lowered.AsyncCompute = m_Passes[i].AsyncCompute;
         frame.Passes.push_back(std::move(lowered));
     }
     frame.Hash = Hash();

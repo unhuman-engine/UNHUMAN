@@ -82,7 +82,8 @@ std::shared_ptr<AssetRecord> AssetManager::CreateRecord(const std::string& path,
                                                         const std::shared_ptr<IAssetLoader>& loader)
 {
     auto record = std::make_shared<AssetRecord>();
-    record->id = UUID();
+    const AssetID stable = CatalogIDForLocked(path); // the caller holds m_Mutex
+    record->id = static_cast<u64>(stable) != 0 && !m_Registry.contains(stable) ? stable : UUID();
     record->sourcePath = path;
     record->type = type;
     record->loader = loader;
@@ -398,6 +399,42 @@ bool AssetManager::IsReady(AssetID id) const
     auto it = m_Registry.find(id);
     return it != m_Registry.end() && it->second->state.load(std::memory_order_acquire) == LoadState::Ready &&
            it->second->finalized.load(std::memory_order_acquire);
+}
+
+void AssetManager::LoadCatalog(const AssetCatalog& catalog)
+{
+    std::scoped_lock lock(m_Mutex);
+    for (const AssetCatalogEntry& entry : catalog.Entries())
+    {
+        m_CatalogIDs[entry.Path] = entry.ID;
+        if (!entry.Stored.empty())
+            m_CatalogIDs[entry.Stored] = entry.ID;
+    }
+}
+
+AssetID AssetManager::CatalogIDFor(std::string_view path) const
+{
+    std::scoped_lock lock(m_Mutex);
+    return CatalogIDForLocked(path);
+}
+
+AssetID AssetManager::CatalogIDForLocked(std::string_view path) const
+{
+    if (m_CatalogIDs.empty())
+        return AssetID(0);
+    const std::string generic = std::filesystem::path(path).generic_string();
+    if (const auto it = m_CatalogIDs.find(generic); it != m_CatalogIDs.end())
+        return it->second;
+    // A resolved path ("/game/Assets/Models/Tree.gltf"): the longest listed
+    // path it ends with, on a folder boundary.
+    std::size_t slash = generic.find('/');
+    while (slash != std::string::npos)
+    {
+        if (const auto it = m_CatalogIDs.find(generic.substr(slash + 1)); it != m_CatalogIDs.end())
+            return it->second;
+        slash = generic.find('/', slash + 1);
+    }
+    return AssetID(0);
 }
 
 AssetID AssetManager::FindByPath(std::string_view path) const

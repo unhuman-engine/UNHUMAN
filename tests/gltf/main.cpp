@@ -17,6 +17,8 @@
 // No GPU: the loader is exercised through its CPU-side scene walk only, so this
 // links no RHI and needs no Vulkan device.
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_STATIC
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -32,6 +34,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "ModelCookOptions.h"
 #include "UHE/AssetsManager/CookedFile.h"
 #include "UHE/AssetsManager/PrimitiveGltf.h"
 #include "UHE/Core/Log.h"
@@ -39,6 +42,7 @@
 #include "UHE/Renderer3D/LoadModel.h"
 #include "UHE/Renderer3D/MaterialGPU.h"
 #include "UHE/Scene/Components.h"
+#include "stb_image_write.h"
 
 // Basis Universal: the encoder generates real KTX2 fixtures at run time, the
 // transcoder is what the engine (and KTX2.h) use to decode them.
@@ -1223,6 +1227,27 @@ glm::vec3 translationOf(const glm::mat4& m)
 }
 
 } // namespace
+
+// The cook stores index buffers with meshopt's codec (issue #45), which keeps
+// every triangle and its winding but may start it at another corner: (a, b, c)
+// can come back as (c, a, b). Equal triangle lists up to that rotation draw the
+// same thing.
+static bool SameTriangles(const std::vector<u32>& a, const std::vector<u32>& b)
+{
+    if (a.size() != b.size())
+        return false;
+    if (a.size() % 3 != 0)
+        return a == b;
+    for (std::size_t i = 0; i < a.size(); i += 3)
+    {
+        const bool same = (a[i] == b[i] && a[i + 1] == b[i + 1] && a[i + 2] == b[i + 2]) ||
+                          (a[i] == b[i + 1] && a[i + 1] == b[i + 2] && a[i + 2] == b[i]) ||
+                          (a[i] == b[i + 2] && a[i + 1] == b[i] && a[i + 2] == b[i + 1]);
+        if (!same)
+            return false;
+    }
+    return true;
+}
 
 int main()
 {
@@ -3407,12 +3432,13 @@ int main()
                     const auto& pb = b.GetGeometry()[g].primitive;
                     geometry = pa.size() == pb.size();
                     for (std::size_t p = 0; geometry && p < pa.size(); ++p)
-                        geometry = pa[p].indices == pb[p].indices && pa[p].vertices.size() == pb[p].vertices.size() &&
+                        geometry = SameTriangles(pa[p].indices, pb[p].indices) &&
+                                   pa[p].vertices.size() == pb[p].vertices.size() &&
                                    std::memcmp(pa[p].vertices.data(), pb[p].vertices.data(),
                                                pa[p].vertices.size() * sizeof(UHE::RD3d::Vertex)) == 0 &&
                                    pa[p].materialIndex == pb[p].materialIndex;
                 }
-                check(geometry, "geometry is identical, vertex for vertex");
+                check(geometry, "geometry is identical, vertex for vertex (triangles up to rotation)");
                 check(a.GetMesh().size() == b.GetMesh().size() && a.GetNodes().size() == b.GetNodes().size() &&
                           a.GetRootNodes() == b.GetRootNodes(),
                       "meshes, nodes and roots match");
@@ -3508,6 +3534,189 @@ int main()
                   "the mesh keeps its skin");
             UHE::RD3d::Model unsaved;
             check(!unsaved.SaveCooked(cooked, 0, &error), "a model loaded without its sources refuses to cook");
+        }
+    }
+
+    section("the texture cook: KTX2 that samples like its source (issue #45)");
+    {
+        // 8 x 8, top half red, bottom half blue: each colour fills whole 4x4
+        // blocks, so even ETC1S keeps them apart. The runtime's stb load flips
+        // rows, so its first row is the blue bottom one; the KTX2 must agree.
+        constexpr int kW = 8, kH = 8;
+        std::vector<u8> pixels(std::size_t{kW} * kH * 4);
+        for (int y = 0; y < kH; ++y)
+            for (int x = 0; x < kW; ++x)
+            {
+                u8* p = &pixels[((static_cast<std::size_t>(y) * kW) + x) * 4];
+                p[0] = y < 4 ? 255 : 0;
+                p[1] = 0;
+                p[2] = y < 4 ? 0 : 255;
+                p[3] = 255;
+            }
+        int pngSize = 0;
+        unsigned char* png = stbi_write_png_to_mem(pixels.data(), kW * 4, kW, kH, 4, &pngSize);
+        const std::vector<u8> source(png, png + pngSize);
+        STBIW_FREE(png);
+
+        UHE::Cook::TextureCookOptions options;
+        options.Threads = 1;
+        std::vector<u8> ktx2;
+        std::string error;
+        if (check(UHE::Cook::EncodeKTX2(source, UHE::Cook::TextureRole::Color, options, ktx2, error),
+                  "a PNG encodes: " + error))
+        {
+            check(UHE::IsKTX2(ktx2.data(), ktx2.size()), "the result is a KTX2 file");
+            UHE::KTX2Image image;
+            if (check(UHE::LoadKTX2(ktx2.data(), ktx2.size(), image), "it decodes"))
+            {
+                check(image.width == kW && image.height == kH, "the size is kept");
+                check(image.mips.size() == 4, "a full mip chain is stored (8x8 to 1x1)");
+                const u8* first = image.rgba.data();
+                const u8* last = image.rgba.data() + (std::size_t{kH - 1} * kW * 4);
+                check(first[2] > 200 && first[0] < 60, "the first row is blue, as the flipped PNG load has it");
+                check(last[0] > 200 && last[2] < 60, "the last row is red");
+            }
+            // KTX2 header: supercompressionScheme at byte 44 (1 BasisLZ: ETC1S, 2 zstd: UASTC).
+            check(ktx2.size() > 48 && ktx2[44] == 1, "colour is ETC1S under Auto");
+        }
+        std::vector<u8> normal;
+        if (check(UHE::Cook::EncodeKTX2(source, UHE::Cook::TextureRole::Normal, options, normal, error),
+                  "a normal map encodes"))
+            check(normal.size() > 48 && normal[44] == 2, "a normal map is UASTC with zstd under Auto");
+        std::vector<u8> kept;
+        check(UHE::Cook::EncodeKTX2(ktx2, UHE::Cook::TextureRole::Color, options, kept, error) && kept == ktx2,
+              "a KTX2 source is stored unchanged");
+        options.MaxSize = 2;
+        std::vector<u8> small;
+        UHE::KTX2Image smallImage;
+        check(UHE::Cook::EncodeKTX2(source, UHE::Cook::TextureRole::Color, options, small, error) &&
+                  UHE::LoadKTX2(small.data(), small.size(), smallImage) && smallImage.width == 2 &&
+                  smallImage.height == 2,
+              "MaxSize halves an image until it fits (8x8 to 2x2)");
+        UHE::Cook::TextureCookOptions mobile;
+        check(UHE::Cook::TextureOptionsForPlatform("mobile", mobile) && mobile.MaxSize == 2048 &&
+                  !UHE::Cook::TextureOptionsForPlatform("toaster", mobile),
+              "platforms name their texture settings");
+        UHE::Cook::TextureCookOptions cachedOptions;
+        cachedOptions.Threads = 1;
+        cachedOptions.CacheDir = dir.path() / "texture_cache";
+        std::vector<u8> first, second;
+        check(UHE::Cook::EncodeKTX2(source, UHE::Cook::TextureRole::Color, cachedOptions, first, error) &&
+                  std::distance(fs::directory_iterator(cachedOptions.CacheDir), fs::directory_iterator()) == 1,
+              "an encode with a cache folder stores its result");
+        for (const auto& entry : fs::directory_iterator(cachedOptions.CacheDir))
+        {
+            std::ofstream marker(entry.path(), std::ios::binary | std::ios::app);
+            marker << "cached"; // a cache hit returns these bytes, an encode would not
+        }
+        check(UHE::Cook::EncodeKTX2(source, UHE::Cook::TextureRole::Color, cachedOptions, second, error) &&
+                  second.size() == first.size() + 6,
+              "the same image and settings come from the cache, not the encoder");
+        cachedOptions.Etc1sQuality = 200;
+        check(UHE::Cook::EncodeKTX2(source, UHE::Cook::TextureRole::Color, cachedOptions, second, error) &&
+                  std::distance(fs::directory_iterator(cachedOptions.CacheDir), fs::directory_iterator()) == 2,
+              "other settings are another entry");
+        const std::vector<u8> junk = {1, 2, 3, 4};
+        check(!UHE::Cook::EncodeKTX2(junk, UHE::Cook::TextureRole::Color, options, small, error),
+              "bytes that are no image are refused");
+    }
+
+    section("a cook encodes images, records its files and drops redundant keys (issue #45)");
+    {
+        // One triangle, and a node moving along x for 8 seconds with a bump in y
+        // at t = 4: keys 0-3 and 5-8 lie on lines, so 0, 3, 4, 5 and 8 remain.
+        const fs::path folder = dir.path() / "cook_full";
+        fs::create_directories(folder);
+        std::vector<float> data = {0, 0, 0, 1, 0, 0, 0, 1, 0}; // positions
+        for (int t = 0; t <= 8; ++t)
+            data.push_back(static_cast<float>(t)); // times
+        for (int t = 0; t <= 8; ++t)
+        {
+            data.push_back(static_cast<float>(t));
+            data.push_back(t == 4 ? 1.0f : 0.0f);
+            data.push_back(0.0f);
+        }
+        {
+            std::ofstream bin(folder / "moving.bin", std::ios::binary);
+            bin.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size() * 4));
+            const std::vector<u8> white(std::size_t{4} * 4 * 4, 255);
+            int pngSize = 0;
+            unsigned char* encoded = stbi_write_png_to_mem(white.data(), 16, 4, 4, 4, &pngSize);
+            std::ofstream png(folder / "tex.png", std::ios::binary);
+            png.write(reinterpret_cast<const char*>(encoded), pngSize);
+            std::ofstream copy(folder / "copy of tex.png", std::ios::binary);
+            copy.write(reinterpret_cast<const char*>(encoded), pngSize);
+            STBIW_FREE(encoded);
+            std::ofstream gltf(folder / "moving.gltf");
+            gltf << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+"nodes":[{"mesh":0,"name":"mover"}],
+"meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],
+"materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}},"emissiveTexture":{"index":1},"emissiveFactor":[1,1,1]}],
+"textures":[{"source":0},{"source":1}],
+"images":[{"uri":"tex.png"},{"uri":"copy%20of%20tex.png"}],
+"animations":[{"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}],
+"samplers":[{"input":1,"output":2,"interpolation":"LINEAR"}]}],
+"buffers":[{"uri":"moving.bin","byteLength":)"
+                 << data.size() * 4 << R"(}],
+"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":36},
+{"buffer":0,"byteOffset":72,"byteLength":108}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+{"bufferView":1,"componentType":5126,"count":9,"type":"SCALAR","min":[0],"max":[8]},
+{"bufferView":2,"componentType":5126,"count":9,"type":"VEC3"}]})";
+        }
+        const fs::path source = folder / "moving.gltf";
+        const fs::path cooked = UHE::RD3d::Model::CookedPathFor(source);
+        UHE::Cook::TextureCookOptions textures;
+        textures.Threads = 1;
+        UHE::RD3d::CookReport report;
+        std::string error;
+        if (check(UHE::RD3d::CookModelFile(source, cooked, error, UHE::Cook::MakeModelCookOptions(textures), &report),
+                  "it cooks: " + error))
+        {
+            check(report.TexturesDeduplicated == 1, "two image files with the same bytes and sampler are stored once");
+            check(report.TexturesEncoded == 1, "the stored image is encoded");
+            check(report.AnimationKeysBefore == 9 && report.AnimationKeysAfter == 5,
+                  "keys on a line are dropped, the bump is kept (" + std::to_string(report.AnimationKeysAfter) +
+                      " of " + std::to_string(report.AnimationKeysBefore) + ")");
+            check(report.Dependencies == 3, "the buffer and both images are recorded");
+
+            UHE::RD3d::ModelLoadOptions noGpu;
+            noGpu.upload = false;
+            noGpu.keepTextureSources = true;
+            UHE::RD3d::Model loaded;
+            if (check(loaded.LoadCooked(cooked, noGpu, &error), "the cook loads: " + error))
+            {
+                check(loaded.GetTextureSources().size() == 1 && UHE::IsKTX2(loaded.GetTextureSources()[0].Bytes.data(),
+                                                                            loaded.GetTextureSources()[0].Bytes.size()),
+                      "the image is stored as KTX2");
+                const auto& slots = loaded.GetMaterialTextureSources();
+                const auto at = [](UHE::RD3d::MaterialTextureSlot slot) { return static_cast<std::size_t>(slot); };
+                check(slots.size() == 1 && slots[0][at(UHE::RD3d::MaterialTextureSlot::Albedo)] == 0 &&
+                          slots[0][at(UHE::RD3d::MaterialTextureSlot::Emissive)] == 0,
+                      "both slots sample the one stored image");
+                const auto& deps = loaded.GetCookDependencies();
+                check(deps.size() == 3 && deps[0].Path == "tex.png" && deps[1].Path == "copy of tex.png" &&
+                          deps[2].Path == "moving.bin" && deps[2].Hash == UHE::Cooked::HashFile(folder / "moving.bin"),
+                      "DEPS names each file, URI-decoded, with its hash");
+                const auto& keys = loaded.GetAnimations().at(0).PositionTracks.at(0).Keyframes;
+                bool kept = keys.size() == 5;
+                const float times[] = {0, 3, 4, 5, 8};
+                for (std::size_t k = 0; kept && k < keys.size(); ++k)
+                    kept = keys[k].Time == times[k];
+                check(kept, "the kept keys are 0, 3, 4, 5 and 8");
+            }
+
+            fs::last_write_time(cooked, fs::last_write_time(folder / "tex.png") + std::chrono::seconds(5));
+            check(UHE::RD3d::Model::CookIsCurrent(cooked), "a cook newer than its files is current");
+            fs::last_write_time(folder / "tex.png", fs::last_write_time(cooked) + std::chrono::seconds(5));
+            check(!UHE::RD3d::Model::CookIsCurrent(cooked), "an image changed after the cook makes it stale");
+            UHE::RD3d::Model viaSource;
+            UHE::StubReset();
+            check(viaSource.loadModel(source) && viaSource.GetCookDependencies().empty(),
+                  "loadModel then reads the glTF, not the stale cook");
+            fs::remove(folder / "tex.png");
+            check(UHE::RD3d::Model::CookIsCurrent(cooked),
+                  "a file that is gone (a shipped game) is no reason to recook");
         }
     }
 

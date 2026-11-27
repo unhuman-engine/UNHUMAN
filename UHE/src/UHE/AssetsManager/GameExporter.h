@@ -30,6 +30,23 @@ struct ExportOptions
      * glTF. Unset (tests, tools without a renderer): models ship as they are.
      */
     std::function<bool(const std::filesystem::path&, const std::filesystem::path&, std::string&)> CookModel;
+    /**
+     * Cooks a standalone image (a sprite or texture scenes and scripts name,
+     * not one a model reads) at the first path into a KTX2 file at the second
+     * (tools/texcook): the game then ships `<image>.ktx2` instead and parses no
+     * PNG or JPEG. Unset: images ship as they are.
+     */
+    std::function<bool(const std::filesystem::path&, const std::filesystem::path&, std::string&)> CookTexture;
+    /// Cooks a WAV into `<sound>.wav.uheaudio` (UHE/Audio/CookedAudio.h); unset: sounds ship as they are.
+    std::function<bool(const std::filesystem::path&, const std::filesystem::path&, std::string&)> CookAudio;
+    /// The platform the game is for, recorded in its AssetManifest.yaml (desktop, mobile).
+    std::string Platform = "desktop";
+    /**
+     * Refresh `<project>/AssetRegistry.yaml` (stable IDs for every file under
+     * Assets/) before writing the game's manifest. Off only for a read-only
+     * project; the manifest's IDs are then the registry's as it stands.
+     */
+    bool UpdateRegistry = true;
 };
 
 /// @brief The files a game reads, found from its scenes and scripts (GameExporter::CollectAssets).
@@ -52,6 +69,8 @@ struct ExportReport
     std::size_t FilesCopied = 0;
     std::uintmax_t BytesCopied = 0;
     std::size_t ModelsCooked = 0;     ///< shipped as .uhemodel (ExportOptions::CookModel)
+    std::size_t ImagesCooked = 0;     ///< shipped as .ktx2 (ExportOptions::CookTexture)
+    std::size_t SoundsCooked = 0;     ///< shipped as .uheaudio (ExportOptions::CookAudio)
     std::filesystem::path Executable; ///< the game's executable, when Ok
 };
 
@@ -103,6 +122,17 @@ public:
 
     /// @brief The project name made safe for a file name (letters, digits, '-', '_', '.').
     [[nodiscard]] static std::string ExecutableName(const std::string& projectName);
+
+    /**
+     * @brief Writes `<out>/Assets/AssetManifest.yaml`: every shipped file with its stable ID (issue #45).
+     *
+     * Project files take their IDs from `<project>/AssetRegistry.yaml`, which
+     * this refreshes first (ExportOptions::UpdateRegistry); engine files get
+     * an ID derived from their path. A cooked model is listed under the glTF
+     * path scenes name, with the `.uhemodel` as the file that stores it.
+     */
+    static void WriteAssetManifest(const ProjectInfo& project, const ExportOptions& options,
+                                   const std::filesystem::path& out, ExportReport& report);
 
     static constexpr const char* kMarkerName = ".uhe-export";
     /// Written by uhe_shaderc next to the sources it compiles (tools/shaderc/main.cpp).

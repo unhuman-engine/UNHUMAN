@@ -1,11 +1,12 @@
 #pragma once
+#include <mutex>
 #include <optional>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
 #include "Platform/Vulkan/RenderGraph/VulkanFrameGraphBridge.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraph.h"
 #include "Platform/Vulkan/RenderGraph/VulkanRenderGraphExecutor.h"
 #include "Platform/Vulkan/VulkanBarrierEncoder.h"
+#include "Platform/Vulkan/VulkanCommandLists.h"
 #include "Platform/Vulkan/VulkanContext.h"
 #include "Platform/Vulkan/VulkanDescriptorManager.h"
 #include "Platform/Vulkan/VulkanExtensionCheck.h"
@@ -19,6 +20,7 @@
 #include "UHE/Core/Core.h"
 #include "UHE/RHI/FrameGraph/FrameGraph.h"
 #include "UHE/RHI/RHIDevice.h"
+#include "UHE/RHI/RenderGraph/RenderGraph.h"
 
 namespace UHE::RHI::VULKAN
 {
@@ -81,7 +83,7 @@ public:
     [[nodiscard]] VulkanRenderGraphExecutor& GetRenderGraphExecutor() { return m_RenderGraphExecutor; }
     // Per-frame graph feature passes declare into (M5 step 4); Reset() by
     // EndFrameGraph() after recording.
-    [[nodiscard]] VulkanRenderGraph& GetRenderGraph() { return m_FrameGraph; }
+    [[nodiscard]] RenderGraph& GetRenderGraph() { return m_FrameGraph; }
     /// \copydoc RHIDevice::GetFrameGraph
     [[nodiscard]] FrameGraph* GetFrameGraph() override { return &m_Frontend; }
     /// @brief Binds \p buffer to a render graph buffer slot for this frame.
@@ -150,8 +152,28 @@ public:
     void BeginGpuPass(const std::string& name);
     void EndGpuPass();
     [[nodiscard]] bool SupportsWireframe() const override { return m_ExtensionCheck.SupportsWireframe(); }
+
+    // ── Thin core (RHICore.h; VulkanDeviceCore.cpp) ─────────────────────────
+    [[nodiscard]] const DeviceLimits& GetLimits() const override;
+    [[nodiscard]] void* GetNativeHandle(NativeObject object) const override;
+    [[nodiscard]] void* GetNativeTextureHandle(TextureHandle texture, NativeTextureObject object) const override;
+    [[nodiscard]] void* GetNativeBufferHandle(BufferHandle buffer) const override;
+    bool ReadBuffer(BufferHandle buffer, u64 offset, std::span<u8> out) override;
+    TextureHandle ImportTexture(const TextureImportDesc& desc) override;
+    TextureHandle CreateTextureView(TextureHandle texture, const TextureViewDesc& desc) override;
+    QueryPoolHandle CreateQueryPool(const QueryPoolDesc& desc) override;
+    void DestroyQueryPool(QueryPoolHandle pool) override;
+    bool GetQueryResults(QueryPoolHandle pool, u32 first, std::span<u64> out, bool wait = false) override;
+    DescriptorSetLayoutHandle CreateDescriptorSetLayout(const DescriptorSetLayoutDesc& desc) override;
+    void DestroyDescriptorSetLayout(DescriptorSetLayoutHandle layout) override;
+    DescriptorSetHandle CreateDescriptorSet(DescriptorSetLayoutHandle layout) override;
+    void UpdateDescriptorSet(DescriptorSetHandle set, std::span<const DescriptorWrite> writes) override;
+    void DestroyDescriptorSet(DescriptorSetHandle set) override;
+    RHICommandBuffer* BeginCommandList(const CommandListDesc& desc) override;
+    void Submit(const SubmitDesc& desc) override;
     [[nodiscard]] inline const u32& ImageIndex() { return m_ImageIndex; }
     [[nodiscard]] inline VulkanDescriptorManager* GetDescriptorManager() { return &m_DescriptorManager; }
+    [[nodiscard]] inline VulkanBarrierEncoder& GetBarrierEncoder() { return m_BarrierEncoder; }
     [[nodiscard]] inline VulkanContext& GetVulkanContext() { return m_Context; }
     void ImmediateSubmit(std::function<void(vk::raii::CommandBuffer& cmd)>&& function);
 
@@ -215,10 +237,18 @@ private:
     VulkanRenderGraphExecutor m_RenderGraphExecutor;
     VulkanGpuTimer m_GpuTimer;
     VulkanBarrierEncoder m_BarrierEncoder;
+    VulkanCommandLists m_CommandLists;
+    bool m_PerPassLists = true;                 ///< UHE_RENDERGRAPH_PRIMARY=1: every pass into the frame's primary
+    VulkanSemaphore m_ComputeTimeline;          ///< async compute work done (issue #32)
+    u64 m_ComputeTimelineValue = 0;             ///< last value signalled
+    std::optional<SemaphoreWait> m_ComputeWait; ///< what this frame's graphics submission waits for
+    void SubmitAsyncCompute(const RGCompiledFrame& compiled, const RGResolvedFrame& resolved);
+    mutable DeviceLimits m_Limits;
+    mutable std::once_flag m_LimitsOnce;
 
     // Frame graph + TaskGraph mapping (§14 step 5): per-frame declare →
     // resolve → record; TaskGraph topology refreshed every EndFrameGraph().
-    VulkanRenderGraph m_FrameGraph;
+    RenderGraph m_FrameGraph;
     // FrameGraph frontend: declared by layers, realized on m_FrameGraph once
     // per frame by the bridge (FlushFrontend), reset at the end of End().
     FrameGraph m_Frontend;

@@ -74,6 +74,53 @@ void VulkanCommandBuffer::BeginRenderPass(const RenderPassDesc& desc)
     vk::Extent2D renderExtent;
     m_CurrentRenderPassDesc = desc;
 
+    // The convenience pass over the thin core (issue #30): it moves every
+    // attachment from Undefined into its attachment state with Barrier(),
+    // always clears it, and opens the scope with BeginRendering(). The
+    // swapchain fallback and the legacy render-pass tier below stay as they
+    // were: the swapchain image is no TextureHandle, and the legacy tier has no
+    // dynamic rendering.
+    if (desc.colorAttachmentCount > 0 && m_ctx->CheckExtensions->Supports(Extension::DynamicRendering))
+    {
+        std::vector<TextureBarrier> toAttachment;
+        RenderPassDesc cleared = desc;
+        for (u32 i = 0; i < desc.colorAttachmentCount; ++i)
+        {
+            if (desc.colorAttachments[i].texture == nullptr)
+                continue;
+            toAttachment.push_back(TextureBarrier{.Texture = desc.colorAttachments[i].texture,
+                                                  .Old = ImageState::Undefined,
+                                                  .New = ImageState::ColorAttachment,
+                                                  .SrcStage = Stage::ColorOutput,
+                                                  .DstStage = Stage::ColorOutput,
+                                                  .SrcAccess = Access::None,
+                                                  .DstAccess = Access::ColorWrite,
+                                                  .MipCount = 1,
+                                                  .LayerCount = 1});
+            cleared.colorAttachments[i].loadOp = LoadOp::Clear;
+            cleared.colorAttachments[i].storeOp = StoreOp::Store;
+        }
+        if (desc.hasDepth && desc.depthAttachment.texture != nullptr)
+        {
+            toAttachment.push_back(TextureBarrier{.Texture = desc.depthAttachment.texture,
+                                                  .Old = ImageState::Undefined,
+                                                  .New = ImageState::DepthAttachment,
+                                                  .SrcStage = Stage::DepthTests,
+                                                  .DstStage = Stage::DepthTests,
+                                                  .SrcAccess = Access::None,
+                                                  .DstAccess = Access::DepthWrite,
+                                                  .MipCount = 1,
+                                                  .LayerCount = 1});
+            cleared.depthAttachment.loadOp = LoadOp::Clear;
+            cleared.depthAttachment.storeOp = StoreOp::Store;
+            cleared.depthAttachment.clearDepth = 1.0f;
+            cleared.depthAttachment.clearStencil = 0;
+        }
+        Barrier(toAttachment);
+        BeginRendering(cleared);
+        return;
+    }
+
     if (desc.colorAttachmentCount == 0)
     {
         // Swapchain fallback
@@ -284,6 +331,36 @@ void VulkanCommandBuffer::EndRenderPass()
         m_CommandBuffer.endRenderPass();
         return;
     }
+    if (m_CurrentRenderPassDesc.colorAttachmentCount > 0)
+    {
+        // Over the core: close the scope, then hand every attachment to the
+        // fragment shaders that sample it next (the editor's viewport image).
+        EndRendering();
+        std::vector<TextureBarrier> toShaderRead;
+        for (u32 i = 0; i < m_CurrentRenderPassDesc.colorAttachmentCount; ++i)
+            if (m_CurrentRenderPassDesc.colorAttachments[i].texture != nullptr)
+                toShaderRead.push_back(TextureBarrier{.Texture = m_CurrentRenderPassDesc.colorAttachments[i].texture,
+                                                      .Old = ImageState::ColorAttachment,
+                                                      .New = ImageState::ShaderRead,
+                                                      .SrcStage = Stage::ColorOutput,
+                                                      .DstStage = Stage::Fragment,
+                                                      .SrcAccess = Access::ColorWrite,
+                                                      .DstAccess = Access::ShaderRead,
+                                                      .MipCount = 1,
+                                                      .LayerCount = 1});
+        if (m_CurrentRenderPassDesc.hasDepth && m_CurrentRenderPassDesc.depthAttachment.texture != nullptr)
+            toShaderRead.push_back(TextureBarrier{.Texture = m_CurrentRenderPassDesc.depthAttachment.texture,
+                                                  .Old = ImageState::DepthAttachment,
+                                                  .New = ImageState::ShaderRead,
+                                                  .SrcStage = Stage::DepthTests,
+                                                  .DstStage = Stage::Fragment,
+                                                  .SrcAccess = Access::DepthWrite,
+                                                  .DstAccess = Access::ShaderRead,
+                                                  .MipCount = 1,
+                                                  .LayerCount = 1});
+        Barrier(toShaderRead);
+        return;
+    }
     m_CommandBuffer.endRendering();
 
     std::vector<vk::ImageMemoryBarrier> barriers;
@@ -373,6 +450,7 @@ void VulkanCommandBuffer::BindPipeline(PipelineHandle handle)
     auto* pipeline = reinterpret_cast<VulkanPipelineState*>(handle);
 
     m_CurrentPipelineLayout = pipeline->GetPipelineLayout();
+    m_CurrentBindPoint = pipeline->GetBindPoint();
     m_CommandBuffer.bindPipeline(pipeline->GetBindPoint(), pipeline->GetPipeline());
 
     if (m_DescriptorManager)

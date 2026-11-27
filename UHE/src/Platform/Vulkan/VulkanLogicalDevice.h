@@ -37,12 +37,36 @@ public:
     [[nodiscard]] vk::raii::Device& getLogicalDevice() { return m_logicalDevice; }
     [[nodiscard]] u32 getGraphicsQueueFamilyIndex() const { return m_graphicsQueueFamilyIndex; }
     [[nodiscard]] vk::raii::Queue& getGraphicsQueue() { return m_graphicsQueue; }
+    /// The dedicated compute queue, or the graphics one on a GPU without a compute-only family.
+    [[nodiscard]] vk::raii::Queue& getComputeQueue()
+    {
+        return HasDedicatedCompute() ? m_computeQueue : m_graphicsQueue;
+    }
+    /// The dedicated transfer queue, or the graphics one on a GPU without a transfer-only family.
+    [[nodiscard]] vk::raii::Queue& getTransferQueue()
+    {
+        return HasDedicatedTransfer() ? m_transferQueue : m_graphicsQueue;
+    }
+    [[nodiscard]] u32 getComputeQueueFamilyIndex() const
+    {
+        return HasDedicatedCompute() ? m_computeQueueFamilyIndex : m_graphicsQueueFamilyIndex;
+    }
+    [[nodiscard]] u32 getTransferQueueFamilyIndex() const
+    {
+        return HasDedicatedTransfer() ? m_transferQueueFamilyIndex : m_graphicsQueueFamilyIndex;
+    }
+    [[nodiscard]] bool HasDedicatedCompute() const { return m_computeQueueFamilyIndex != static_cast<u32>(-1); }
+    [[nodiscard]] bool HasDedicatedTransfer() const { return m_transferQueueFamilyIndex != static_cast<u32>(-1); }
     [[nodiscard]] vk::raii::SurfaceKHR& getSurface() { return surface; }
 
 private:
     u32 m_graphicsQueueFamilyIndex{0};
     vk::raii::Device m_logicalDevice = nullptr;
     vk::raii::Queue m_graphicsQueue = nullptr;
+    u32 m_computeQueueFamilyIndex = static_cast<u32>(-1);  ///< compute without graphics; -1: none
+    u32 m_transferQueueFamilyIndex = static_cast<u32>(-1); ///< transfer only; -1: none
+    vk::raii::Queue m_computeQueue = nullptr;
+    vk::raii::Queue m_transferQueue = nullptr;
     vk::raii::SurfaceKHR surface = nullptr;
     VmaAllocator m_allocator = nullptr;
 };

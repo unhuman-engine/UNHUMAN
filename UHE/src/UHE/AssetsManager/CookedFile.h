@@ -41,6 +41,9 @@ constexpr u32 FourCC(const char (&text)[5])
 /// @brief A stable 64-bit hash (FNV-1a) of a file's bytes; 0 when it cannot be read.
 [[nodiscard]] UHE_API u64 HashFile(const std::filesystem::path& path);
 
+/// @brief The same hash of \p size bytes in memory: HashBytes of a file's contents equals HashFile.
+[[nodiscard]] UHE_API u64 HashBytes(const void* data, std::size_t size, u64 hash = 1469598103934665603ull);
+
 /// @brief Appends values to a byte buffer in this machine's byte order.
 class UHE_API BinaryWriter
 {

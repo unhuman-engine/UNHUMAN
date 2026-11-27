@@ -211,14 +211,16 @@ bool Model::loadModel(const std::filesystem::path& filepath, const ModelLoadOpti
     }
     const std::filesystem::path& modelPath = resolved;
 
-    // A cook of this source, when the source is gone (an exported game) or older:
-    // the runtime then reads the cooked binary and never parses the glTF.
+    // A cook of this source, when the source is gone (an exported game) or older,
+    // and so is every buffer and image it reads (CookIsCurrent): the runtime then
+    // reads the cooked binary and never parses the glTF.
     const std::filesystem::path cooked = CookedPathFor(modelPath);
     if (Lower(modelPath.extension().string()) == ".uhemodel")
         return LoadCooked(modelPath, options);
     if (std::error_code ec;
         std::filesystem::exists(cooked, ec) && !options.keepTextureSources &&
-        std::filesystem::last_write_time(cooked, ec) >= std::filesystem::last_write_time(modelPath, ec))
+        std::filesystem::last_write_time(cooked, ec) >= std::filesystem::last_write_time(modelPath, ec) &&
+        CookIsCurrent(cooked))
     {
         if (std::string error; LoadCooked(cooked, options, &error))
             return true;

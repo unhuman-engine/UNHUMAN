@@ -7,6 +7,7 @@
 #include "UHE/Debug/RenderDoc.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer/PostProcess.h"
+#include "UHE/Renderer/RHISelfTest.h"
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer/ShaderCache.h"
@@ -55,6 +56,17 @@ Application::Application(const std::string& name, const WindowProps& window)
 
     m_ImGuiLayer = ImGuiLayer::Create();
     PushOverlay(m_ImGuiLayer);
+
+    // UHE_RHI_SELFTEST: exercise the RHI core on this device before the first
+    // frame (issue #30); "exit" stops the app after it, failing on a failure.
+    if (const char* selfTest = std::getenv("UHE_RHI_SELFTEST");
+        selfTest != nullptr && *selfTest != '\0' && std::string_view(selfTest) != "0")
+    {
+        m_SelfTestResult = RunRHISelfTest(Renderer::GetDevice());
+        m_SelfTestExit = std::string_view(selfTest) == "exit";
+        // Then the part that needs real frames (async compute through the frame graph).
+        m_SelfTestFrames = std::make_unique<RHISelfTestFrames>(Renderer::GetDevice());
+    }
 }
 
 Application::~Application()
@@ -177,6 +189,8 @@ void Application::Run()
 
                     if (!frameSkipped)
                     {
+                        if (m_SelfTestFrames)
+                            m_SelfTestFrames->Declare();
                         for (Layer* layer : m_LayerStack)
                             layer->OnUpdate(timestep);
                         ++m_RenderedFrames;
@@ -194,6 +208,19 @@ void Application::Run()
             UHE_PROFILE_FRAMEMARK;
         }
         UHE::Profiler::EndFrame();
+
+        if (m_SelfTestFrames && m_SelfTestFrames->Done())
+        {
+            m_SelfTestFrames->Finish(m_SelfTestResult);
+            m_SelfTestFrames.reset();
+            UHE_CORE_INFO("[RHI-SELFTEST] {0} checks, {1} failures (with frames)", m_SelfTestResult.Checks,
+                          m_SelfTestResult.Failures);
+            if (m_SelfTestExit)
+            {
+                m_ExitCode = m_SelfTestResult.Failures == 0 ? 0 : 1;
+                Close();
+            }
+        }
     }
 };
 void Application::RequestCaptureIfDue()

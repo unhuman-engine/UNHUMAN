@@ -4,6 +4,7 @@
 #include <vector>
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_raii.hpp>
+#include "UHE/RHI/RHICore.h"
 #include "UHE/RHI/RHITexture.h"
 #include "UHE/Renderer/Mipmap.h"
 
@@ -31,6 +32,10 @@ public:
     [[nodiscard]] u32 GetTextureIndex() const override { return m_TextureIndex; }
 
     void Init(VulkanDevice& device, const TextureDesc& desc);
+    /// @brief Wraps an image the RHI does not own (RHIDevice::ImportTexture); a view is made when none is given.
+    void InitImported(VulkanDevice& device, vk::Image image, vk::ImageView view, const TextureDesc& desc);
+    /// @brief A view over part of \p parent (RHIDevice::CreateTextureView); the parent must outlive it.
+    void InitView(VulkanDevice& device, VulkanTexture& parent, const TextureViewDesc& desc);
     void CreateImage(VulkanLogicalDevice& device, uint32_t width, uint32_t height, uint32_t mipLevels,
                      vk::Format format, vk::ImageUsageFlags usage, VmaMemoryUsage memUsage, vk::ImageTiling tiling,
                      vk::Image& image, VmaAllocation& imageMemory);
@@ -58,6 +63,17 @@ public:
     [[nodiscard]] vk::raii::ImageView& GetImageView() { return textureImageView; }
     [[nodiscard]] vk::raii::Sampler& GetSampler() { return textureSampler; }
 
+    /// @brief The subresources this texture covers, for barriers and copies (a view covers part of its image).
+    [[nodiscard]] vk::ImageSubresourceRange GetRange(u32 baseMip, u32 mipCount, u32 baseLayer, u32 layerCount) const;
+    [[nodiscard]] vk::ImageAspectFlags GetAspect() const { return m_Aspect; }
+    [[nodiscard]] u32 GetMipLevels() const { return m_MipLevels; }
+    [[nodiscard]] u32 GetWidth() const { return m_Width; }
+    [[nodiscard]] u32 GetHeight() const { return m_Height; }
+    /// @brief The first mip and layer of the image this texture starts at (0 unless it is a view).
+    [[nodiscard]] u32 GetBaseMip() const { return m_BaseMip; }
+    [[nodiscard]] u32 GetBaseLayer() const { return m_BaseLayer; }
+    [[nodiscard]] u32 GetLayerCount() const { return m_LayerCount; }
+
 private:
     vk::Image textureImage{nullptr};
     VmaAllocation textureImageMemory = nullptr;
@@ -74,5 +90,9 @@ private:
     SamplerDesc m_SamplerDesc;
     VkDescriptorSet m_ImGuiDescriptorSet = VK_NULL_HANDLE;
     u32 m_TextureIndex = 0;
+    vk::ImageAspectFlags m_Aspect = vk::ImageAspectFlagBits::eColor;
+    u32 m_BaseMip = 0;
+    u32 m_BaseLayer = 0;
+    u32 m_LayerCount = 1;
 };
 } // namespace UHE::RHI::VULKAN

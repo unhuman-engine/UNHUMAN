@@ -4,6 +4,7 @@
 #include "Platform/Vulkan/VulkanFramebuffer.h"
 #include "UHE/RHI/RHIDevice.h"
 #include "UHE/RHI/RHITypes.h"
+#include "VulkanCoreObjects.h"
 #include "VulkanDescriptorManager.h"
 #include "VulkanExtensionCheck.h"
 #include "VulkanLogicalDevice.h"
@@ -62,9 +63,14 @@ void VulkanGraphicPipeline::createGraphicsPipeline(VulkanLogicalDevice& Device,
 
     auto globalLayout = descriptorManager.GetLayoutHandle();
     vk::PushConstantRange pushConstantRange{};
+    // Set 0 is the bindless set every pipeline has; sets 1..3 are the desc's own (RHICore.h).
+    const std::vector<vk::DescriptorSetLayout> setLayouts = PipelineSetLayouts(
+        globalLayout,
+        std::span(desc.descriptorSetLayouts.data(),
+                  std::min<std::size_t>(desc.descriptorSetLayoutCount, desc.descriptorSetLayouts.size())));
     vk::PipelineLayoutCreateInfo pipelineLayoutInfo{.flags = {},
-                                                    .setLayoutCount = 1,
-                                                    .pSetLayouts = &globalLayout,
+                                                    .setLayoutCount = static_cast<u32>(setLayouts.size()),
+                                                    .pSetLayouts = setLayouts.data(),
                                                     .pushConstantRangeCount = 0,
                                                     .pPushConstantRanges = nullptr};
 

@@ -2,10 +2,10 @@
 
 #include <string>
 #include <vector>
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphBuilder.h"
-#include "Platform/Vulkan/RenderGraph/VulkanRenderGraphCompiler.h"
+#include "UHE/RHI/RenderGraph/RenderGraphBuilder.h"
+#include "UHE/RHI/RenderGraph/RenderGraphCompiler.h"
 
-namespace UHE::RHI::VULKAN
+namespace UHE::RHI
 {
 
 /**
@@ -24,11 +24,11 @@ namespace UHE::RHI::VULKAN
  * frame with every handle rebound to the current generation of its slot.
  * Failed compiles are never cached.
  */
-class VulkanRenderGraphCompileCache
+class RenderGraphCompileCache
 {
 public:
     /// @brief The compiled frame for \p builder's declarations, from the cache when possible.
-    [[nodiscard]] RGCompileResult Compile(const VulkanRenderGraphBuilder& builder);
+    [[nodiscard]] RGCompileResult Compile(const RenderGraphBuilder& builder, const RGCompileOptions& options = {});
 
     [[nodiscard]] u64 Hits() const { return m_Hits; }
     [[nodiscard]] u64 Misses() const { return m_Misses; }
@@ -43,7 +43,7 @@ private:
         [[nodiscard]] bool operator==(const Key& other) const { return Words == other.Words && Names == other.Names; }
     };
 
-    [[nodiscard]] static Key BuildKey(const VulkanRenderGraphBuilder& builder);
+    [[nodiscard]] static Key BuildKey(const RenderGraphBuilder& builder, const RGCompileOptions& options);
 
     Key m_Key;
     RGCompiledFrame m_Frame;
@@ -52,4 +52,4 @@ private:
     u64 m_Misses = 0;
 };
 
-} // namespace UHE::RHI::VULKAN
+} // namespace UHE::RHI

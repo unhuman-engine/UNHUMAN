@@ -104,6 +104,37 @@ static void TestSyncLoad()
     fs::remove_all(dir);
 }
 
+static void TestCatalogIDs()
+{
+    std::cout << "[catalog ids]\n";
+    fs::path dir = MakeTempDir();
+    fs::path file = dir / "Assets" / "Notes" / "readme.txt";
+    fs::create_directories(file.parent_path());
+    WriteFile(file, "stable");
+
+    // What an export's AssetManifest.yaml gives the runtime (issue #45).
+    AssetCatalog catalog;
+    AssetCatalogEntry entry;
+    entry.ID = AssetID(0x1234ABCDull);
+    entry.Path = "Notes/readme.txt";
+    catalog.Add(entry);
+    auto& manager = AssetManager::Get();
+    manager.LoadCatalog(catalog);
+    CHECK(manager.CatalogIDFor("Notes/readme.txt") == entry.ID, "the catalog's own path maps to its ID");
+    CHECK(manager.CatalogIDFor(file.string()) == entry.ID, "a resolved path ending in it maps too");
+    CHECK(static_cast<u64>(manager.CatalogIDFor("Other/readme.txt")) == 0, "another folder's file does not");
+    {
+        AssetHandle<TextAsset> handle = manager.Load<TextAsset>(file.string());
+        CHECK(handle.IsValid() && handle.ID() == entry.ID, "a load registers the asset under the stable ID");
+    }
+    manager.UnloadUnused();
+    {
+        AssetHandle<TextAsset> again = manager.Load<TextAsset>(file.string());
+        CHECK(again.ID() == entry.ID, "and the same ID after it was unloaded and loaded again");
+    }
+    manager.UnloadUnused();
+}
+
 static void TestFailedLoad()
 {
     std::cout << "[failed load]\n";
@@ -343,6 +374,7 @@ int main(int argc, char** argv)
 {
     TestUUIDUniqueness();
     TestSyncLoad();
+    TestCatalogIDs();
     TestFailedLoad();
     TestAsyncLoad();
     TestAsyncRetryAfterFailure();

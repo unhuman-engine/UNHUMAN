@@ -67,19 +67,25 @@ u32 Crc32(const void* data, std::size_t size)
     return crc ^ 0xFFFFFFFFu;
 }
 
+u64 HashBytes(const void* data, std::size_t size, u64 hash)
+{
+    const auto* bytes = static_cast<const u8*>(data);
+    for (std::size_t i = 0; i < size; ++i)
+        hash = (hash ^ bytes[i]) * 1099511628211ull;
+    return hash;
+}
+
 u64 HashFile(const std::filesystem::path& path)
 {
     std::ifstream in(path, std::ios::binary);
     if (!in)
         return 0;
-    u64 hash = 1469598103934665603ull;
+    u64 hash = HashBytes(nullptr, 0);
     std::array<char, 65536> buffer{};
     while (in)
     {
         in.read(buffer.data(), buffer.size());
-        const std::streamsize got = in.gcount();
-        for (std::streamsize i = 0; i < got; ++i)
-            hash = (hash ^ static_cast<u8>(buffer[static_cast<std::size_t>(i)])) * 1099511628211ull;
+        hash = HashBytes(buffer.data(), static_cast<std::size_t>(in.gcount()), hash);
     }
     return hash;
 }
