@@ -1,0 +1,10 @@
+Project:
+  Name: ForestLake
+  EngineVersion: "0.1"
+  StartScene: "Assets/Scenes/ForestLake.unhuman"
+  Window:
+    Title: Forest Lake
+    Width: 1600
+    Height: 900
+    Mode: Windowed
+    VSync: true

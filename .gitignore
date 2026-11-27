@@ -447,3 +447,7 @@ imgui.ini
 
 editor_display.ini
 editor_debug.ini
+
+# ForestLake: Poly Haven downloads and the Blender build (projects/ForestLake/Assets/README.md)
+projects/ForestLake/.polyhaven/
+projects/ForestLake/.build/
