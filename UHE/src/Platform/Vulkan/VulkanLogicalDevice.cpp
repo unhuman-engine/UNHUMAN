@@ -35,16 +35,33 @@ void VulkanLogicalDevice::initialize(VulkanPhysicalDevice& physicalDevice, VkSur
     CheckExtens.QuerySupportedFeatures(phyDevice);
     auto deviceExtensions = CheckExtens.GetEnabledDeviceExtensions();
 
+    // Dedicated queues (issue #30): a compute family without graphics runs
+    // async compute next to the frame; a transfer-only family runs uploads on
+    // the copy engine. A GPU with neither (lavapipe, most mobile) does that
+    // work on the graphics queue, which is what the getters then return.
+    const auto findFamily = [&](vk::QueueFlags want, vk::QueueFlags avoid) -> u32
+    {
+        for (u32 i = 0; i < queueFamilies.size(); ++i)
+            if ((queueFamilies[i].queueFlags & want) == want && !(queueFamilies[i].queueFlags & avoid) &&
+                queueFamilies[i].queueCount > 0)
+                return i;
+        return static_cast<u32>(-1);
+    };
+    m_computeQueueFamilyIndex = findFamily(vk::QueueFlagBits::eCompute, vk::QueueFlagBits::eGraphics);
+    m_transferQueueFamilyIndex =
+        findFamily(vk::QueueFlagBits::eTransfer, vk::QueueFlagBits::eGraphics | vk::QueueFlagBits::eCompute);
+
     float queuePriority = 1.0f;
-    vk::DeviceQueueCreateInfo deviceQueueCreateInfo{.flags = {},
-                                                    .queueFamilyIndex = m_graphicsQueueFamilyIndex,
-                                                    .queueCount = 1,
-                                                    .pQueuePriorities = &queuePriority};
+    std::vector<vk::DeviceQueueCreateInfo> queueInfos;
+    for (const u32 family : {m_graphicsQueueFamilyIndex, m_computeQueueFamilyIndex, m_transferQueueFamilyIndex})
+        if (family != static_cast<u32>(-1))
+            queueInfos.push_back(vk::DeviceQueueCreateInfo{
+                .flags = {}, .queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &queuePriority});
 
     vk::DeviceCreateInfo deviceCreateInfo{.pNext = CheckExtens.BuildDeviceFeatureChain(),
                                           .flags = {},
-                                          .queueCreateInfoCount = 1,
-                                          .pQueueCreateInfos = &deviceQueueCreateInfo,
+                                          .queueCreateInfoCount = static_cast<u32>(queueInfos.size()),
+                                          .pQueueCreateInfos = queueInfos.data(),
                                           .enabledLayerCount = 0,
                                           .ppEnabledLayerNames = nullptr,
                                           .enabledExtensionCount = static_cast<u32>(deviceExtensions.size()),
@@ -55,6 +72,10 @@ void VulkanLogicalDevice::initialize(VulkanPhysicalDevice& physicalDevice, VkSur
     volkLoadDevice(*m_logicalDevice);
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*instance.getInstance(), *m_logicalDevice);
     m_graphicsQueue = vk::raii::Queue(m_logicalDevice, m_graphicsQueueFamilyIndex, 0);
+    if (m_computeQueueFamilyIndex != static_cast<u32>(-1))
+        m_computeQueue = vk::raii::Queue(m_logicalDevice, m_computeQueueFamilyIndex, 0);
+    if (m_transferQueueFamilyIndex != static_cast<u32>(-1))
+        m_transferQueue = vk::raii::Queue(m_logicalDevice, m_transferQueueFamilyIndex, 0);
 
     VmaVulkanFunctions vulkanFunctions{.vkGetInstanceProcAddr = vkGetInstanceProcAddr,
                                        .vkGetDeviceProcAddr = vkGetDeviceProcAddr};

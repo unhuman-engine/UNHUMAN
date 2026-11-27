@@ -56,6 +56,13 @@ here. Follow them; if a rule is wrong, change it here first.
   waits at frame end, or `WaitIdle()` for a one-off — including the pipeline
   rebuild a shader hot reload triggers.
 
+- **The RHI core does nothing implicitly** (`UHE/RHI/RHICore.h`). `Barrier`
+  is the only state change, `BeginRendering` expects attachments already in
+  their attachment state, copies expect TransferSrc/TransferDst, and a list
+  from `BeginCommandList` runs only when `Submit`ted. The convenience calls
+  (`BeginRenderPass`, `BindPipeline`) are built on it. A change to the core is
+  checked on a device by `UHE_RHI_SELFTEST=exit` (CI runs it on lavapipe);
+  run it with `UHE_SYNC_VALIDATION=1` too.
 - **New rendering declares FrameGraph passes.** `RHIDevice::GetFrameGraph()`,
   `AddPass<Data>(setup, execute)`: the pass names what it reads and writes and
   for what use, and the render graph places every barrier. A pass records with
@@ -223,7 +230,8 @@ here. Follow them; if a rule is wrong, change it here first.
   exception.
 - **No identifier is called `near` or `far`.** `windows.h` defines both as
   macros: a variable with either name compiled everywhere and broke the
-  Windows build, twice. `nearPlane`, `farPlane`, `closeTo`.
+  Windows build, twice. `nearPlane`, `farPlane`, `closeTo`. The same goes for
+  `MemoryBarrier` (hence `RHI::MemoryDependency`), `CreateWindow` and `min`/`max`.
 - **Editor code reads ImGui internals through `ImGui::GetCurrentContext()`.**
   The inline helpers in `imgui_internal.h` (`GetCurrentWindow`, `GetActiveID`,
   ...) read the global `GImGui`, which the engine DLL does not export on

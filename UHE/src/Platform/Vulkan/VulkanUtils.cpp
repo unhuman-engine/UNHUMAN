@@ -86,7 +86,7 @@ void DestroyStagingBuffer(StagingBuffer& staging)
 // ─── Image Creation ──────────────────────────────────────────────
 
 CreatedImage CreateImage(u32 width, u32 height, vk::Format format, vk::ImageUsageFlags usage, u32 mipLevels,
-                         VmaMemoryUsage memUsage)
+                         VmaMemoryUsage memUsage, u32 arrayLayers, u32 sampleCount)
 {
     auto& ctx = GetVulkanContext();
 
@@ -95,8 +95,8 @@ CreatedImage CreateImage(u32 width, u32 height, vk::Format format, vk::ImageUsag
                                   .format = format,
                                   .extent = {width, height, 1},
                                   .mipLevels = mipLevels,
-                                  .arrayLayers = 1,
-                                  .samples = vk::SampleCountFlagBits::e1,
+                                  .arrayLayers = std::max(arrayLayers, 1u),
+                                  .samples = ToVkSample(sampleCount),
                                   .tiling = vk::ImageTiling::eOptimal,
                                   .usage = usage,
                                   .sharingMode = vk::SharingMode::eExclusive,
@@ -140,6 +140,23 @@ vk::raii::ImageView CreateImageView(vk::Image image, vk::Format format, vk::Imag
         .subresourceRange = {
             .aspectMask = aspect, .baseMipLevel = 0, .levelCount = mipLevels, .baseArrayLayer = 0, .layerCount = 1}};
 
+    return vk::raii::ImageView(*ctx.logicalDeviceHandle, viewInfo);
+}
+
+vk::raii::ImageView CreateImageView(vk::Image image, vk::Format format, vk::ImageAspectFlags aspect, u32 baseMip,
+                                    u32 mipLevels, u32 baseLayer, u32 layerCount, bool arrayView)
+{
+    auto& ctx = GetVulkanContext();
+    vk::ImageViewCreateInfo viewInfo{.flags = {},
+                                     .image = image,
+                                     .viewType = arrayView ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D,
+                                     .format = format,
+                                     .components = {},
+                                     .subresourceRange = {.aspectMask = aspect,
+                                                          .baseMipLevel = baseMip,
+                                                          .levelCount = mipLevels,
+                                                          .baseArrayLayer = baseLayer,
+                                                          .layerCount = layerCount}};
     return vk::raii::ImageView(*ctx.logicalDeviceHandle, viewInfo);
 }
 

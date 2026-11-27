@@ -25,6 +25,8 @@ public:
     void init(VmaAllocator allocator, vk::DeviceSize size, vk::BufferUsageFlags usage, VmaMemoryUsage memoryUsage);
     /// Writes \p size bytes into host-visible memory (buffer must be CPU-mappable).
     void UploadData(const void* data, vk::DeviceSize size, vk::DeviceSize offset = 0);
+    /// Reads \p size bytes out of host-visible memory (a readback buffer the GPU wrote); false when unmappable.
+    bool ReadData(void* out, vk::DeviceSize size, vk::DeviceSize offset = 0) const;
     /// Records a device-local copy of \p size bytes into \p dstBuffer.
     void CopyTo(VulkanBuffer& dstBuffer, vk::DeviceSize size, vk::raii::CommandBuffer& commandBuffer);
     void Destroy();

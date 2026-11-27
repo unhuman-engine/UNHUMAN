@@ -154,6 +154,7 @@ void VulkanDevice::InitVulkan(const SwapchainDesc& swapDesc)
         m_FrameTimelineValues[i] = 1;
     }
     m_BarrierEncoder.Init(&m_Context);
+    m_CommandLists.Init(*this, &m_Context);
     m_Jobsystem.Init();
 
     UHE_CORE_INFO("Vulkan sync tier: {}", SyncTierName(m_ExtensionCheck.GetSyncTier()));
@@ -175,6 +176,7 @@ void VulkanDevice::CleanupVulkan()
     g_VulkanContext = nullptr;
 
     WaitIdle();
+    m_CommandLists.Shutdown();
     m_GpuTimer.Shutdown();
 
     // Pooled frame graph textures go the way of any texture: through the
@@ -276,14 +278,20 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc)
         // Transfer both ways too: a storage buffer is also what a frame graph
         // pass copies into or out of.
         usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
-                vk::BufferUsageFlagBits::eTransferDst;
+                vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndirectBuffer;
     }
     else if (desc.usage == BufferUsage::Staging)
     {
         usage = vk::BufferUsageFlagBits::eTransferSrc;
     }
+    else if (desc.usage == BufferUsage::Readback)
+    {
+        usage = vk::BufferUsageFlagBits::eTransferDst;
+    }
 
-    VmaMemoryUsage memUsage = desc.hostVisible ? VMA_MEMORY_USAGE_CPU_TO_GPU : VMA_MEMORY_USAGE_GPU_ONLY;
+    VmaMemoryUsage memUsage = desc.usage == BufferUsage::Readback ? VMA_MEMORY_USAGE_GPU_TO_CPU
+                              : desc.hostVisible                  ? VMA_MEMORY_USAGE_CPU_TO_GPU
+                                                                  : VMA_MEMORY_USAGE_GPU_ONLY;
     buffer->init(m_Allocator, desc.size, usage, memUsage);
     if (desc.debugName != nullptr)
         DebugUtils::Name(static_cast<VkDevice>(*m_LogicalDevice.getLogicalDevice()),
@@ -473,6 +481,7 @@ void VulkanDevice::Begin()
                                                                        VK_TRUE, UINT64_MAX);
     UHE_CORE_ASSERT(waitResult == vk::Result::eSuccess, "Failed to wait for in-flight fence!");
     CollectPixelReadback(); // this slot's fence passed: its copy has landed
+    m_CommandLists.BeginFrame(m_CurrentFrame); // and so did its command lists
     m_GpuTimer.Collect(m_CurrentFrame);
 
     // ── Acquire ONCE (§9.1.4): no retry loop. Out-of-date → recreate + skip

@@ -1,8 +1,10 @@
 #pragma once
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
+#include "RHICore.h"
 #include "RHITypes.h"
 #include "UHE/Core/Core.h"
 #include "UHE/RHI/FrameGraph/FrameGraphTypes.h"
@@ -189,6 +191,97 @@ public:
         (void)name;
         return nullptr;
     }
+
+    // ── Thin core (RHICore.h, issue #30) ────────────────────────────────────
+
+    /// @brief What the device can do; filled once at startup.
+    [[nodiscard]] virtual const DeviceLimits& GetLimits() const
+    {
+        static const DeviceLimits none;
+        return none;
+    }
+
+    /// @brief The backend object behind the device (VkDevice, VkQueue, ...), for code that calls the API directly.
+    [[nodiscard]] virtual void* GetNativeHandle(NativeObject object) const
+    {
+        (void)object;
+        return nullptr;
+    }
+    [[nodiscard]] virtual void* GetNativeTextureHandle(TextureHandle texture, NativeTextureObject object) const
+    {
+        (void)texture, (void)object;
+        return nullptr;
+    }
+    [[nodiscard]] virtual void* GetNativeBufferHandle(BufferHandle buffer) const
+    {
+        (void)buffer;
+        return nullptr;
+    }
+
+    /// @brief Reads a Readback (or other host-visible) buffer once the GPU wrote it.
+    virtual bool ReadBuffer(BufferHandle buffer, u64 offset, std::span<u8> out)
+    {
+        (void)buffer, (void)offset, (void)out;
+        return false;
+    }
+
+    /// @brief A texture over an image the RHI does not own; DestroyTexture forgets it without freeing it.
+    virtual TextureHandle ImportTexture(const TextureImportDesc& desc)
+    {
+        (void)desc;
+        return nullptr;
+    }
+    /// @brief Some mips or layers of \p texture (or another compatible format) as a texture of their own.
+    virtual TextureHandle CreateTextureView(TextureHandle texture, const TextureViewDesc& desc)
+    {
+        (void)texture, (void)desc;
+        return nullptr;
+    }
+
+    virtual QueryPoolHandle CreateQueryPool(const QueryPoolDesc& desc)
+    {
+        (void)desc;
+        return nullptr;
+    }
+    virtual void DestroyQueryPool(QueryPoolHandle pool) { (void)pool; }
+    /// @brief Results of \p out.size() queries from \p first; false when they are not all available yet.
+    virtual bool GetQueryResults(QueryPoolHandle pool, u32 first, std::span<u64> out, bool wait = false)
+    {
+        (void)pool, (void)first, (void)out, (void)wait;
+        return false;
+    }
+
+    virtual DescriptorSetLayoutHandle CreateDescriptorSetLayout(const DescriptorSetLayoutDesc& desc)
+    {
+        (void)desc;
+        return nullptr;
+    }
+    virtual void DestroyDescriptorSetLayout(DescriptorSetLayoutHandle layout) { (void)layout; }
+    virtual DescriptorSetHandle CreateDescriptorSet(DescriptorSetLayoutHandle layout)
+    {
+        (void)layout;
+        return nullptr;
+    }
+    virtual void UpdateDescriptorSet(DescriptorSetHandle set, std::span<const DescriptorWrite> writes)
+    {
+        (void)set, (void)writes;
+    }
+    virtual void DestroyDescriptorSet(DescriptorSetHandle set) { (void)set; }
+
+    /**
+     * @brief A command list to record into, from the calling thread's pool for that queue.
+     *
+     * Primary lists go to Submit; secondary ones to a primary's ExecuteSecondary
+     * within the same frame. Lists are recycled by the device: never keep one
+     * past Submit, or past the frame for a secondary.
+     */
+    virtual RHICommandBuffer* BeginCommandList(const CommandListDesc& desc)
+    {
+        (void)desc;
+        return nullptr;
+    }
+    /// @brief Ends and submits primary lists to a queue.
+    virtual void Submit(const SubmitDesc& desc) { (void)desc; }
 };
 
 } // namespace UHE::RHI

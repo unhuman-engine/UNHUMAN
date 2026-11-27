@@ -35,6 +35,10 @@ enum class Stage : u64
     /// first barrier in a frame, which may follow the previous frame's writes
     /// to the same pooled image, or the swapchain acquire.
     AllCommands,
+    /// Reading indirect draw/dispatch arguments.
+    DrawIndirect,
+    /// The CPU: the destination of a barrier before ReadBuffer, the source after a mapped write.
+    Host,
 };
 
 /// Memory access kind guarded by a barrier (subset of VkAccessFlagBits2).
@@ -49,6 +53,10 @@ enum class Access : u64
     DepthWrite,
     MemoryRead,
     MemoryWrite,
+    /// Indirect draw/dispatch arguments.
+    IndirectRead,
+    HostRead,
+    HostWrite,
 };
 
 /// Logical image layout a resource is in, in the engine's terms.

@@ -296,6 +296,10 @@ vk::PipelineStageFlags2 ToVkPipelineStage2(Stage stage)
             return vk::PipelineStageFlagBits2::eBottomOfPipe;
         case Stage::AllCommands:
             return vk::PipelineStageFlagBits2::eAllCommands;
+        case Stage::DrawIndirect:
+            return vk::PipelineStageFlagBits2::eDrawIndirect;
+        case Stage::Host:
+            return vk::PipelineStageFlagBits2::eHost;
     }
     return vk::PipelineStageFlagBits2::eAllCommands;
 }
@@ -325,6 +329,12 @@ vk::AccessFlags2 ToVkAccess2(Access access)
             return vk::AccessFlagBits2::eMemoryRead;
         case Access::MemoryWrite:
             return vk::AccessFlagBits2::eMemoryWrite;
+        case Access::IndirectRead:
+            return vk::AccessFlagBits2::eIndirectCommandRead;
+        case Access::HostRead:
+            return vk::AccessFlagBits2::eHostRead;
+        case Access::HostWrite:
+            return vk::AccessFlagBits2::eHostWrite;
     }
     return vk::AccessFlagBits2::eNone;
 }
@@ -359,6 +369,10 @@ vk::PipelineStageFlags ToVkPipelineStage1(Stage stage)
             return vk::PipelineStageFlagBits::eBottomOfPipe;
         case Stage::AllCommands:
             return vk::PipelineStageFlagBits::eAllCommands;
+        case Stage::DrawIndirect:
+            return vk::PipelineStageFlagBits::eDrawIndirect;
+        case Stage::Host:
+            return vk::PipelineStageFlagBits::eHost;
     }
     return vk::PipelineStageFlagBits::eAllCommands;
 }
@@ -385,6 +399,12 @@ vk::AccessFlags ToVkAccess1(Access access)
             return vk::AccessFlagBits::eMemoryRead;
         case Access::MemoryWrite:
             return vk::AccessFlagBits::eMemoryWrite;
+        case Access::IndirectRead:
+            return vk::AccessFlagBits::eIndirectCommandRead;
+        case Access::HostRead:
+            return vk::AccessFlagBits::eHostRead;
+        case Access::HostWrite:
+            return vk::AccessFlagBits::eHostWrite;
     }
     return {};
 }

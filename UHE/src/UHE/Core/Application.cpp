@@ -7,6 +7,7 @@
 #include "UHE/Debug/RenderDoc.h"
 #include "UHE/Physics/PhysicsSystem3D.h"
 #include "UHE/Renderer/PostProcess.h"
+#include "UHE/Renderer/RHISelfTest.h"
 #include "UHE/Renderer/Renderer.h"
 #include "UHE/Renderer/Renderer2D.h"
 #include "UHE/Renderer/ShaderCache.h"
@@ -55,6 +56,19 @@ Application::Application(const std::string& name, const WindowProps& window)
 
     m_ImGuiLayer = ImGuiLayer::Create();
     PushOverlay(m_ImGuiLayer);
+
+    // UHE_RHI_SELFTEST: exercise the RHI core on this device before the first
+    // frame (issue #30); "exit" stops the app after it, failing on a failure.
+    if (const char* selfTest = std::getenv("UHE_RHI_SELFTEST");
+        selfTest != nullptr && *selfTest != '\0' && std::string_view(selfTest) != "0")
+    {
+        const RHISelfTestResult result = RunRHISelfTest(Renderer::GetDevice());
+        if (std::string_view(selfTest) == "exit")
+        {
+            m_ExitCode = result.Failures == 0 ? 0 : 1;
+            Close();
+        }
+    }
 }
 
 Application::~Application()

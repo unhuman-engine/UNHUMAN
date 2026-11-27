@@ -178,6 +178,33 @@ jobs:
           fi
           "$OUT_DIR/uhe_imgdiff" "$GOLDEN" "$RESULTS/actual.png" --diff "$RESULTS/diff.png"
 
+      # The RHI thin core (issue #30), on lavapipe: barriers, copies, blits,
+      # views, imports, timestamps, compute through descriptor sets and push
+      # descriptors, secondary lists, queues, rendering scopes and a resolve,
+      # each read back and compared (UHE/src/UHE/Renderer/RHISelfTest.cpp).
+      # Validation errors are fatal here too.
+      - name: RHI self-test (Sandbox, lavapipe)
+        shell: bash
+        run: |
+          OUT_DIR="$PWD/bin/Debug-linux-x64-address"
+          export VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          export UHE_VALIDATION_FATAL=1
+          export UHE_RHI_SELFTEST=exit
+          export ASAN_OPTIONS="detect_leaks=0"
+          Xvfb :97 -screen 0 1280x720x24 &
+          XVFB_PID=$!
+          trap 'kill $XVFB_PID 2>/dev/null || true' EXIT
+          export DISPLAY=:97
+          for i in $(seq 1 50); do [ -S /tmp/.X11-unix/X97 ] && break; sleep 0.2; done
+          set +e
+          (cd "$OUT_DIR" && timeout 300s ./Sandbox > selftest.log 2>&1)
+          rc=$?
+          set -e
+          grep -F "[RHI-SELFTEST]" "$OUT_DIR/selftest.log" || true
+          grep -qF "[VALIDATION] enabled" "$OUT_DIR/selftest.log" || { echo "Validation layers were not enabled"; exit 1; }
+          grep -qE '\[RHI-SELFTEST\] [0-9]+ checks, 0 failures' "$OUT_DIR/selftest.log" || { tail -n 40 "$OUT_DIR/selftest.log"; exit 1; }
+          [ "$rc" -eq 0 ] || { echo "Sandbox exited with $rc"; tail -n 40 "$OUT_DIR/selftest.log"; exit 1; }
+
       # On a mismatch: actual.png is what this commit renders, diff.png marks
       # the differing pixels red. If the change is intended, actual.png is the
       # new reference.
